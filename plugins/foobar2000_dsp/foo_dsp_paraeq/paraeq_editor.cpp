@@ -444,9 +444,9 @@ void Editor::layout()
         if (GetTextMetricsW(dc, &tm)) textH = (int)tm.tmHeight;
     }
 
-    m_layout.rowH      = textH + MulDiv(2, m_dpi, 96);
-    m_layout.cellW     = 0;
-    m_layout.longNames = false;
+    m_layout.rowH  = textH + MulDiv(2, m_dpi, 96);
+    m_layout.cellW = 0;
+    for (int b = 0; b <= kBandCount; b++) m_layout.cellX[b] = 0;
     SetRectEmpty(&m_layout.strip);
     SetRectEmpty(&m_layout.foot);
     for (int b = 0; b < kBtnCount; b++) SetRectEmpty(&m_layout.button[b]);
@@ -509,22 +509,66 @@ void Editor::layout()
 
         const int stripW = m_layout.strip.right - m_layout.strip.left;
         const int labelW = clampi(stripW / 9, nameMin, nameMin * 2);
-        m_layout.cellW = (stripW - labelW) / kBandCount;
+        const int avail  = stripW - labelW;
 
-        if (m_layout.cellW < cellMin) {
+        if (avail < cellMin * kBandCount) {
             SetRectEmpty(&m_layout.strip);
             m_layout.cellW = 0;
         } else {
-            // What the band is for in the header when every column can hold the
-            // longest of those names, and the console shorthand when they
-            // cannot. The whole row either way: one reading Bass / LMF /
-            // Brilliance would look like a mistake rather than like a fit.
-            int widest = 0;
-            for (int b = 0; b < kBandCount; b++) {
-                if (m_layout.nameW[b] > widest) widest = m_layout.nameW[b];
-            }
-            m_layout.longNames = (widest + MulDiv(8, m_dpi, 96) <= m_layout.cellW);
+            // Columns as wide as what is in them rather than all one width.
+            // The values are short and much of a muchness; the titles are not,
+            // and six columns each wide enough for Brilliance is most of a
+            // narrow strip spent on the two names that need it. So every column
+            // starts at the width a value needs and what is left over goes to
+            // the ones whose title wants more. That writes Reverb cut and
+            // Brilliance on a panel a good deal narrower than one uniform
+            // column could have.
+            int width[kBandCount], want[kBandCount];
+            const int extra = avail - cellMin * kBandCount;
 
+            for (int b = 0; b < kBandCount; b++) {
+                width[b] = cellMin;
+                want[b]  = m_layout.nameW[b] + MulDiv(8, m_dpi, 96) - cellMin;
+                if (want[b] < 0) want[b] = 0;
+            }
+
+            // Cheapest first, and all of it or none of it. Sharing a shortage
+            // out in proportion leaves every column that wanted more a few
+            // pixels short of its name and so writes none of them, which is
+            // the worst of both: the space is spent and the shorthand is what
+            // comes out. Taken in this order, the strip fills up with as many
+            // written-out names as it can afford and the two long ones are the
+            // last to go.
+            int order[kBandCount];
+            for (int b = 0; b < kBandCount; b++) order[b] = b;
+            for (int i = 1; i < kBandCount; i++) {
+                const int key = order[i];
+                int j = i - 1;
+                while (j >= 0 && want[order[j]] > want[key]) { order[j + 1] = order[j]; j--; }
+                order[j + 1] = key;
+            }
+
+            int given = 0;
+            for (int i = 0; i < kBandCount; i++) {
+                const int b = order[i];
+                if (want[b] > extra - given) break;   // and so is every one after it
+                width[b] += want[b];
+                given    += want[b];
+            }
+
+            // Whatever is still spare is spread evenly, so the columns reach
+            // the right-hand edge and the values under them stay flush with it.
+            const int spare = extra - given;
+            for (int b = 0; b < kBandCount; b++) width[b] += spare / kBandCount;
+            width[kBandCount - 1] += spare % kBandCount;
+
+            m_layout.cellX[0] = m_layout.strip.left + labelW;
+            for (int b = 0; b < kBandCount; b++) {
+                m_layout.cellX[b + 1] = m_layout.cellX[b] + width[b];
+            }
+            m_layout.cellX[kBandCount] = m_layout.strip.right;   // by construction
+
+            m_layout.cellW = cellMin;
             rest.bottom = m_layout.strip.top - pad;
         }
     }
@@ -996,31 +1040,35 @@ void Editor::paintStrip(HDC dc)
     const RECT & rc = m_layout.strip;
     if (IsRectEmpty(&rc) || m_layout.cellW <= 0) return;
 
-    const int rowH   = m_layout.rowH;
-    const int cellW  = m_layout.cellW;
-    const int labelW = (rc.right - rc.left) - cellW * kBandCount;
-    const int pad    = MulDiv(3, m_dpi, 96);
+    const int rowH = m_layout.rowH;
+    const int pad  = MulDiv(3, m_dpi, 96);
 
     // The selected band's column, marked behind the text rather than round it:
     // a box inside a strip this dense turns into another grid line.
     if (m_selected >= 0) {
-        RECT col = { rc.left + labelW + cellW * m_selected, rc.top,
-                     rc.left + labelW + cellW * (m_selected + 1), rc.bottom };
+        RECT col = { m_layout.cellX[m_selected], rc.top,
+                     m_layout.cellX[m_selected + 1], rc.bottom };
         fillRect(dc, col, m_colFill);
     }
 
+    // The titles. What the band is for where the column can hold it, the
+    // console's shorthand where it cannot, decided a column at a time rather
+    // than for the row - the columns are not all one width, exactly so that the
+    // long names on the two that need the room do not cost every column that
+    // does not.
     for (int b = 0; b < kBandCount; b++) {
-        RECT r = { rc.left + labelW + cellW * b, rc.top,
-                   rc.left + labelW + cellW * (b + 1), rc.top + rowH };
+        RECT r = { m_layout.cellX[b], rc.top, m_layout.cellX[b + 1], rc.top + rowH };
         InflateRect(&r, -pad, 0);
-        drawText(dc, r, m_layout.longNames ? kSpec[b].name : kSpec[b].abbr,
+
+        const bool full = (m_layout.nameW[b] <= r.right - r.left);
+        drawText(dc, r, full ? kSpec[b].name : kSpec[b].abbr,
                  DT_RIGHT | DT_VCENTER,
                  b == m_selected ? m_colText : m_colDim);
     }
 
     for (int row = 0; row < kRowCount; row++) {
         RECT lr = { rc.left, rc.top + rowH * (row + 1),
-                    rc.left + labelW, rc.top + rowH * (row + 2) };
+                    m_layout.cellX[0], rc.top + rowH * (row + 2) };
         InflateRect(&lr, -pad, 0);
         drawText(dc, lr, kRowName[row], DT_LEFT | DT_VCENTER, m_colDim);
 
@@ -1060,8 +1108,8 @@ void Editor::paintStrip(HDC dc)
                 break;
             }
 
-            RECT r = { rc.left + labelW + cellW * b, rc.top + rowH * (row + 1),
-                       rc.left + labelW + cellW * (b + 1), rc.top + rowH * (row + 2) };
+            RECT r = { m_layout.cellX[b], rc.top + rowH * (row + 1),
+                       m_layout.cellX[b + 1], rc.top + rowH * (row + 2) };
             InflateRect(&r, -pad, 0);
 
             const bool dash = (text[0] == L'-' && text[1] == 0);
@@ -1070,7 +1118,6 @@ void Editor::paintStrip(HDC dc)
         }
     }
 }
-
 
 void Editor::paintFoot(HDC dc)
 {
@@ -1137,10 +1184,13 @@ int Editor::hitStripCell(POINT pt, int * row) const
     if (IsRectEmpty(&m_layout.strip) || !PtInRect(&m_layout.strip, pt)) return -1;
     if (m_layout.cellW <= 0 || m_layout.rowH <= 0) return -1;
 
-    const int labelW = (m_layout.strip.right - m_layout.strip.left)
-                     - m_layout.cellW * kBandCount;
-    const int b = (pt.x - m_layout.strip.left - labelW) / m_layout.cellW;
-    if (b < 0 || b >= kBandCount) return -1;
+    // Walked rather than divided: the columns are each as wide as what is in
+    // them, so there is no width to divide by.
+    int b = -1;
+    for (int i = 0; i < kBandCount; i++) {
+        if (pt.x >= m_layout.cellX[i] && pt.x < m_layout.cellX[i + 1]) { b = i; break; }
+    }
+    if (b < 0) return -1;
 
     const int r = (pt.y - m_layout.strip.top) / m_layout.rowH - 1;   // header
     if (row != NULL) *row = clampi(r, -1, kRowCount - 1);
