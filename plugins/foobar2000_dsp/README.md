@@ -1101,16 +1101,25 @@ things. On 1926–1949 shellac those four are
 
 | Band | Where it lives | What it is for |
 | --- | --- | --- |
-| **LF** | 60–125 Hz | Weight the transfer lost at the bottom. Shelf, switchable to a bell. |
-| **LMF** | around 1 kHz | The boxy room the horn or the hall adds. Peaking, Q 0.5–8. |
-| **HMF** | 4–6 kHz | The brilliance sitting under the surface noise. Peaking, Q 0.5–8. |
-| **HF** | around 8 kHz | The surface noise itself. Shelf, switchable to a bell. |
+| **Bass** | 60–125 Hz | Weight the transfer lost at the bottom. Shelf, switchable to a bell. |
+| **Reverb cut** | around 1 kHz | The boxy room the horn or the hall adds. Peaking, Q 0.5–8. |
+| **Brilliance** | 4–6 kHz | The brilliance sitting under the surface noise. Peaking, Q 0.5–8. |
+| **Hiss cut** | around 8 kHz | The surface noise itself. Shelf, switchable to a bell. |
 
-plus a **high-pass** for rumble and turntable roar under all of it (16–350 Hz,
-off / 12 / 24 dB per octave, Butterworth at both slopes) and an **output trim**
+plus a **low cut** for rumble and turntable roar under all of it (16–350 Hz,
+off / 12 / 24 dB per octave, Butterworth at both slopes) and an **output** trim
 for whatever the bands did. Every range is chosen to put its target near the
 middle of the control's travel, which is what makes a knob usable rather than
 merely capable.
+
+The names are the ones the [tango transfer
+literature](https://elespejero.wordpress.com/2014/12/17/eq-4-tj-getting-the-best-sound-out-of-your-tango-records/)
+uses rather than the console's, because they say what the knob is for: an
+operator reaching for the hiss should not have to know that a strip would have
+called that band HF. The shorthand — *HP, LF, LMF, HMF, HF, Out* — is what the
+readout strip falls back to when the panel is too narrow for the long names, and
+both appear together at the top of a band's context menu, so neither name is a
+secret from anyone who knows only the other.
 
 The ranges are wider than a console strip's — ±20 dB a band, Q to 8 — again
 because a transfer can need it. 20 dB of 8 kHz cut is a plausible setting on a
@@ -1141,29 +1150,53 @@ trackbars. Everything is reachable three ways.
 | Drag a handle | Frequency across, gain up and down, one to one with the axes. |
 | Wheel | Gain, 0.5 dB a notch. |
 | Shift + wheel | Q, or the shelf/bell switch on a band that has no Q. |
-| Right-click | Shelf or bell, the high-pass slope, reset this band, flatten, bypass. |
+| Right-click | Shelf or bell, the low-cut slope, Q as a list of widths, reset this band, flatten, bypass. |
 | Double-click a handle | That band's gain to zero. |
 | Drag a readout cell | The value in it, vertically. This is how to set a number you can name rather than one you can see. |
-| Hold ctrl | Any of the above, at a quarter of the step. |
+| Hold ctrl | Finer: a quarter of a drag, a fifth of a wheel notch. |
 
 **Keyboard** — the panel takes focus, so all of this works with the pointer
 somewhere else entirely.
 
 | | |
 | --- | --- |
-| ← → | Select the previous or next band. |
-| ↑ ↓ | Its gain, 0.5 dB a press. On the high-pass, its slope. |
+| ← → | The selected band's frequency, a semitone a press. |
+| shift + ← → | The same, four semitones a press. |
+| ctrl + ← → | Select the previous or next band, wrapping. |
+| ↑ ↓ | Its gain, 0.5 dB a press. On the low cut, its slope. |
 | shift + ↑ ↓ | The same, 2 dB a press. |
-| shift + ← → | Its frequency, a semitone a press. |
-| page up / down | Its Q. On the high-pass, its slope; on a shelf, the shelf/bell switch. |
-| space | Shelf to bell, or the next high-pass slope. |
+| ctrl + ↑ ↓ | The same, an eighth of a dB, for placing rather than finding. |
+| page up / down | Its Q. On the low cut, its slope; on a shelf, the shelf/bell switch. |
+| space | Shelf to bell, or the next low-cut slope. |
 | home | Reset the selected band. **ctrl + home** resets everything. |
 | delete / backspace | The selected band's gain to zero. |
-| ctrl + any of them | A quarter of the step. |
 
-Shift carries frequency rather than ctrl because ctrl with an arrow key is
-claimed by hosts often enough that it cannot be relied on to arrive, and the
-fine modifier is the one that can afford to be the second choice.
+The arrows move the band rather than the selection because that is what a hand
+reaches for: gain is up and down, and frequency is the other axis of the same
+handle. Choosing which of the five to work on is the rarer act, so it takes the
+modifier — which puts it on ctrl with an arrow key, and a host can bind that to
+something of its own and swallow it before it arrives. That is the right one to
+risk: if it goes missing the mouse still selects, and every command that needs a
+band is in the context menu, whereas a frequency that never arrived would leave
+the keyboard unable to reach a control at all.
+
+**Q**, the width of a peaking band, is on four of those routes, because it is
+the control with no handle of its own — the two axes of the curve are already
+the frequency and the gain — and so the one thing here somebody has to be able
+to find rather than be told about:
+
+| | |
+| --- | --- |
+| shift + wheel | Over the curve. Q moves geometrically, 24 notches from 0.5 to 8. |
+| page up / down | The same, on the selected band. |
+| Drag the **Q** readout cell | Vertically, for a value you can name. |
+| Right-click → **Bandwidth (Q)** | The current value, the two keys, and a list of widths to pick from. |
+
+That menu writes every Q as its bandwidth in octaves as well — *Q 2.00 (0.7
+oct)* — because Q is the number the control is set in and octaves are the thing
+it does. The two shelves have no Q: they run at the fixed width a console shelf
+has, and what their third control does is switch them to bells. The low cut has
+its slope there instead.
 
 **Readouts.** Every value is also written out under the curve, in a grid of one
 column per band, so what a drag did is legible without moving the pointer off

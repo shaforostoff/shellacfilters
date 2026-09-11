@@ -21,7 +21,7 @@ BEGIN
     CONTROL         "",IDC_EDITOR_PLACEHOLDER,"STATIC",SS_BLACKFRAME | NOT WS_VISIBLE,
                     7,7,310,178
 
-    LTEXT           "Drag a handle for frequency and gain; wheel for gain, shift+wheel for Q; right-click for shelf/bell and the high-pass slope. Keyboard: left/right select a band, up/down its gain, shift+left/right its frequency, page up/down its Q, ctrl for fine.",
+    LTEXT           "Drag a handle for frequency and gain; wheel for gain, shift+wheel for Q; right-click for shelf/bell, the low-cut slope and a list of Q widths. Keyboard: left/right the band's frequency, up/down its gain, page up/down its Q, ctrl+left/right to change band.",
                     IDC_HINT,7,190,310,25
 
     PUSHBUTTON      "&Defaults",IDC_DEFAULTS,7,217,54,14

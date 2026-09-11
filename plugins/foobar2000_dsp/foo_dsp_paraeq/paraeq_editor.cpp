@@ -27,7 +27,18 @@ enum { kHP = 0, kLF, kLMF, kHMF, kHF, kOut, kBandCount };
 enum { kRowFreq = 0, kRowGain, kRowShape, kRowCount };
 
 struct BandSpec {
+    //! What the band is for, in the words the restoration literature uses for
+    //! it rather than the console's. Somebody reaching for the hiss should not
+    //! have to know that the strip called it HF, and the names say which way
+    //! the knob usually goes, which is the point of a fixed layout: these are
+    //! four jobs, not four identical bands.
+    //!
+    //! The shorthand is kept beside it for the places the long name will not
+    //! fit - a readout column in a narrow panel, a handle with another handle
+    //! next to it - and both appear in the context menu header, so the two
+    //! names stay tied to each other for anyone who knows only one of them.
     const wchar_t * name;
+    const wchar_t * abbr;
     float fMin, fMax;       //!< both zero when the band has no frequency
     bool  hasGain;
     bool  hasQ;
@@ -35,12 +46,12 @@ struct BandSpec {
 };
 
 const BandSpec kSpec[kBandCount] = {
-    { L"HP",  kHpFreqMin,  kHpFreqMax,  false, false, false },
-    { L"LF",  kLfFreqMin,  kLfFreqMax,  true,  false, true  },
-    { L"LMF", kLmfFreqMin, kLmfFreqMax, true,  true,  false },
-    { L"HMF", kHmfFreqMin, kHmfFreqMax, true,  true,  false },
-    { L"HF",  kHfFreqMin,  kHfFreqMax,  true,  false, true  },
-    { L"Out", 0.0f,        0.0f,        true,  false, false },
+    { L"Low cut",    L"HP",  kHpFreqMin,  kHpFreqMax,  false, false, false },
+    { L"Bass",       L"LF",  kLfFreqMin,  kLfFreqMax,  true,  false, true  },
+    { L"Reverb cut", L"LMF", kLmfFreqMin, kLmfFreqMax, true,  true,  false },
+    { L"Brilliance", L"HMF", kHmfFreqMin, kHmfFreqMax, true,  true,  false },
+    { L"Hiss cut",   L"HF",  kHfFreqMin,  kHfFreqMax,  true,  false, true  },
+    { L"Output",     L"Out", 0.0f,        0.0f,        true,  false, false },
 };
 
 const wchar_t * const kRowName[kRowCount] = { L"Freq", L"Gain", L"Shape" };
@@ -113,6 +124,27 @@ Biquad bandSection(const Config & cfg, int b) {
     case kHF:  return cfg.stage[kStageHighShelf];
     default:   return Biquad();
     }
+}
+
+//! Q values the context menu offers, which is the only place a number can be
+//! picked rather than arrived at. Not evenly spaced: the narrow end is where
+//! the work is, a ring or a horn honk being a single feature to be taken out
+//! without touching the music either side of it, and the wide end is where a
+//! peaking band turns into a tone control, which is what the shelves are for.
+const double kQPreset[] = { 0.5, 0.71, 1.0, 1.41, 2.0, 3.0, 4.5, 8.0 };
+const int    kQPresetCount = (int)(sizeof(kQPreset) / sizeof(kQPreset[0]));
+
+//! The width that Q comes to, in octaves between the half-power points. This is
+//! what the control is for and Q is the number it is set in, so both are shown
+//! wherever one is offered - 2.00 means nothing to a pair of hands, and "0.7 of
+//! an octave" means something to anyone who has ever tuned anything.
+//!
+//! The cookbook's relation, written out rather than through asinh(): the same
+//! arithmetic, and visible.
+double octavesForQ(double q) {
+    if (!(q > 0.0)) return 0.0;
+    const double v = 1.0 / (2.0 * q);
+    return 2.0 * log(v + sqrt(v * v + 1.0)) / log(2.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -412,11 +444,26 @@ void Editor::layout()
         if (GetTextMetricsW(dc, &tm)) textH = (int)tm.tmHeight;
     }
 
-    m_layout.rowH  = textH + MulDiv(2, m_dpi, 96);
-    m_layout.cellW = 0;
+    m_layout.rowH      = textH + MulDiv(2, m_dpi, 96);
+    m_layout.cellW     = 0;
+    m_layout.longNames = false;
     SetRectEmpty(&m_layout.strip);
     SetRectEmpty(&m_layout.foot);
     for (int b = 0; b < kBtnCount; b++) SetRectEmpty(&m_layout.button[b]);
+
+    // Both of every band's names, measured once here rather than wherever one
+    // of them is drawn. Choosing between them is a comparison against a
+    // rectangle, and that happens on the curve on every step of a drag.
+    for (int b = 0; b < kBandCount; b++) {
+        SIZE sn = { MulDiv(44, m_dpi, 96), 0 };
+        SIZE sa = { MulDiv(22, m_dpi, 96), 0 };
+        if (dc != NULL) {
+            GetTextExtentPoint32W(dc, kSpec[b].name, (int)wcslen(kSpec[b].name), &sn);
+            GetTextExtentPoint32W(dc, kSpec[b].abbr, (int)wcslen(kSpec[b].abbr), &sa);
+        }
+        m_layout.nameW[b] = sn.cx;
+        m_layout.abbrW[b] = sa.cx;
+    }
 
     RECT rest = client;
     InflateRect(&rest, -pad, -pad);
@@ -468,6 +515,16 @@ void Editor::layout()
             SetRectEmpty(&m_layout.strip);
             m_layout.cellW = 0;
         } else {
+            // What the band is for in the header when every column can hold the
+            // longest of those names, and the console shorthand when they
+            // cannot. The whole row either way: one reading Bass / LMF /
+            // Brilliance would look like a mistake rather than like a fit.
+            int widest = 0;
+            for (int b = 0; b < kBandCount; b++) {
+                if (m_layout.nameW[b] > widest) widest = m_layout.nameW[b];
+            }
+            m_layout.longNames = (widest + MulDiv(8, m_dpi, 96) <= m_layout.cellW);
+
             rest.bottom = m_layout.strip.top - pad;
         }
     }
@@ -844,11 +901,11 @@ void Editor::paintCurve(HDC dc)
     //
     // Narrow the panel far enough and the handles crowd together, at which point
     // five names in a row become one smear. So they are placed rather than
-    // simply drawn: the band being worked on goes first and keeps its name
-    // whatever the width, because that is the one whose identity is in question,
-    // and each of the rest is dropped if it would land on a name already there.
+    // simply drawn: each band takes the first of four positions that is clear of
+    // a name already there, and gives its name up if none of them is. The band
+    // being worked on goes first and keeps a name whatever the width, because
+    // that is the one whose identity is in question.
     {
-        const int nameW = MulDiv(26, m_dpi, 96);
         RECT claimed[kBandCount];
         int  claimedCount = 0;
 
@@ -868,23 +925,59 @@ void Editor::paintCurve(HDC dc)
             const int  x = handleX(b);
             const int  y = handleY(b);
 
-            // On the left when there is no room on the right, which is what
-            // happens to the high shelf at the top of its travel.
-            const bool onLeft = (x + rad + labelPad + nameW > rc.right);
-            RECT lr = onLeft
-                ? RECT{ x - rad - labelPad - nameW, y - m_layout.rowH, x - rad - labelPad, y }
-                : RECT{ x + rad + labelPad, y - m_layout.rowH, x + rad + labelPad + nameW, y };
+            const wchar_t * text = NULL;
+            RECT lr = { 0, 0, 0, 0 };
+            bool onLeft = false;
 
-            bool clear = true;
-            for (int c = 0; c < claimedCount && clear; c++) {
-                RECT ignored;
-                if (IntersectRect(&ignored, &lr, &claimed[c])) clear = false;
+            // The band being worked on goes first and keeps a name whatever the
+            // width, so the first placement that fits on the plot at all is
+            // remembered in case none of them is clear of a name already there.
+            const wchar_t * anyText = NULL;
+            RECT anyRect = { 0, 0, 0, 0 };
+            bool anyLeft = false;
+
+            // Four places, in the order they are worth having: the long name
+            // above the handle, the long name below it, then the same two with
+            // the shorthand. Below as well as above because the brilliance and
+            // hiss bands sit less than an octave apart at their default
+            // frequencies, where a long name beside one of them reaches over
+            // the other - the ordinary case, not the crowded one.
+            for (int attempt = 0; attempt < 4; attempt++) {
+                const bool abbr  = (attempt >= 2);
+                const bool below = (attempt % 2) != 0;
+
+                const wchar_t * candidate = abbr ? kSpec[b].abbr : kSpec[b].name;
+                const int w   = abbr ? m_layout.abbrW[b] : m_layout.nameW[b];
+                const int top = below ? y : y - m_layout.rowH;
+                if (top < rc.top || top + m_layout.rowH > rc.bottom) continue;
+
+                // On the left when there is no room on the right, which is what
+                // happens to the high shelf at the top of its travel.
+                const bool left = (x + rad + labelPad + w > rc.right);
+                RECT cand = left
+                    ? RECT{ x - rad - labelPad - w, top, x - rad - labelPad, top + m_layout.rowH }
+                    : RECT{ x + rad + labelPad, top, x + rad + labelPad + w, top + m_layout.rowH };
+
+                if (anyText == NULL) { anyText = candidate; anyRect = cand; anyLeft = left; }
+
+                bool clear = true;
+                for (int c = 0; c < claimedCount && clear; c++) {
+                    RECT ignored;
+                    if (IntersectRect(&ignored, &cand, &claimed[c])) clear = false;
+                }
+                if (clear) { text = candidate; lr = cand; onLeft = left; break; }
             }
-            if (!clear && i > 0) continue;          // the first one always gets drawn
+
+            if (text == NULL) {
+                // Everything collided. The rest give their name up rather than
+                // draw it over one already there.
+                if (i > 0 || anyText == NULL) continue;
+                text = anyText; lr = anyRect; onLeft = anyLeft;
+            }
 
             claimed[claimedCount++] = lr;
-            drawText(dc, lr, kSpec[b].name,
-                     (onLeft ? DT_RIGHT : DT_LEFT) | DT_BOTTOM,
+            drawText(dc, lr, text,
+                     (onLeft ? DT_RIGHT : DT_LEFT) | DT_VCENTER,
                      sel ? m_colSel : m_colDim);
         }
     }
@@ -920,7 +1013,8 @@ void Editor::paintStrip(HDC dc)
         RECT r = { rc.left + labelW + cellW * b, rc.top,
                    rc.left + labelW + cellW * (b + 1), rc.top + rowH };
         InflateRect(&r, -pad, 0);
-        drawText(dc, r, kSpec[b].name, DT_RIGHT | DT_VCENTER,
+        drawText(dc, r, m_layout.longNames ? kSpec[b].name : kSpec[b].abbr,
+                 DT_RIGHT | DT_VCENTER,
                  b == m_selected ? m_colText : m_colDim);
     }
 
@@ -1456,13 +1550,16 @@ void Editor::onContextMenu(POINT screenPt)
     select(band);
 
     enum { kIdOff = 100, kId12, kId24, kIdShelf, kIdBell,
-           kIdResetBand = 200, kIdFlatten, kIdResetAll, kIdBypass };
+           kIdQNarrow, kIdQWide,
+           kIdResetBand = 200, kIdFlatten, kIdResetAll, kIdBypass,
+           kIdQFirst = 300 };
 
     const HMENU menu = CreatePopupMenu();
     if (menu == NULL) return;
 
     wchar_t header[64];
-    _snwprintf_s(header, _countof(header), _TRUNCATE, L"%s band", kSpec[band].name);
+    _snwprintf_s(header, _countof(header), _TRUNCATE, L"%s  (%s)",
+                 kSpec[band].name, kSpec[band].abbr);
     AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, header);
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
 
@@ -1477,6 +1574,39 @@ void Editor::onContextMenu(POINT screenPt)
         AppendMenuW(menu, MF_STRING | (!bell ? MF_CHECKED : 0), kIdShelf, L"Shelf");
         AppendMenuW(menu, MF_STRING | ( bell ? MF_CHECKED : 0), kIdBell,  L"Bell");
         AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    } else if (kSpec[band].hasQ) {
+        // The width control. It is the one thing here with no handle on the
+        // curve - the two axes are already the frequency and the gain - so this
+        // is where it can be found by looking rather than by being told, which
+        // is what a menu is for. The keys are written beside the nudges for the
+        // same reason, and the value at the top because the readout strip that
+        // would otherwise say it is the first thing a narrow panel drops.
+        const HMENU q = CreatePopupMenu();
+        if (q != NULL) {
+            const double now = bandQ(m_params, band);
+
+            wchar_t text[64];
+            _snwprintf_s(text, _countof(text), _TRUNCATE, L"Q %.2f  (%.1f oct)",
+                         now, octavesForQ(now));
+            AppendMenuW(q, MF_STRING | MF_DISABLED, 0, text);
+            AppendMenuW(q, MF_SEPARATOR, 0, NULL);
+
+            AppendMenuW(q, MF_STRING, kIdQNarrow, L"Narrower\tPage Up");
+            AppendMenuW(q, MF_STRING, kIdQWide,   L"Wider\tPage Down");
+            AppendMenuW(q, MF_SEPARATOR, 0, NULL);
+
+            for (int i = 0; i < kQPresetCount; i++) {
+                _snwprintf_s(text, _countof(text), _TRUNCATE, L"Q %.2f  (%.1f oct)",
+                             kQPreset[i], octavesForQ(kQPreset[i]));
+                // Checked only on a real match. Rounding the nearest one up to
+                // a tick would claim a value the band is not set to.
+                const bool on = fabs(now - kQPreset[i]) < 0.005;
+                AppendMenuW(q, MF_STRING | (on ? MF_CHECKED : 0), kIdQFirst + i, text);
+            }
+
+            AppendMenuW(menu, MF_POPUP, (UINT_PTR)q, L"Bandwidth (Q)");
+            AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+        }
     }
 
     AppendMenuW(menu, MF_STRING, kIdResetBand, L"Reset this band");
@@ -1492,12 +1622,21 @@ void Editor::onContextMenu(POINT screenPt)
     DestroyMenu(menu);
     if (cmd == 0) return;
 
+    if (cmd >= kIdQFirst && cmd < kIdQFirst + kQPresetCount) {
+        setBandQ(m_params, band, kQPreset[cmd - kIdQFirst]);
+        commit();
+        flushPush();
+        return;
+    }
+
     switch (cmd) {
     case kIdOff:   m_params.hpSlope = 0; break;
     case kId12:    m_params.hpSlope = 1; break;
     case kId24:    m_params.hpSlope = 2; break;
     case kIdShelf: if (band == kLF) m_params.lfBell = false; else m_params.hfBell = false; break;
     case kIdBell:  if (band == kLF) m_params.lfBell = true;  else m_params.hfBell = true;  break;
+    case kIdQNarrow:   nudgeQ(band,  1); break;
+    case kIdQWide:     nudgeQ(band, -1); break;
     case kIdResetBand: resetBand(band); break;
     case kIdBypass:    m_params.bypass = !m_params.bypass; break;
     case kIdFlatten:
@@ -1516,20 +1655,29 @@ void Editor::onContextMenu(POINT screenPt)
 // ---------------------------------------------------------------------------
 // Keyboard
 //
-//   left / right          select the previous or next band, wrapping
+//   left / right          the selected band's frequency, a semitone a press
+//   shift + left / right  the same, four semitones a press
+//   ctrl + left / right   select the previous or next band, wrapping
 //   up / down             its gain, 0.5 dB a press; on the high-pass, its slope
 //   shift + up / down     the same, 2 dB a press
-//   shift + left / right  its frequency, a semitone a press
+//   ctrl + up / down      the same, an eighth of a dB, for placing rather than
+//                         finding
 //   page up / page down   its Q; on the high-pass, its slope; on a shelf, the
 //                         shelf/bell switch, which is the nearest thing it has
 //   space                 shelf to bell, or the next high-pass slope
 //   home                  reset the selected band; ctrl + home resets all of them
 //   delete / backspace    its gain to zero
-//   ctrl + anything       a quarter of the step, for placing rather than finding
 //
-// Shift carries frequency rather than ctrl because ctrl with an arrow key is
-// claimed by hosts often enough that it cannot be relied on to arrive, and the
-// fine modifier is the one that can afford to be the second choice.
+// The arrows move the band rather than the selection because that is what a
+// hand reaches for: gain is up and down, and frequency is the other axis of the
+// same handle. Choosing which of five to work on is the rarer act, so it takes
+// the modifier.
+//
+// Which puts selection on ctrl with an arrow key, and a host can bind that to
+// something of its own and swallow it before it arrives. That is the right one
+// to risk: if it goes missing the mouse still selects, and every command that
+// needs a band is in the context menu, whereas a frequency that never arrived
+// would leave the keyboard unable to reach a control at all.
 // ---------------------------------------------------------------------------
 
 bool Editor::onKey(WPARAM key)
@@ -1538,27 +1686,35 @@ bool Editor::onKey(WPARAM key)
 
     const bool shift = (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
     const bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    const double fine = ctrl ? 0.25 : 1.0;
+    const double fine   = ctrl  ? 0.25 : 1.0;
+    const double coarse = shift ? 4.0  : 1.0;
 
-    if (m_selected < 0 && key != VK_LEFT && key != VK_RIGHT) {
+    if (m_selected < 0 && !(ctrl && (key == VK_LEFT || key == VK_RIGHT))) {
         // Nothing selected yet and a key that acts on a band: take the one the
-        // knob metaphor starts at rather than refusing.
+        // knob metaphor starts at rather than refusing. Selecting is the
+        // exception, because it has an end of the row to start from.
         select(kLF);
     }
 
     switch (key) {
     case VK_LEFT:
-        if (shift) { nudgeFreq(m_selected, -1.0 * fine); break; }
-        select(m_selected <= 0 ? kBandCount - 1 : m_selected - 1);
-        return true;
+        if (ctrl) {
+            select(m_selected <= 0 ? kBandCount - 1 : m_selected - 1);
+            return true;
+        }
+        nudgeFreq(m_selected, -coarse);
+        break;
 
     case VK_RIGHT:
-        if (shift) { nudgeFreq(m_selected, 1.0 * fine); break; }
-        select(m_selected < 0 || m_selected >= kBandCount - 1 ? 0 : m_selected + 1);
-        return true;
+        if (ctrl) {
+            select(m_selected < 0 || m_selected >= kBandCount - 1 ? 0 : m_selected + 1);
+            return true;
+        }
+        nudgeFreq(m_selected, coarse);
+        break;
 
-    case VK_UP:    nudgeGain(m_selected,  0.5 * (shift ? 4.0 : 1.0) * fine); break;
-    case VK_DOWN:  nudgeGain(m_selected, -0.5 * (shift ? 4.0 : 1.0) * fine); break;
+    case VK_UP:    nudgeGain(m_selected,  0.5 * coarse * fine); break;
+    case VK_DOWN:  nudgeGain(m_selected, -0.5 * coarse * fine); break;
 
     case VK_PRIOR: nudgeQ(m_selected,  1); break;
     case VK_NEXT:  nudgeQ(m_selected, -1); break;
