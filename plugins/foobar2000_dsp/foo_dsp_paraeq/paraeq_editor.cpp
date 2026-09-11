@@ -1214,9 +1214,12 @@ void Editor::nudgeGain(int band, double db)
     if (band < 0 || band >= kBandCount) return;
 
     if (band == kHP) {
-        // The high-pass has a slope where the others have a gain, and up should
-        // mean more of it.
-        m_params.hpSlope = clampi(m_params.hpSlope + (db > 0 ? 1 : -1), 0, 2);
+        // The low cut has a slope where the others have a gain, and up and down
+        // here are a gesture at the curve rather than at the number behind it:
+        // down is more cut, because down is where the curve goes when cut is
+        // added. More of the control for up would read backwards on a plot,
+        // which is the only place this band is ever seen.
+        m_params.hpSlope = clampi(m_params.hpSlope + (db > 0 ? -1 : 1), 0, 2);
         return;
     }
     if (!kSpec[band].hasGain) return;
@@ -1243,7 +1246,9 @@ void Editor::nudgeQ(int band, int steps)
     if (band < 0 || band >= kBandCount) return;
 
     if (band == kHP) {
-        m_params.hpSlope = clampi(m_params.hpSlope + steps, 0, 2);
+        // Down is more cut here too. Page up and the arrow keys would otherwise
+        // disagree about which way up is on the one band they both reach.
+        m_params.hpSlope = clampi(m_params.hpSlope - steps, 0, 2);
         return;
     }
     if (!kSpec[band].hasQ) {
@@ -1472,8 +1477,9 @@ void Editor::onMouseMove(POINT pt)
                             clampd(bandGain(m_dragStart, b) + dyLogical * 0.25,
                                    -limit, limit));
             } else if (b == kHP) {
+                // Down is more cut, as it is on the keys and the wheel.
                 m_params.hpSlope =
-                    clampi(m_dragStart.hpSlope + (int)(dyLogical / 24.0), 0, 2);
+                    clampi(m_dragStart.hpSlope - (int)(dyLogical / 24.0), 0, 2);
             }
             break;
         default:
@@ -1658,12 +1664,13 @@ void Editor::onContextMenu(POINT screenPt)
 //   left / right          the selected band's frequency, a semitone a press
 //   shift + left / right  the same, four semitones a press
 //   ctrl + left / right   select the previous or next band, wrapping
-//   up / down             its gain, 0.5 dB a press; on the high-pass, its slope
+//   up / down             its gain, 0.5 dB a press; on the low cut, its slope,
+//                         down for more of it - see nudgeGain()
 //   shift + up / down     the same, 2 dB a press
 //   ctrl + up / down      the same, an eighth of a dB, for placing rather than
 //                         finding
-//   page up / page down   its Q; on the high-pass, its slope; on a shelf, the
-//                         shelf/bell switch, which is the nearest thing it has
+//   page up / page down   its Q; on the low cut, its slope again; on a shelf,
+//                         the shelf/bell switch, the nearest thing it has
 //   space                 shelf to bell, or the next high-pass slope
 //   home                  reset the selected band; ctrl + home resets all of them
 //   delete / backspace    its gain to zero
