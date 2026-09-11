@@ -137,6 +137,26 @@ add_test(NAME dehum_rt_verify COMMAND dehum_rt_verify)
 set_target_properties(dehum_rt_verify PROPERTIES FOLDER "tests")
 
 # ---------------------------------------------------------------------------
+# The parametric equaliser: the cookbook sections against the formulas, the
+# glide against the stability triangle it is safe by, and the fast drawing path
+# against the slow one it replaces. No SDK.
+
+add_executable(paraeq_verify
+    paraeq_verify.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_core.cpp"
+)
+
+target_include_directories(paraeq_verify PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq")
+
+if(MSVC)
+    target_compile_options(paraeq_verify PRIVATE /W4)
+endif()
+
+add_test(NAME paraeq_verify COMMAND paraeq_verify)
+set_target_properties(paraeq_verify PROPERTIES FOLDER "tests")
+
+# ---------------------------------------------------------------------------
 # The WinVST port of the declicker, against the core it shares with this tree.
 #
 # It compiles the WinVST folder's OWN copy of declick_core.cpp, deliberately:
@@ -304,13 +324,16 @@ add_executable(preset_roundtrip
     "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_decrackle/decrackle_core.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_dehum/dehum_preset.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_dehum/dehum_core.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_preset.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_core.cpp"
 )
 
 target_include_directories(preset_roundtrip PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_declick"
     "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_decrackle"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_dehum")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_dehum"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq")
 
 target_link_libraries(preset_roundtrip PRIVATE fb2k::sdk)
 
@@ -351,7 +374,8 @@ else()
                 "${FB2K_RUNTIME_DIR}/shared.dll" "$<TARGET_FILE_DIR:component_smoke>/"
         VERBATIM)
 
-    add_dependencies(component_smoke foo_dsp_decrackle foo_dsp_declick foo_dsp_dehum)
+    add_dependencies(component_smoke foo_dsp_decrackle foo_dsp_declick foo_dsp_dehum
+                     foo_dsp_paraeq)
 
     add_test(NAME smoke_decrackle
              COMMAND component_smoke "$<TARGET_FILE:foo_dsp_decrackle>" "${FB2K_RUNTIME_DIR}"
@@ -362,8 +386,13 @@ else()
     add_test(NAME smoke_dehum
              COMMAND component_smoke "$<TARGET_FILE:foo_dsp_dehum>" "${FB2K_RUNTIME_DIR}"
                      --dialog 301 --slider 3001 --label 3011)
+    # --editor instead of --slider: the equaliser's dialog is owner-drawn, so
+    # there is no trackbar to move and the probe types at the editor instead.
+    add_test(NAME smoke_paraeq
+             COMMAND component_smoke "$<TARGET_FILE:foo_dsp_paraeq>" "${FB2K_RUNTIME_DIR}"
+                     --dialog 401 --editor 4002)
     # These open a real modal window; do not let them wedge CI.
-    set_tests_properties(smoke_decrackle smoke_declick smoke_dehum
+    set_tests_properties(smoke_decrackle smoke_declick smoke_dehum smoke_paraeq
                          PROPERTIES TIMEOUT 120)
     set_target_properties(component_smoke PROPERTIES FOLDER "tests")
 endif()

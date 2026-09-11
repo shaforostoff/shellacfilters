@@ -67,8 +67,8 @@
 param(
     [ValidateSet('x86', 'x64')]
     [string[]] $Arch = @('x86', 'x64'),
-    [ValidateSet('foo_dsp_decrackle', 'foo_dsp_declick', 'foo_dsp_dehum')]
-    [string[]] $Component = @('foo_dsp_decrackle', 'foo_dsp_declick', 'foo_dsp_dehum'),
+    [ValidateSet('foo_dsp_decrackle', 'foo_dsp_declick', 'foo_dsp_dehum', 'foo_dsp_paraeq')]
+    [string[]] $Component = @('foo_dsp_decrackle', 'foo_dsp_declick', 'foo_dsp_dehum', 'foo_dsp_paraeq'),
     [string]   $Toolset = '',
     [string]   $Generator = '',
     [ValidateSet('SSE2', 'AVX', 'AVX2')]

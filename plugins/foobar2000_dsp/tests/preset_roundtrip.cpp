@@ -15,6 +15,7 @@
 #include "../foo_dsp_declick/declick_preset.h"
 #include "../foo_dsp_decrackle/decrackle_preset.h"
 #include "../foo_dsp_dehum/dehum_preset.h"
+#include "../foo_dsp_paraeq/paraeq_preset.h"
 
 #include <stdio.h>
 
@@ -213,6 +214,78 @@ int main() {
         b << (t_uint32)dehum_preset::version << 0.5f;   // and nothing else
         b.finish(dehum_preset::guid(), short_);
         check(dehum_preset::parse(short_) == Params::defaults(),
+              "a truncated preset falls back to the defaults");
+    }
+
+    // 9. And for the equaliser, which has the most fields of the four and four
+    //    switches among them, which a builder writes as t_uint32 and a careless
+    //    parser could read back as something else.
+    {
+        using paraeq::Params;
+        Params p;
+        p.hpFrequency  =   137.5f;
+        p.hpSlope      =       2;
+        p.lfGain       =    -7.25f;
+        p.lfFrequency  =   213.0f;
+        p.lfBell       =    true;
+        p.lmfGain      =    11.5f;
+        p.lmfFrequency =  1750.0f;
+        p.lmfQ         =     3.25f;
+        p.hmfGain      =    -4.75f;
+        p.hmfFrequency =  3300.0f;
+        p.hmfQ         =     0.75f;
+        p.hfGain       =    17.0f;
+        p.hfFrequency  = 11000.0f;
+        p.hfBell       =    true;
+        p.outputGain   =    -2.5f;
+        p.bypass       =    true;
+        p.sanitize();
+
+        dsp_preset_impl preset;
+        paraeq_preset::make(p, preset);
+        const Params got = paraeq_preset::parse(preset);
+
+        printf("paraeq round-trip\n");
+        checkNear(got.hpFrequency,  p.hpFrequency,  "hpFrequency");
+        checkNear(got.lfGain,       p.lfGain,       "lfGain");
+        checkNear(got.lfFrequency,  p.lfFrequency,  "lfFrequency");
+        checkNear(got.lmfGain,      p.lmfGain,      "lmfGain");
+        checkNear(got.lmfFrequency, p.lmfFrequency, "lmfFrequency");
+        checkNear(got.lmfQ,         p.lmfQ,         "lmfQ");
+        checkNear(got.hmfGain,      p.hmfGain,      "hmfGain");
+        checkNear(got.hmfFrequency, p.hmfFrequency, "hmfFrequency");
+        checkNear(got.hmfQ,         p.hmfQ,         "hmfQ");
+        checkNear(got.hfGain,       p.hfGain,       "hfGain");
+        checkNear(got.hfFrequency,  p.hfFrequency,  "hfFrequency");
+        checkNear(got.outputGain,   p.outputGain,   "outputGain");
+        check(got.hpSlope == p.hpSlope, "hpSlope");
+        check(got.lfBell  == p.lfBell,  "lfBell");
+        check(got.hfBell  == p.hfBell,  "hfBell");
+        check(got.bypass  == p.bypass,  "bypass");
+        check(got == p, "every field together");
+
+        // The switches are stored as integers, so what matters is that false
+        // comes back false rather than as whatever byte happened to follow.
+        Params allOff = Params::defaults();
+        allOff.lfBell = false; allOff.hfBell = false; allOff.bypass = false;
+        allOff.hpSlope = 0;
+        dsp_preset_impl p2;
+        paraeq_preset::make(allOff, p2);
+        check(paraeq_preset::parse(p2) == allOff, "the switches survive being off");
+
+        dsp_preset_impl foreign;
+        GUID other = paraeq_preset::guid();
+        other.Data1 ^= 1;
+        foreign.set_owner(other);
+        foreign.set_data("junk", 4);
+        check(paraeq_preset::parse(foreign) == Params::defaults(),
+              "a foreign preset falls back to the defaults");
+
+        dsp_preset_impl short_;
+        dsp_preset_builder b;
+        b << (t_uint32)paraeq_preset::version << 0.5f;   // and nothing else
+        b.finish(paraeq_preset::guid(), short_);
+        check(paraeq_preset::parse(short_) == Params::defaults(),
               "a truncated preset falls back to the defaults");
     }
 
