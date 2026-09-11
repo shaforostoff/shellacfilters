@@ -32,9 +32,10 @@
  *              right-click for the shape switches, double-click to zero a band.
  *              The readout cells under the curve drag vertically too, which is
  *              how to set a value one can name rather than one one can see.
- *    Keyboard  left and right select a band, up and down move its gain, shift
- *              with left and right its frequency, page up and down its Q. Held
- *              ctrl makes any of those fine. See onKey() for the whole table.
+ *    Keyboard  left and right move the selected band's frequency, up and down
+ *              its gain, page up and down its Q, and ctrl with left and right
+ *              moves the selection along the strip. See onKey() for the table
+ *              and for why the selection is the thing on the modifier.
  *    Readout   every value is written out under the curve, so what a drag did
  *              is legible without moving the pointer off it.
  * ======================================== */
@@ -140,6 +141,21 @@ private:
         //! would mean a device context and a text measurement on every mouse
         //! move just to decide whether the pointer is over one.
         RECT button[4];
+
+        //! How wide each band's two names come out in the host's font. Measured
+        //! in layout() for the same reason the button rectangles are: the curve
+        //! is repainted on every step of a drag and placing the labels needs
+        //! these on every one of them. Indexed by band; 6 is the band count,
+        //! which lives in the .cpp because nothing out here has any business
+        //! knowing what the bands are.
+        int  nameW[6];
+        int  abbrW[6];
+
+        //! True when a readout column is wide enough for the longest of the
+        //! long names, so the header row can use them. Decided for the row
+        //! rather than per band: one reading Bass / LMF / Brilliance would look
+        //! like a mistake rather than like a fit.
+        bool longNames;
     };
 
     // -- painting ----------------------------------------------------------
