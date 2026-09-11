@@ -201,6 +201,7 @@ private:
     void schedulePush();
     void flushPush();
     bool editable() const;       //!< false while the host is in layout edit mode
+    bool showSelection() const;  //!< whether the selected band is marked as such
 
     LRESULT handle(UINT msg, WPARAM wp, LPARAM lp);
 

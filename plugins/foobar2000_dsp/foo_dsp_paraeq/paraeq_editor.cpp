@@ -390,6 +390,20 @@ bool Editor::editable() const
     return !m_host.editorLayoutEditMode();
 }
 
+
+bool Editor::showSelection() const
+{
+    // A marked band is a promise that the arrow keys are about to move it, so
+    // it is marked only while the arrow keys would in fact arrive. Tab away and
+    // the mark goes with the focus rather than sitting there claiming an edit
+    // that would no longer happen.
+    //
+    // Which band it was is kept, not forgotten: come back and the panel is
+    // where it was left. GetFocus() rather than a flag of our own for the same
+    // reason the focus ring uses it - one answer, asked where it is needed.
+    return m_selected >= 0 && editable() && GetFocus() == m_wnd;
+}
+
 // ---------------------------------------------------------------------------
 // Theme and geometry
 // ---------------------------------------------------------------------------
@@ -917,12 +931,13 @@ void Editor::paintCurve(HDC dc)
     // Handles last, on top of the curve they describe.
     const int r  = MulDiv(4, m_dpi, 96);
     const int rs = handleRadius();
+    const bool marked = showSelection();
     for (int b = 0; b < kBandCount; b++) {
         if (b == kOut) continue;
 
         const int x = handleX(b);
         const int y = handleY(b);
-        const bool sel = (b == m_selected);
+        const bool sel = (b == m_selected) && marked;
         const bool hot = (b == m_hover) || (b == m_dragBand);
         const int  rad = (sel || hot) ? rs : r;
 
@@ -964,7 +979,7 @@ void Editor::paintCurve(HDC dc)
 
         for (int i = 0; i < n; i++) {
             const int b = order[i];
-            const bool sel = (b == m_selected);
+            const bool sel = (b == m_selected) && marked;
             const int  rad = (sel || b == m_hover || b == m_dragBand) ? rs : r;
             const int  x = handleX(b);
             const int  y = handleY(b);
@@ -1045,7 +1060,9 @@ void Editor::paintStrip(HDC dc)
 
     // The selected band's column, marked behind the text rather than round it:
     // a box inside a strip this dense turns into another grid line.
-    if (m_selected >= 0) {
+    const bool marked = showSelection();
+
+    if (marked) {
         RECT col = { m_layout.cellX[m_selected], rc.top,
                      m_layout.cellX[m_selected + 1], rc.bottom };
         fillRect(dc, col, m_colFill);
@@ -1063,7 +1080,7 @@ void Editor::paintStrip(HDC dc)
         const bool full = (m_layout.nameW[b] <= r.right - r.left);
         drawText(dc, r, full ? kSpec[b].name : kSpec[b].abbr,
                  DT_RIGHT | DT_VCENTER,
-                 b == m_selected ? m_colText : m_colDim);
+                 (b == m_selected && marked) ? m_colText : m_colDim);
     }
 
     for (int row = 0; row < kRowCount; row++) {
