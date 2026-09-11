@@ -1156,7 +1156,10 @@ trackbars. Everything is reachable three ways.
 | Hold ctrl | Finer: a quarter of a drag, a fifth of a wheel notch. |
 
 **Keyboard** — the panel takes focus, so all of this works with the pointer
-somewhere else entirely.
+somewhere else entirely. The mark on the selected band follows that focus: tab
+away and it goes, because the arrows have gone with it and a panel that went on
+showing a band as being edited would be promising something it could no longer
+do. Which band it was is remembered for when the focus comes back.
 
 | | |
 | --- | --- |
