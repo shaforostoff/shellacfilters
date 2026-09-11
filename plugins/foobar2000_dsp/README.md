@@ -1,14 +1,15 @@
 # foobar2000 DSP components
 
-Three DSPs for restoring 78s and vinyl transfers:
+Four DSPs for restoring 78s and vinyl transfers:
 
 | Component | What it is |
 | --- | --- |
 | **foo_dsp_decrackle** | A port of the Airwindows **DeCrackle** plug-in, verified **bit-identical** to the VST source. Best on stereo material. |
 | **foo_dsp_declick** | An autoregressive detect-and-interpolate declicker. **Use this one for mono shellac** — see [Which one to use](#which-one-to-use). |
 | **foo_dsp_dehum** | Finds continuous narrowband tones by itself and cancels them. For hum, which is a different defect from clicks and needs a different instrument. Zero latency. |
+| **foo_dsp_paraeq** | A console channel equaliser with a curve editor, for the tone of the transfer once the defects are out of it. Also a Default UI element, so it can live in the main window. Zero latency. |
 
-All three:
+All four:
 
 * Target **foobar2000 1.5 and later**, 32-bit and 64-bit.
 * Build with **CMake**, so any Visual Studio from 2017 15.7 onward works.
@@ -42,6 +43,13 @@ Rough guide: **stereo vinyl → either; mono shellac → Declick.**
 **Dehum is not an alternative to either of them.** Clicks are impulsive and
 broadband, hum is continuous and narrowband, and nothing that detects one will
 find the other. Run Dehum alongside whichever declicker suits the material.
+
+**The Parametric EQ is not a restoration tool at all.** The other three remove
+things that are not in the performance. It changes the balance of what is, which
+is the job that is left once they have finished, and it belongs after them in
+the chain — there is no sense equalising a click that is about to be repaired.
+It is also the only one of the four with a reason to be on screen while the
+record plays, which is why it is a UI element as well as a dialog.
 
 ---
 
@@ -1077,6 +1085,213 @@ at 44.1 kHz, growing to roughly 9 ms with Window at maximum.
 
 ---
 
+## Parametric EQ parameters
+
+Reachable the same way — **Preferences → Playback → DSP Manager**, add
+*Parametric EQ*, press **Configure selected** — and also as a panel in the main
+window; see [Putting the equaliser in the
+layout](#putting-the-equaliser-in-the-layout).
+
+Five bands in a **fixed layout**, not a bank of identical ones. The bank is the
+more general instrument and the worse tool for this job. Restoring disc
+transfers is repetitive work: the same four moves serve most of a box of
+records, and what an operator wants is to set frequency and Q once, before the
+session, and then reach for four gain knobs that always mean the same four
+things. On 1926–1949 shellac those four are
+
+| Band | Where it lives | What it is for |
+| --- | --- | --- |
+| **LF** | 60–125 Hz | Weight the transfer lost at the bottom. Shelf, switchable to a bell. |
+| **LMF** | around 1 kHz | The boxy room the horn or the hall adds. Peaking, Q 0.5–8. |
+| **HMF** | 4–6 kHz | The brilliance sitting under the surface noise. Peaking, Q 0.5–8. |
+| **HF** | around 8 kHz | The surface noise itself. Shelf, switchable to a bell. |
+
+plus a **high-pass** for rumble and turntable roar under all of it (16–350 Hz,
+off / 12 / 24 dB per octave, Butterworth at both slopes) and an **output trim**
+for whatever the bands did. Every range is chosen to put its target near the
+middle of the control's travel, which is what makes a knob usable rather than
+merely capable.
+
+The ranges are wider than a console strip's — ±20 dB a band, Q to 8 — again
+because a transfer can need it. 20 dB of 8 kHz cut is a plausible setting on a
+worn shellac and an implausible one on a microphone, and a horn honk or a
+turntable ring is a single narrow feature that a Q of 3 cannot take out without
+costing the music either side of it.
+
+The filters themselves are the biquads from Robert Bristow-Johnson's Audio EQ
+Cookbook, whose formulas are public domain. Nothing there is novel; what is
+worth reading is in [Why a control move cannot
+click](#why-a-control-move-cannot-click) below, and at more length in the header
+of `foo_dsp_paraeq/paraeq_core.h`.
+
+**This DSP is zero latency** and its `heapBytes()` is 0. Nothing in it is sized
+by the parameters or by the sample rate, so every control move retunes the
+running filters in place — no reallocation, no reset, and no gap in the audio
+while a handle is being dragged.
+
+### The editor
+
+The whole interface is the curve, painted rather than assembled out of
+trackbars. Everything is reachable three ways.
+
+**Mouse**
+
+| | |
+| --- | --- |
+| Drag a handle | Frequency across, gain up and down, one to one with the axes. |
+| Wheel | Gain, 0.5 dB a notch. |
+| Shift + wheel | Q, or the shelf/bell switch on a band that has no Q. |
+| Right-click | Shelf or bell, the high-pass slope, reset this band, flatten, bypass. |
+| Double-click a handle | That band's gain to zero. |
+| Drag a readout cell | The value in it, vertically. This is how to set a number you can name rather than one you can see. |
+| Hold ctrl | Any of the above, at a quarter of the step. |
+
+**Keyboard** — the panel takes focus, so all of this works with the pointer
+somewhere else entirely.
+
+| | |
+| --- | --- |
+| ← → | Select the previous or next band. |
+| ↑ ↓ | Its gain, 0.5 dB a press. On the high-pass, its slope. |
+| shift + ↑ ↓ | The same, 2 dB a press. |
+| shift + ← → | Its frequency, a semitone a press. |
+| page up / down | Its Q. On the high-pass, its slope; on a shelf, the shelf/bell switch. |
+| space | Shelf to bell, or the next high-pass slope. |
+| home | Reset the selected band. **ctrl + home** resets everything. |
+| delete / backspace | The selected band's gain to zero. |
+| ctrl + any of them | A quarter of the step. |
+
+Shift carries frequency rather than ctrl because ctrl with an arrow key is
+claimed by hosts often enough that it cannot be relied on to arrive, and the
+fine modifier is the one that can afford to be the second choice.
+
+**Readouts.** Every value is also written out under the curve, in a grid of one
+column per band, so what a drag did is legible without moving the pointer off
+it. The selected band's column is marked, and the cells drag.
+
+The panel sheds its chrome from the bottom up as it gets shorter — the footer
+buttons first, then the readouts — because the curve is the part that still says
+something at forty pixels tall, and everything in the footer has a key and a
+context-menu item as well. Below roughly 200 × 90 the layout editor will not
+shrink it any further.
+
+### Putting the equaliser in the layout
+
+It is a **Default UI element**, so it can live in the main window beside the
+playlist rather than behind a modal dialog:
+
+1. **View → Layout → Enable layout editing mode**
+2. Right-click the panel you want to split or replace, and pick **Add new UI
+   element** or **Replace UI element**
+3. Choose **Parametric EQ**, under the **DSP** group
+4. **View → Layout → Enable layout editing mode** again to turn editing off
+
+The element also asks the host for a menu command of its own
+(`KFlagHavePopupCommand`), which opens it as a floating window, and implements
+`bump()` so that such a command brings an existing panel forward rather than
+opening a second window onto the same equaliser. Whether the command actually
+appears is the host's decision: the SDK generates them for some element groups
+and not others, and the DSP group is a recent addition. The layout route above
+is the one that is certain.
+
+While layout editing mode is on, the editor ignores mouse and keyboard input, so
+that rearranging the panel does not also drag the curve.
+
+**The element holds no settings of its own.** It reads and writes the live DSP
+chain through `dsp_config_manager`, which has three consequences worth knowing:
+
+* Two copies of the element in one layout show one equaliser, and so do the
+  element and the Preferences dialog. They stay level through
+  `dsp_config_callback`, which is the same route any other component's changes
+  would arrive by.
+* A saved layout comes back pointed at whatever the chain holds then, rather
+  than at a stale copy of what it held when the layout was saved.
+* If the equaliser is **not** in the DSP chain, the element still draws it —
+  dimmed, with the settings the chain last held, and a footer button that puts
+  it back. An element that showed nothing until the DSP was enabled somewhere
+  else would be blank exactly when a user is looking for the thing to press.
+  Moving a control on a disengaged equaliser sets it up for later; only that
+  button inserts anything into the chain.
+
+The panel is drawn entirely with GDI, asking the host for two colours and a
+font, so it follows **dark mode** without any code that knows dark mode exists.
+That is also why it is owner-drawn rather than a dialog full of trackbars:
+standard controls do not follow foobar2000's dark mode without the SDK's
+`DarkMode` helpers, and those live in `helpers/` and `libPPUI/`, which this
+project deliberately does not build — see [Layout](#layout).
+
+### Why a control move cannot click
+
+Two decisions in `paraeq_core.h` are worth the reading.
+
+**Every control reaches the audio as a move of the same five numbers per
+stage.** Gain, frequency and Q obviously do; so do the two shelf/bell switches
+and the high-pass slope, because a stage that is off is a *unity biquad* rather
+than a stage that is skipped. One glide mechanism therefore covers every
+control, including the discrete ones, and the count of biquads actually run
+never changes.
+
+That glide is on the coefficients, not on the controls, and it runs **per
+sample**. Per sub-block was the first attempt and it is audible: a jump in `b0`
+puts a step of `b0·x` straight into the output, so 32-sample blocks leave a
+staircase about 35 dB below the signal on a fast move. Stepping every sample
+took the worst second difference of the output from 2.2e-2 down to 4.6e-4 — the
+test tone's own curvature — and costs nothing in the settled state, which is the
+state an equaliser is in for all but 300 ms after a knob stops moving.
+
+It is also safe for a *reason* rather than by measurement. A biquad is stable
+exactly when `(a1, a2)` lies inside `|a2| < 1, |a1| < 1 + a2`, which is a
+triangle and therefore convex. A straight line between two stable settings
+cannot leave a convex region, so no intermediate coefficient set can ring or
+blow up, whatever the two endpoints are — shelf to bell, off to 24 dB/oct, 16 Hz
+to 16 kHz. `paraeq_verify` pins that across 49 pairs of the most distant
+settings the controls allow, 1001 interpolants each.
+
+**Bypass glides the whole equaliser to flat.** It does not blend a dry path in,
+which is what Declick and Dehum do and what would be wrong here: their wet mix
+is meaningful because the difference signal *is* the repair, whereas summing a
+dry path across an EQ combs. Retargeting every stage to unity and the trim to
+0 dB reaches the same place silently, and the signal is a real equaliser curve
+at every instant of the transition.
+
+### Drawing the curve cheaply
+
+`magnitudeDb(cfg, hz)` is the honest way to ask what the curve does at one
+frequency and the wrong way to ask it several hundred times, which is what
+drawing costs: four trig calls per stage is twenty-four per point, and a
+logarithm per stage on top of them.
+
+Both are per-point constants in disguise. `cos(w)` and `cos(2w)` depend on the
+frequency and the sample rate and on nothing a knob can move, so they hold still
+across a whole drag; and the six stage magnitudes are *multiplied*, so their six
+logarithms are one logarithm of the product. So `curveTrig()` builds a table
+once — on a resize, not on a mouse move — and `curveDb()` after that is
+arithmetic.
+
+Measured over 600 points, x64 release: **110 µs** the direct way, **20 µs** this
+way, and 8 µs to build the table on the resize that needs it. Neither figure is
+alarming on a fast machine; the point is that a redraw is a fifth of the work on
+a slow one, and that it stays a fifth when a second curve is overlaid for the
+band being dragged. `paraeq_verify` checks the fast path against the slow one at
+every point of a sweep that runs past Nyquist at both ends, for the cascade and
+for each section on its own.
+
+The rest of the drawing budget goes the same way:
+
+* the curve is recomputed only when the settings, the size or the sample rate
+  change, not on every paint;
+* the whole panel is composed in a back buffer that is kept between paints
+  rather than allocated per frame;
+* the footer button rectangles are measured in `layout()` rather than on every
+  mouse move;
+* and a control move is pushed into the DSP chain at most every 25 ms, with one
+  more push when the drag ends. That last one matters because every push
+  rewrites the chain configuration and wakes every `dsp_config_callback` in the
+  process — and 40 pushes a second is already faster than the 20 ms the audio
+  takes to glide there.
+
+---
+
 ## Performance
 
 `decrackle_verify` reports this, best of five passes over 30 s of 44.1 kHz
@@ -1193,6 +1408,20 @@ requires zero — see [Real-time safety](#real-time-safety) for what it caught.
 It also records the one documented exception (a push larger than
 `Config::maxBlock`) as a positive assertion rather than leaving it implicit, and
 prints the per-channel footprint so a regression in that shows up in the log.
+
+**`paraeq_verify`** checks the equaliser three ways. Each cookbook section
+against the formula it comes from — a +6 dB bell is +6 dB at its centre and
+0 dB two decades away, a +6 dB low shelf is +3 dB at its corner, the high-pass
+is −3.01 dB at its corner and −12.30 or −24.10 dB an octave below at its
+two slopes. Then what a `Channel` actually does against what `magnitudeDb()`
+promises, measured by running sines through it at nine frequencies rather than
+by evaluating the same formula twice — which is what makes the drawn curve a
+check on the audio instead of a restatement of it. Then the glide: that 49 pairs
+of the most distant settings the controls allow stay inside the stability
+triangle at all 1001 interpolants, that a move settles within 350 ms, and that
+no step in the output is larger than the test tone's own curvature — the check
+that caught the glide stepping per sub-block. It also pins the fast drawing path
+against the slow one, and that a NaN fed in does not stay in the filter.
 
 **`declick_vst_verify`** holds the WinVST port to the same maths — see
 [Sharing a core with the other plug-in formats](#sharing-a-core-with-the-other-plug-in-formats).
@@ -1382,6 +1611,11 @@ foo_dsp_dehum/                    same layout, dehum_core.{h,cpp} etc., plus
   dehum_scout.{h,cpp}             reads the opening of the playing file on a
                                   worker thread so the detector does not have to
                                   find the line the slow way
+foo_dsp_paraeq/                   same layout, paraeq_core.{h,cpp} etc., plus
+  paraeq_editor.{h,cpp}           the owner-drawn curve editor, used unchanged by
+                                  the modal dialog and by the UI element
+  ui_element.cpp                  the Default UI element, so the editor can live
+                                  in the main window; edits the DSP chain directly
 tools/
   decrackle_cli.cpp               offline WAV in / WAV out, for sweeps
   declick_cli.cpp                 ditto for the declicker
@@ -1399,9 +1633,12 @@ tests/
   dehum_vst_verify.cpp            the WinVST dehummer vs. the core it shares
   declick_au_verify.cpp           the MacAU declicker vs. the core it shares
   dehum_au_verify.cpp             the MacAU dehummer vs. the core it shares
+  paraeq_verify.cpp               the cookbook sections vs. their formulas, the
+                                  glide vs. the stability triangle, and the fast
+                                  drawing path vs. the slow one it replaces
   vst_host_verify.cpp             loads a finished VST2 plug-in - .dll or .so -
                                   over the C ABI alone
-  preset_roundtrip.cpp            parameters survive save/load, both components
+  preset_roundtrip.cpp            parameters survive save/load, every component
   component_smoke.cpp             loads a DLL through the real SDK plumbing
 external/                         the downloaded SDK (git-ignored)
 ../dist/                          release artefacts, shared with the VST2 builds
@@ -1446,7 +1683,7 @@ source directly.
 
 ## Sharing a core with the other plug-in formats
 
-Two of the cores have further consumers — builds of the same algorithms for
+Two of the four cores have further consumers — builds of the same algorithms for
 hosts on three platforms, in two plug-in formats:
 
 | | |
@@ -1480,6 +1717,21 @@ which is a foobar2000 component and has no VST wrapper at all.
 `plugins/MacAU` takes the cores and not the wrapper. An Audio Unit is a
 different interface, so its `.cpp` is a wrapper in its own right rather than a
 copy of anybody's — see [The Mac ports](#the-mac-ports).
+
+`paraeq_core.{h,cpp}` has no mirrors in this repository and so is not in
+`sync_cores`. It does have one **outside** it: the core was written for
+EmbraceNG, which carries its own copy under `Source/`. This port added the
+`curveTrig()` / `curveDb()` drawing path and simplified the flush-to-zero
+setter, and both files have since been copied back, so the two are
+byte-identical as things stand. **This tree is the canonical one** — it is
+where the core is developed and where the harness that exercises it lives —
+so a future sync copies foobar2000 to EmbraceNG and not the other way.
+
+The tests are a copy rather than a mirror: `tests/paraeq_verify.cpp` and
+EmbraceNG's `Tests/ParaEQCoreTests.cpp` hold the same checks in the same order
+and differ only in their opening comment and in `M_PI` against a local constant,
+which MSVC needs and clang does not. Keeping them diffable is deliberate —
+anything added to one should be added to the other.
 
 So the copies are mechanical and checked:
 
@@ -1728,10 +1980,18 @@ by construction. Only a real host settles that.
 * **Dehum needs a few seconds of a track before it acts**, its detection is per
   channel, and a buzz whose fundamental is weak will not be found by searching
   for the fundamental — see [What Dehum will not do](#what-dehum-will-not-do).
-* **No dark mode.** The configuration dialogs are plain Win32. Following
-  foobar2000 2.x's dark mode means `fb2k::CDarkModeHooks`, which pulls in
-  libPPUI and WTL — WTL is not in the SDK archive and would have to be
-  downloaded separately. The dialogs were kept dependency-free instead.
+* **No dark mode in three of the four configuration dialogs.** DeCrackle,
+  Declick and Dehum are plain Win32 dialogs full of standard controls, and
+  following foobar2000 2.x's dark mode with those means `fb2k::CDarkModeHooks`,
+  which pulls in libPPUI and WTL — WTL is not in the SDK archive and would
+  have to be downloaded separately. They were kept dependency-free instead. The
+  equaliser's editor is owner-drawn and does follow dark mode, because painting
+  it took two colours from the host rather than a dependency.
+* **The equaliser draws its curve for the playing file's sample rate**, read
+  from the track's own metadata. If a resampler sits ahead of it in the DSP
+  chain, the plot is drawn for the wrong rate — visibly only within an octave
+  or so of Nyquist, where the bilinear transform warps most, and the audio is
+  unaffected either way.
 * **DeCrackle does not flush its tail.** Like the VST, the last few
   milliseconds sitting in its delay line at end of playback are not emitted.
   Flushing them would add samples to the stream and break gapless playback.

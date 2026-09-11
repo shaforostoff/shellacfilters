@@ -13,6 +13,7 @@
  *
  *    component_smoke <path-to-component.dll> [foobar2000-directory]
  *                    [--dialog <id>] [--slider <id>] [--label <id>]
+ *                    [--editor <id>]
  *                    [--screenshot <out.bmp>]
  * ======================================== */
 
@@ -31,6 +32,11 @@ int g_failures = 0;
 int g_dialogId = 101;
 int g_sliderId = 1001;
 int g_labelId  = 1011;
+//! Non-zero for a component whose dialog is owner-drawn and so has no trackbar
+//! to move. The probe types at that control instead - which is a stronger check
+//! than moving a slider, since it goes through the same keyboard path a user
+//! does rather than through a control the system implements.
+int g_editorId = 0;
 
 void check(bool ok, const char * what) {
     std::printf("  %-58s %s\n", what, ok ? "ok" : "FAILED");
@@ -152,6 +158,7 @@ struct probe_args {
     bool  foundDialog;
     bool  foundSlider;
     bool  labelUpdated;
+    bool  foundEditor;
     int   sliderPos;
     const wchar_t * screenshot;   // optional .bmp to write, for eyeballing the layout
 };
@@ -226,8 +233,21 @@ DWORD WINAPI dialogProbe(LPVOID param) {
     if (dlg == NULL) return 0;
     a->foundDialog = true;
 
+    if (g_editorId != 0) {
+        const HWND editor = GetDlgItem(dlg, g_editorId);
+        if (editor != NULL) {
+            a->foundEditor = true;
+            // SendMessage rather than SetFocus: this runs on a different thread
+            // from the dialog, where SetFocus does nothing, while SendMessage
+            // marshals across and is handled on the dialog's own thread exactly
+            // as a real key press would be.
+            SendMessageW(editor, WM_KEYDOWN, VK_UP, 0);
+            SendMessageW(editor, WM_KEYUP,   VK_UP, 0);
+        }
+    }
+
     const HWND slider = GetDlgItem(dlg, g_sliderId);
-    if (slider != NULL) {
+    if (g_editorId == 0 && slider != NULL) {
         a->foundSlider = true;
         // Drive the control the way the user would, then tell the dialog about
         // it exactly as the trackbar does.
@@ -296,6 +316,8 @@ int wmain(int argc, wchar_t ** argv) {
             g_sliderId = _wtoi(argv[++i]);
         } else if (wcscmp(argv[i], L"--label") == 0 && i + 1 < argc) {
             g_labelId = _wtoi(argv[++i]);
+        } else if (wcscmp(argv[i], L"--editor") == 0 && i + 1 < argc) {
+            g_editorId = _wtoi(argv[++i]);
         } else if (fb2kHint.empty()) {
             fb2kHint = argv[i];
         }
@@ -432,9 +454,16 @@ int wmain(int argc, wchar_t ** argv) {
         if (!screenshot.empty()) std::printf("  wrote %ls\n", screenshot.c_str());
         check(ran, "dsp_entry_v2::show_config_popup_v2 is available");
         check(probe.foundDialog, "config dialog opens");
-        check(probe.foundSlider, "config dialog has the Filter slider");
-        check(probe.labelUpdated, "moving a slider refreshes its value label");
-        check(cb.m_count > 0, "moving a slider pushes a live preset update");
+        if (g_editorId != 0) {
+            check(probe.foundEditor, "config dialog hosts its editor control");
+            check(cb.m_count > 0, "a key press pushes a live preset update");
+            check(cb.m_count > 0 && !(cb.m_last == preset),
+                  "and the preset it pushes differs from the one it started with");
+        } else {
+            check(probe.foundSlider, "config dialog has the Filter slider");
+            check(probe.labelUpdated, "moving a slider refreshes its value label");
+            check(cb.m_count > 0, "moving a slider pushes a live preset update");
+        }
         if (cb.m_count > 0) {
             dsp::ptr fromDialog;
             check(entryService->instantiate(fromDialog, cb.m_last),

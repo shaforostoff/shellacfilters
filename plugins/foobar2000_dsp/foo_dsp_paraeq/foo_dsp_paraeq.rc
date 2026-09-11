@@ -1,0 +1,60 @@
+// foo_dsp_paraeq - resources
+
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+#include "version.h"
+
+/////////////////////////////////////////////////////////////////////////////
+// Configuration dialog
+//
+// Almost empty on purpose. IDC_EDITOR_PLACEHOLDER is a hidden control whose
+// rectangle says where the owner-drawn editor goes; config_dialog.cpp reads it,
+// creates the editor over it and hides it. Keeping the rectangle here rather
+// than in code means the layout stays visible in one place.
+
+IDD_PARAEQ DIALOGEX 0, 0, 324, 236
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Parametric EQ"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "",IDC_EDITOR_PLACEHOLDER,"STATIC",SS_BLACKFRAME | NOT WS_VISIBLE,
+                    7,7,310,178
+
+    LTEXT           "Drag a handle for frequency and gain; wheel for gain, shift+wheel for Q; right-click for shelf/bell and the high-pass slope. Keyboard: left/right select a band, up/down its gain, shift+left/right its frequency, page up/down its Q, ctrl for fine.",
+                    IDC_HINT,7,190,310,25
+
+    PUSHBUTTON      "&Defaults",IDC_DEFAULTS,7,217,54,14
+    DEFPUSHBUTTON   "OK",IDOK,209,217,54,14
+    PUSHBUTTON      "Cancel",IDCANCEL,267,217,50,14
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// Version
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION FOO_DSP_PARAEQ_VERSION_COMMA
+ PRODUCTVERSION FOO_DSP_PARAEQ_VERSION_COMMA
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS__WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "Parametric EQ DSP for foobar2000"
+            VALUE "FileVersion",     FOO_DSP_PARAEQ_VERSION_STRING
+            VALUE "InternalName",    "foo_dsp_paraeq"
+            VALUE "OriginalFilename","foo_dsp_paraeq.dll"
+            VALUE "ProductName",     "foo_dsp_paraeq"
+            VALUE "ProductVersion",  FOO_DSP_PARAEQ_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

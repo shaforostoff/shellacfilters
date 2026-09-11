@@ -125,6 +125,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/fb2k_sdk.cmake")
 add_subdirectory(foo_dsp_decrackle)
 add_subdirectory(foo_dsp_declick)
 add_subdirectory(foo_dsp_dehum)
+add_subdirectory(foo_dsp_paraeq)
 
 option(FOO_DSP_BUILD_TESTS "Build the DSP verification harness" ON)
 if(FOO_DSP_BUILD_TESTS)
