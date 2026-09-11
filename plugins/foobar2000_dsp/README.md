@@ -1148,7 +1148,7 @@ trackbars. Everything is reachable three ways.
 | | |
 | --- | --- |
 | Drag a handle | Frequency across, gain up and down, one to one with the axes. |
-| Wheel | Gain, 0.5 dB a notch. |
+| Wheel | Gain, 0.5 dB a notch. On the low cut, its slope, down for more. |
 | Shift + wheel | Q, or the shelf/bell switch on a band that has no Q. |
 | Right-click | Shelf or bell, the low-cut slope, Q as a list of widths, reset this band, flatten, bypass. |
 | Double-click a handle | That band's gain to zero. |
@@ -1163,10 +1163,10 @@ somewhere else entirely.
 | ← → | The selected band's frequency, a semitone a press. |
 | shift + ← → | The same, four semitones a press. |
 | ctrl + ← → | Select the previous or next band, wrapping. |
-| ↑ ↓ | Its gain, 0.5 dB a press. On the low cut, its slope. |
+| ↑ ↓ | Its gain, 0.5 dB a press. On the low cut, its slope — **down** for more of it. |
 | shift + ↑ ↓ | The same, 2 dB a press. |
 | ctrl + ↑ ↓ | The same, an eighth of a dB, for placing rather than finding. |
-| page up / down | Its Q. On the low cut, its slope; on a shelf, the shelf/bell switch. |
+| page up / down | Its Q. On the low cut, its slope again, down for more; on a shelf, the shelf/bell switch. |
 | space | Shelf to bell, or the next low-cut slope. |
 | home | Reset the selected band. **ctrl + home** resets everything. |
 | delete / backspace | The selected band's gain to zero. |
@@ -1179,6 +1179,12 @@ something of its own and swallow it before it arrives. That is the right one to
 risk: if it goes missing the mouse still selects, and every command that needs a
 band is in the context menu, whereas a frequency that never arrived would leave
 the keyboard unable to reach a control at all.
+
+The low cut is the one band where down means more of the control, because the
+control is a slope and more of it takes the curve down. Up for more would read
+backwards on a plot, and a plot is the only place this band is ever seen. That
+holds on the arrows, the wheel, page up and down, and the readout cell, so the
+gesture means the same thing wherever it is made.
 
 **Q**, the width of a peaking band, is on four of those routes, because it is
 the control with no handle of its own — the two axes of the curve are already
