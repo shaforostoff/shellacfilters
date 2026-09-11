@@ -1116,10 +1116,10 @@ The names are the ones the [tango transfer
 literature](https://elespejero.wordpress.com/2014/12/17/eq-4-tj-getting-the-best-sound-out-of-your-tango-records/)
 uses rather than the console's, because they say what the knob is for: an
 operator reaching for the hiss should not have to know that a strip would have
-called that band HF. The shorthand — *HP, LF, LMF, HMF, HF, Out* — is what the
-readout strip falls back to when the panel is too narrow for the long names, and
-both appear together at the top of a band's context menu, so neither name is a
-secret from anyone who knows only the other.
+called that band HF. The shorthand — *HP, LF, LMF, HMF, HF, Out* — is what a
+column falls back to when it has not the room for the long name, and both appear
+together at the top of a band's context menu, so neither name is a secret from
+anyone who knows only the other.
 
 The ranges are wider than a console strip's — ±20 dB a band, Q to 8 — again
 because a transfer can need it. 20 dB of 8 kHz cut is a plausible setting on a
@@ -1207,6 +1207,17 @@ its slope there instead.
 **Readouts.** Every value is also written out under the curve, in a grid of one
 column per band, so what a drag did is legible without moving the pointer off
 it. The selected band's column is marked, and the cells drag.
+
+The columns are not all one width. The values in them are short and much of a
+muchness; the titles over them are not, and six columns each wide enough for
+*Brilliance* is most of a narrow strip spent on the two names that need it. So
+each column starts at the width a value needs and what is left over goes to the
+titles that want more of it, cheapest first and all or nothing — sharing a
+shortage out in proportion would leave every column a few pixels short of its
+name and so write none of them, which spends the space and prints the shorthand
+anyway. The upshot is that the whole strip is still written out at 360 px wide
+with the default font, a width at which six equal columns had to print the
+shorthand; below that the longest names go first and the rest stay.
 
 The panel sheds its chrome from the bottom up as it gets shorter — the footer
 buttons first, then the readouts — because the curve is the part that still says

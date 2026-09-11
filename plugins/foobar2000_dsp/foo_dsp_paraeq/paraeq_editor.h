@@ -132,7 +132,14 @@ private:
         RECT curve;     //!< the graph
         RECT strip;     //!< the readouts, empty when there is no room for them
         RECT foot;      //!< the buttons, empty when there is no room for them
-        int  cellW;     //!< strip column width
+        int  cellW;     //!< the narrowest a strip column may be; 0 for no strip
+
+        //! Column edges of the readout strip: band b runs from cellX[b] to
+        //! cellX[b + 1], so there are one more of them than there are bands.
+        //! Not a single width, because the titles are not a single width - see
+        //! layout(). 7 is the band count plus one, and the band count lives in
+        //! the .cpp because nothing out here has any business knowing it.
+        int  cellX[7];
         int  rowH;      //!< strip row height
 
         //! One per footer button, empty for a button that is not shown or does
@@ -150,12 +157,6 @@ private:
         //! knowing what the bands are.
         int  nameW[6];
         int  abbrW[6];
-
-        //! True when a readout column is wide enough for the longest of the
-        //! long names, so the header row can use them. Decided for the row
-        //! rather than per band: one reading Bass / LMF / Brilliance would look
-        //! like a mistake rather than like a fit.
-        bool longNames;
     };
 
     // -- painting ----------------------------------------------------------
