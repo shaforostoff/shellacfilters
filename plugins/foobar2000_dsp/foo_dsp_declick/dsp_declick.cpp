@@ -76,11 +76,15 @@ public:
         }
 
         const unsigned config = chunk->get_channel_config();
-        if (channels != m_channels || rate != m_rate || params != m_active) {
-            // A parameter change resizes the internal buffers, so the pipeline
-            // has to be rebuilt either way; flush what is in it first so the
-            // audio already in flight is not simply dropped.
-            if (!reconfigure(channels, rate, config, params)) return true;
+        if (channels != m_channels || rate != m_rate) {
+            // Only the format builds a new pipeline. Everything else moves the
+            // one already running - see applyParams().
+            if (!rebuild(channels, rate, config, params)) return true;
+        } else {
+            // Nothing here is sized by the channel layout, so a change of it
+            // only has to reach the chunks emit() labels.
+            m_config = config;
+            if (params != m_active) applyParams(params, rate);
         }
 
         audio_sample * const data = chunk->get_data();
@@ -157,12 +161,20 @@ private:
     //! a pipeline nor anything owed.
     void finishTrack() {
         if (m_chan.empty()) return;
+        drainAndEmit();
+        for (size_t c = 0; c < m_chan.size(); ++c) m_chan[c]->reset();
+    }
+
+    //! Runs the pipeline out and hands what comes back to the caller. Goes
+    //! ahead of anything that resets or replaces it, so audio still in flight
+    //! leaves rather than being dropped.
+    void drainAndEmit() {
+        if (m_chan.empty()) return;
         {
             scoped_flush_denormals ftz;
             for (size_t c = 0; c < m_chan.size(); ++c) m_chan[c]->drain();
         }
         emit();
-        for (size_t c = 0; c < m_chan.size(); ++c) m_chan[c]->reset();
         m_owed = 0;
     }
 
@@ -207,17 +219,44 @@ private:
         return false;    // our own chunks carry the audio; drop the original
     }
 
-    bool reconfigure(unsigned channels, unsigned rate, unsigned config,
-                     const Params & params) {
-        // Push out anything still held before the buffers are rebuilt.
-        if (!m_chan.empty()) {
-            {
-                scoped_flush_denormals ftz;
-                for (size_t c = 0; c < m_chan.size(); ++c) m_chan[c]->drain();
-            }
-            emit();
-            m_owed = 0;
+    //! A parameter move, through the channels already in hand.
+    //!
+    //! Sensitivity, Extent, Repair depth, Passes and Dry/Wet are read per
+    //! block, so retune() swaps them in under the stream with no gap at all.
+    //! Model order and Max repair reshape the pipeline and need configure(),
+    //! which resets it - but configure() reassigns every vector to the length
+    //! the envelope in Config already gave it, so neither route touches the
+    //! heap. That is what the envelope is for.
+    //!
+    //! What must not happen is what this used to do: build fresh Channels and
+    //! configure those. Measured stereo at 44.1 kHz that was 38 allocations and
+    //! 4.3 MB, one block of it 1.8 MB, inside on_chunk() - the audio thread.
+    //! declick_rt_verify covers both routes.
+    void applyParams(const Params & params, unsigned rate) {
+        Config cfg;
+        cfg.compute(params, (double)rate);
+
+        bool retuned = !m_chan.empty();
+        for (size_t c = 0; c < m_chan.size(); ++c) {
+            if (!m_chan[c]->retune(cfg)) { retuned = false; break; }
         }
+        if (!retuned) {
+            // configure() below resets, so empty the pipeline first.
+            drainAndEmit();
+            for (size_t c = 0; c < m_chan.size(); ++c) m_chan[c]->configure(cfg);
+        }
+
+        m_cfg    = cfg;
+        m_active = params;
+    }
+
+    //! A new format: channel count or sample rate. The only route that is
+    //! allowed to allocate, because it is the only one where the buffers
+    //! genuinely change size.
+    bool rebuild(unsigned channels, unsigned rate, unsigned config,
+                 const Params & params) {
+        // Push out anything still held before the buffers are rebuilt.
+        drainAndEmit();
 
         Config cfg;
         cfg.compute(params, (double)rate);

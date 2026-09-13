@@ -178,6 +178,11 @@ private:
 //! One independent channel of processing.
 class Channel {
 public:
+    //! Allocates nothing: configure() is what sizes the pipeline, and nothing
+    //! else may be called until it has been. The constructor used to configure
+    //! itself at 44.1 kHz defaults, which meant every Channel built a whole
+    //! envelope for its caller to replace on the next line - 2.1 MB of it, on
+    //! whatever thread the caller happened to be.
     Channel();
 
     void configure(const Config & cfg);

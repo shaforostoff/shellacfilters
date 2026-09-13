@@ -327,10 +327,15 @@ bool bandedInverseDiagonal(const std::vector<double> & chol, int band, int n,
 
 // ---------------------------------------------------------------------------
 
+//! Allocation-free, deliberately: configure() is what sizes the buffers, and
+//! every caller builds a Channel only to configure it on the very next line.
+//! Running configure() here as well meant each Channel first allocated a whole
+//! 44.1 kHz envelope - 2.1 MB of it - before the config it would actually run
+//! at was known. dsp_declick builds its Channels inside on_chunk(), so that was
+//! 2.1 MB per channel of allocation on the audio thread, which is the one thing
+//! the envelope in Config exists to prevent.
 Channel::Channel() {
-    Config c;
-    c.compute(Params::defaults(), 44100.0);
-    configure(c);
+    m_cfg.compute(Params::defaults(), 44100.0);
 }
 
 void Channel::configure(const Config & cfg) {

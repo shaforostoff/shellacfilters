@@ -270,7 +270,7 @@ every parameter change, `reset()`, `prime()` and `drain()`, in both access
 patterns — one sample at a time as the VST does it, and whole-chunk-then-drain
 as foobar2000 does.
 
-Getting there took two fixes, neither of which was visible until counted:
+Getting there took three fixes, none of which was visible until counted:
 
 * **The output FIFO** was a `std::vector` that grew by `push_back` to 65536
   samples and was then compacted with `erase()`. About a second and a half into
@@ -280,6 +280,16 @@ Getting there took two fixes, neither of which was visible until counted:
   varies with the run being repaired, so it grew whenever a longer click turned
   up than any seen so far — a long tail of reallocations that never quite
   stopped. It is now reserved for the worst case the detector can produce.
+* **The wrapper rebuilt the pipeline on every control move.** Both fixes above
+  are in the core, and the core passed; `dsp_declick` then built *fresh*
+  `Channel` objects on every parameter change and configured those — **38
+  allocations and 4.3 MB**, one block of it 1.8 MB, inside `on_chunk()`. The
+  constructor made it worse by configuring itself at 44.1 kHz defaults first,
+  so each Channel sized an envelope its caller was about to replace. It now
+  reuses the channels it has: `retune()` where the pipeline keeps its shape,
+  `configure()` on those same objects where it does not. Neither allocates.
+  Nothing caught this because every case in the test drove a `Channel`
+  directly, which is the shape the test now also covers.
 
 The buffers are sized from `Config`'s `buf*` envelope, which is derived from the
 **sample rate alone** — `bufOrder` is `kMaxOrder` and `bufMaxRun` is
@@ -1462,6 +1472,9 @@ requires zero — see [Real-time safety](#real-time-safety) for what it caught.
 It also records the one documented exception (a push larger than
 `Config::maxBlock`) as a positive assertion rather than leaving it implicit, and
 prints the per-channel footprint so a regression in that shows up in the log.
+It also mirrors the route `dsp_declick` itself takes through a control move,
+because for a long time that was where the allocation actually was — driving a
+`Channel` directly, as every other case here does, walked straight past it.
 
 **`paraeq_verify`** checks the equaliser three ways. Each cookbook section
 against the formula it comes from — a +6 dB bell is +6 dB at its centre and
@@ -1817,7 +1830,7 @@ overwritten.
 | --- | --- |
 | **Pre-roll** | A VST must return n samples for every n it is given, and the core holds `config().latency` samples of lookahead. `Channel::prime()` feeds it that many zeros up front, after which `available() >= n` holds for *any* block size, so the wrapper is a plain one-in-one-out loop with no FIFO of its own and no risk of the core zero-filling mid-stream. Those zeros are the reported delay. |
 | **`setInitialDelay` / `getGetTailSize`** | foobar2000 is told the latency through `get_latency()` and flushes with `on_endofplayback()`. A VST needs the equivalent two, and `ioChanged()` when Max repair or Model order changes it. |
-| **`Channel::retune()`** | foobar2000 has no automation, so rebuilding the pipeline on a preset change is acceptable there. A DAW moves sliders while audio runs, and `configure()` reallocates, which resets. `retune()` swaps in a config that needs the same buffers — everything except Max repair and Model order — with no discontinuity. |
+| **`Channel::retune()`** | A DAW moves sliders while audio runs, and `configure()` resets. `retune()` swaps in a config that needs the same buffers — everything except Max repair and Model order — with no discontinuity. Written for the VST, but foobar2000 has the same problem for a different reason: `on_chunk` is the audio thread, so it takes the same route. |
 | **Dither** | Airwindows house style, on the 32-bit float path only. |
 
 ### The Dehum VST wrapper is shorter, and mostly by subtraction
@@ -2065,7 +2078,8 @@ by construction. Only a real host settles that.
   [Real-time safety](#real-time-safety).
 * **A format change rebuilds Declick's channels from `on_chunk`.** A different
   channel count or sample rate mid-stream constructs new `Channel` objects,
-  which allocates, on whatever thread foobar2000 called it from. It happens at
+  which allocates, on whatever thread foobar2000 called it from — the one route
+  left that does, now that a control move reuses the channels in hand. It happens at
   track boundaries rather than during steady playback, and foobar2000's own
   `insert_chunk()` allocates on every chunk regardless, so the DSP is not the
   binding constraint there. The VST has no equivalent path: it reconfigures in

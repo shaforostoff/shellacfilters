@@ -24,6 +24,13 @@
  *  The one case that still allocates is a caller pushing more than
  *  Config::maxBlock between pulls. That is asserted too, rather than hidden: it
  *  grows the ring once and is then quiet.
+ *
+ *  It also drives the route the foobar2000 wrapper takes through a parameter
+ *  change, because for a long time that was where the allocation actually was:
+ *  dsp_declick built fresh Channels on every control move - 38 allocations and
+ *  4.3 MB, stereo at 44.1 kHz, inside on_chunk() - and every case here drove a
+ *  Channel directly, so none of them saw it. Channel::Channel() sized a whole
+ *  44.1 kHz envelope of its own on top, for the caller's configure() to replace.
  * ======================================== */
 
 #include "declick_core.h"
@@ -33,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <memory>
 #include <vector>
 
 using namespace declick;
@@ -89,6 +97,16 @@ void requireGrowth(const char * what) {
     if (!ok) ++g_failures;
 }
 
+//! Requires the region to have stayed under `limit` bytes - for a place where
+//! an object genuinely has to be created, but must bring no buffers with it.
+void requireUnder(const char * what, size_t limit) {
+    g_armed = false;
+    const bool ok = (g_bytes < limit);
+    printf("  %-50s %-4s %zu allocs, %.1f kB\n", what, ok ? "ok" : "FAIL",
+           g_count, (double)g_bytes / 1024.0);
+    if (!ok) ++g_failures;
+}
+
 struct Rng {
     uint32_t s;
     explicit Rng(uint32_t seed) : s(seed ? seed : 1u) {}
@@ -123,6 +141,41 @@ void perSample(Channel & ch, const std::vector<double> & sig, int from, int to) 
         double x = sig[(size_t)i];
         ch.push(&x, 1, 1);
         ch.pull(&x, 1, 1);
+    }
+}
+
+//! Feeds the channels the way dsp_declick::on_chunk() does: push a chunk, take
+//! whatever is ready. No prime() - the wrapper reads ahead instead.
+void pushChunks(std::vector<std::unique_ptr<Channel> > & chan,
+                const std::vector<double> & sig, int upTo,
+                std::vector<double> & sink) {
+    for (int b = 0; b + 4096 < (int)sig.size() && b < upTo; b += 4096) {
+        for (size_t c = 0; c < chan.size(); ++c) {
+            chan[c]->push(&sig[(size_t)b], 4096, 1);
+            const size_t got = chan[c]->available();
+            chan[c]->pull(&sink[0], got < sink.size() ? got : sink.size(), 1);
+        }
+    }
+}
+
+//! What dsp_declick::applyParams() does when the controls move: reuse the
+//! channels already in hand - retune() where the pipeline keeps its shape,
+//! configure() on those same channels where it does not.
+//!
+//! Mirrored by hand, because this test does not link the foobar2000 SDK. Keep
+//! the two in step: the whole point is that neither branch touches the heap.
+void applyParams(std::vector<std::unique_ptr<Channel> > & chan,
+                 const Config & cfg, std::vector<double> & sink) {
+    bool retuned = !chan.empty();
+    for (size_t c = 0; c < chan.size(); ++c) {
+        if (!chan[c]->retune(cfg)) { retuned = false; break; }
+    }
+    if (retuned) return;
+    for (size_t c = 0; c < chan.size(); ++c) {
+        chan[c]->drain();                    // the wrapper's drainAndEmit()
+        const size_t got = chan[c]->available();
+        chan[c]->pull(&sink[0], got < sink.size() ? got : sink.size(), 1);
+        chan[c]->configure(cfg);
     }
 }
 
@@ -223,6 +276,42 @@ int main() {
     arm();
     ch.drain();
     requireQuiet("drain(), i.e. end of stream");
+
+    // --- the route the component itself takes ------------------------------
+    //
+    // Everything above drives one Channel directly. dsp_declick does not: it
+    // holds one per channel and moves the parameters through those, and that is
+    // where the allocation used to be.
+    {
+        std::vector<std::unique_ptr<Channel> > chan;
+        chan.reserve(2);
+        arm();
+        for (int c = 0; c < 2; ++c) {
+            chan.push_back(std::unique_ptr<Channel>(new Channel()));
+        }
+        // Two Channel objects and nothing else. The constructor must not size a
+        // pipeline it is about to be told the real shape of.
+        requireUnder("constructing two Channels brings no buffers", 8u * 1024u);
+
+        for (size_t c = 0; c < chan.size(); ++c) chan[c]->configure(cfg);
+        pushChunks(chan, sig, 2 * R, sink);
+
+        arm();
+        applyParams(chan, cTune, sink);
+        requireQuiet("wrapper: a control move that keeps the shape");
+
+        arm();
+        applyParams(chan, cLong, sink);
+        requireQuiet("wrapper: Max repair, which reshapes the pipeline");
+
+        arm();
+        applyParams(chan, c8, sink);
+        requireQuiet("wrapper: Model order, the reshaping route again");
+
+        arm();
+        pushChunks(chan, sig, R, sink);
+        requireQuiet("wrapper: audio after the moves");
+    }
 
     // --- the Wiener path, which is off by default -------------------------
     {
