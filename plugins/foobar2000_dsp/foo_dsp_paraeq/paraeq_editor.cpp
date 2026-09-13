@@ -1313,8 +1313,8 @@ void Editor::nudgeQ(int band, int steps)
     if (band < 0 || band >= kBandCount) return;
 
     if (band == kHP) {
-        // Down is more cut here too. Page up and the arrow keys would otherwise
-        // disagree about which way up is on the one band they both reach.
+        // Down is more cut here too. The Q keys and the gain keys would
+        // otherwise disagree about which way up is on the one band they share.
         m_params.hpSlope = clampi(m_params.hpSlope - steps, 0, 2);
         return;
     }
@@ -1664,8 +1664,8 @@ void Editor::onContextMenu(POINT screenPt)
             AppendMenuW(q, MF_STRING | MF_DISABLED, 0, text);
             AppendMenuW(q, MF_SEPARATOR, 0, NULL);
 
-            AppendMenuW(q, MF_STRING, kIdQNarrow, L"Narrower\tPage Up");
-            AppendMenuW(q, MF_STRING, kIdQWide,   L"Wider\tPage Down");
+            AppendMenuW(q, MF_STRING, kIdQNarrow, L"Narrower\tCtrl+Up / Page Up");
+            AppendMenuW(q, MF_STRING, kIdQWide,   L"Wider\tCtrl+Down / Page Down");
             AppendMenuW(q, MF_SEPARATOR, 0, NULL);
 
             for (int i = 0; i < kQPresetCount; i++) {
@@ -1734,10 +1734,10 @@ void Editor::onContextMenu(POINT screenPt)
 //   up / down             its gain, 0.5 dB a press; on the low cut, its slope,
 //                         down for more of it - see nudgeGain()
 //   shift + up / down     the same, 2 dB a press
-//   ctrl + up / down      the same, an eighth of a dB, for placing rather than
-//                         finding
-//   page up / page down   its Q; on the low cut, its slope again; on a shelf,
-//                         the shelf/bell switch, the nearest thing it has
+//   ctrl + up / down      its Q, a sixth of an octave a press; on the low cut,
+//   page up / page down   its slope again; on a shelf, the shelf/bell switch,
+//                         the nearest thing it has. Shift widens the step on
+//                         either route
 //   space                 shelf to bell, or the next high-pass slope
 //   home                  reset the selected band; ctrl + home resets all of them
 //   delete / backspace    its gain to zero
@@ -1746,6 +1746,11 @@ void Editor::onContextMenu(POINT screenPt)
 // hand reaches for: gain is up and down, and frequency is the other axis of the
 // same handle. Choosing which of five to work on is the rarer act, so it takes
 // the modifier.
+//
+// Q has no axis of its own to be the other end of, so it takes ctrl with the
+// vertical pair, and the page keys are kept beside it rather than replaced:
+// they read better - a third control rather than a modified second one - but a
+// laptop without them would otherwise have to go to the menu for a width.
 //
 // Which puts selection on ctrl with an arrow key, and a host can bind that to
 // something of its own and swallow it before it arrives. That is the right one
@@ -1760,8 +1765,8 @@ bool Editor::onKey(WPARAM key)
 
     const bool shift = (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
     const bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    const double fine   = ctrl  ? 0.25 : 1.0;
-    const double coarse = shift ? 4.0  : 1.0;
+    const double coarse = shift ? 4.0 : 1.0;
+    const int    qStep  = shift ? 4   : 1;
 
     if (m_selected < 0 && !(ctrl && (key == VK_LEFT || key == VK_RIGHT))) {
         // Nothing selected yet and a key that acts on a band: take the one the
@@ -1787,11 +1792,18 @@ bool Editor::onKey(WPARAM key)
         nudgeFreq(m_selected, coarse);
         break;
 
-    case VK_UP:    nudgeGain(m_selected,  0.5 * coarse * fine); break;
-    case VK_DOWN:  nudgeGain(m_selected, -0.5 * coarse * fine); break;
+    case VK_UP:
+        if (ctrl) { nudgeQ(m_selected, qStep); break; }
+        nudgeGain(m_selected, 0.5 * coarse);
+        break;
 
-    case VK_PRIOR: nudgeQ(m_selected,  1); break;
-    case VK_NEXT:  nudgeQ(m_selected, -1); break;
+    case VK_DOWN:
+        if (ctrl) { nudgeQ(m_selected, -qStep); break; }
+        nudgeGain(m_selected, -0.5 * coarse);
+        break;
+
+    case VK_PRIOR: nudgeQ(m_selected,  qStep); break;
+    case VK_NEXT:  nudgeQ(m_selected, -qStep); break;
 
     case VK_SPACE: toggleShape(m_selected); break;
 

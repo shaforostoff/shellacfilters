@@ -33,9 +33,10 @@
  *              The readout cells under the curve drag vertically too, which is
  *              how to set a value one can name rather than one one can see.
  *    Keyboard  left and right move the selected band's frequency, up and down
- *              its gain, page up and down its Q, and ctrl with left and right
- *              moves the selection along the strip. See onKey() for the table
- *              and for why the selection is the thing on the modifier.
+ *              its gain, ctrl with up and down its Q - page up and down do the
+ *              same - and ctrl with left and right moves the selection along
+ *              the strip. See onKey() for the table and for why the selection
+ *              is the thing on the modifier.
  *    Readout   every value is written out under the curve, so what a drag did
  *              is legible without moving the pointer off it.
  * ======================================== */

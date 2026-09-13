@@ -1168,8 +1168,8 @@ do. Which band it was is remembered for when the focus comes back.
 | ctrl + ← → | Select the previous or next band, wrapping. |
 | ↑ ↓ | Its gain, 0.5 dB a press. On the low cut, its slope — **down** for more of it. |
 | shift + ↑ ↓ | The same, 2 dB a press. |
-| ctrl + ↑ ↓ | The same, an eighth of a dB, for placing rather than finding. |
-| page up / down | Its Q. On the low cut, its slope again, down for more; on a shelf, the shelf/bell switch. |
+| ctrl + ↑ ↓ | Its Q, a sixth of an octave a press. On the low cut, its slope again, down for more; on a shelf, the shelf/bell switch. **shift** takes four steps at a time. |
+| page up / down | The same, on a keyboard that has them. |
 | space | Shelf to bell, or the next low-cut slope. |
 | home | Reset the selected band. **ctrl + home** resets everything. |
 | delete / backspace | The selected band's gain to zero. |
@@ -1186,10 +1186,10 @@ the keyboard unable to reach a control at all.
 The low cut is the one band where down means more of the control, because the
 control is a slope and more of it takes the curve down. Up for more would read
 backwards on a plot, and a plot is the only place this band is ever seen. That
-holds on the arrows, the wheel, page up and down, and the readout cell, so the
+holds on the arrows, the wheel, the Q keys, and the readout cell, so the
 gesture means the same thing wherever it is made.
 
-**Q**, the width of a peaking band, is on four of those routes, because it is
+**Q**, the width of a peaking band, is on five of those routes, because it is
 the control with no handle of its own — the two axes of the curve are already
 the frequency and the gain — and so the one thing here somebody has to be able
 to find rather than be told about:
@@ -1197,9 +1197,10 @@ to find rather than be told about:
 | | |
 | --- | --- |
 | shift + wheel | Over the curve. Q moves geometrically, 24 notches from 0.5 to 8. |
-| page up / down | The same, on the selected band. |
+| ctrl + ↑ ↓ | The same, on the selected band. |
+| page up / down | The same again. Q has two chords because the page keys read better - a third control rather than a modified second one - and a laptop keyboard often has no page keys at all. |
 | Drag the **Q** readout cell | Vertically, for a value you can name. |
-| Right-click → **Bandwidth (Q)** | The current value, the two keys, and a list of widths to pick from. |
+| Right-click → **Bandwidth (Q)** | The current value, the keys that move it, and a list of widths to pick from. |
 
 That menu writes every Q as its bandwidth in octaves as well — *Q 2.00 (0.7
 oct)* — because Q is the number the control is set in and octaves are the thing
