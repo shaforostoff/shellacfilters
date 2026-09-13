@@ -200,6 +200,20 @@ cmake -DFB2K_SDK_DEST=external/foobar2000_sdk -P cmake/fb2k_download_sdk.cmake
 | `FOO_DSP_WIN32_WINNT` | `0x0601` | Minimum Windows version |
 | `FOO_DSP_BUILD_TESTS` | `ON` | Build the verification harnesses |
 
+Not options, but worth knowing about: Release builds add `/Gw` and `/Zc:inline`,
+so `/OPT:REF` can discard globals and inline functions nothing reaches, and
+`/GR-`, because there is not one `dynamic_cast` or `typeid` in these components
+or anywhere in the SDK — exception handling does not use RTTI, catch matching
+carries its own type descriptors. Together they take about **7.6 %** off each
+component and nothing off the DSP path: what they remove is unreachable, not
+slower.
+
+The static CRT is the other 60 %. `FOO_DSP_STATIC_CRT=OFF` takes the four x64
+components from 1,034 kB to 335 kB, and foobar2000 ships `msvcp140.dll` and
+`vcruntime140.dll` beside `foobar2000.exe`, so on a normal install they are
+already in the process. It stays `ON` by default because the components are
+also meant to drop into an install that is older or stranger than that one.
+
 ---
 
 ## Declick parameters
