@@ -33,7 +33,7 @@
     .\scripts\check_win7.ps1
 
 .EXAMPLE
-    .\scripts\check_win7.ps1 ..\dist\foo_dsp_declick-1.0.0.fb2k-component
+    .\scripts\check_win7.ps1 ..\dist\foo_dsp_declick-1.0.1.fb2k-component
 #>
 
 [CmdletBinding()]
