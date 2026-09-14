@@ -104,8 +104,44 @@ enum {
     kHistory      = 24,   //!< detector frames behind the median
 
     kSearchFloor  = 16,   //!< Hz, bottom of the automatic search range
-    kSearchCeil   = 500   //!< Hz, highest the top of the range may be set to
+    kSearchCeil   = 500,  //!< Hz, highest the top of the range may be set to
+
+    //! Halfband stages ahead of the analysis, at most. Six covers 192 kHz.
+    kDecimMaxStages = 8
 };
+
+//! Decimation ahead of the detector.
+//!
+//! The search range stops at kSearchCeil, so the detector is reading the bottom
+//! 500 Hz of a signal that may run to 96 kHz - a full-rate transform spends
+//! every one of its 32768 bins at 44.1 kHz to have 724 of them looked at. A
+//! cascade of halfband decimators in front of the window fixes that: the window
+//! still spans the same second and a half and its bins are still kBinTargetHz
+//! apart, there are simply far fewer of them, and the transform gets smaller in
+//! proportion. Nothing downstream changes - binLo, binHi, baselineBins and the
+//! quadratic interpolation are all in bins, and a bin is still sampleRate /
+//! fftSize Hz wide.
+//!
+//! The cascade runs on the detector's copy of the signal only. The audio path
+//! never sees it, so its group delay - about 3 ms, against a 1.5 s window -
+//! costs nothing but a correspondingly stale nomination.
+
+//! Passband every stage has to keep flat: kSearchCeil with margin, so a line
+//! sitting on the ceiling is not out on the filter's shoulder.
+const double kDecimPassHz = 560.0;
+
+//! The cascade stops here rather than going further. Nyquist is then at least
+//! 1350 Hz against a 560 Hz passband, and that 2.4:1 margin is what keeps the
+//! halfband transitions wide and so the filters short - the last stage is the
+//! expensive one and it is the one the margin buys down.
+const double kDecimMinRate = 2700.0;
+
+//! Stopband of every stage. What survives it is an alias, and an alias is
+//! exactly the failure that matters here: it is narrow, so it looks like a line.
+//! At 120 dB a full scale partial folds down to -120 dBFS, some 25 dB under the
+//! per-bin noise floor of a 78 rpm transfer, which cannot raise a peak the
+//! detector would believe.
+const double kDecimStopDb = 120.0;
 
 //! Bin spacing the analysis window aims for, in Hz. 0.7 gives a 1.5 s window at
 //! 44.1 kHz; see the note on window length above for why it is not shorter.
@@ -285,8 +321,15 @@ struct Params {
 struct Config {
     double sampleRate  = 44100.0;
     int    fftOrder    = 16;
+    //! The window in *full rate* samples. The transform actually run is winSize
+    //! long at sampleRate / decim, which spans the same seconds - so this stays
+    //! the number that sets the bin width, sampleRate / fftSize, and every bin
+    //! index in this struct is still measured against it.
     int    fftSize     = 65536;
-    int    hop         = 8192;
+    int    decim       = 16;     //!< halfband stages collapse to this factor
+    int    decimStages = 4;      //!< log2(decim)
+    int    winSize     = 4096;   //!< fftSize / decim, the transform length
+    int    hop         = 8192;   //!< full rate samples between detector runs
     int    binLo       = 24;     //!< first bin of the search range
     int    binHi       = 223;    //!< last bin of the search range
     int    baselineBins = 30;    //!< kBaselineHz either side, in bins
@@ -349,8 +392,8 @@ struct Config {
     //! True if `o` needs exactly the buffers this config already has. Only the
     //! sample rate sizes anything, so every parameter move can be retuned live.
     bool structurallyEquals(const Config & o) const {
-        return fftSize == o.fftSize && bufBins == o.bufBins
-            && bufHistory == o.bufHistory;
+        return fftSize == o.fftSize && winSize == o.winSize
+            && bufBins == o.bufBins && bufHistory == o.bufHistory;
     }
 };
 
@@ -499,10 +542,29 @@ private:
     void   designRumble();
     double runRumble(double x);
     void   realFftMagnitudes();
+    void   designDecimator();
+    void   clearDecimator();
+    //! One input sample in; true when a decimated sample comes out.
+    bool   decimate(double x, double * out);
 
     Config m_cfg;
 
     // --- detector ---
+    //! The halfband cascade. Coefficients and delay lines for every stage live
+    //! in one allocation each, indexed by the per-stage offsets - a stage is a
+    //! span, not an object, so configure() makes two allocations rather than
+    //! kDecimMaxStages of them. Only the nonzero taps are stored: half of a
+    //! halfband's coefficients are exactly zero and skipping them is most of
+    //! why the cascade is cheap.
+    std::vector<double> m_hbCoef;  //!< nonzero taps, stage after stage
+    std::vector<int>    m_hbTap;   //!< where each sits in the delay line
+    std::vector<double> m_hbZ;     //!< delay lines, stage after stage
+    int m_hbFirst[kDecimMaxStages + 1];  //!< first tap of stage i
+    int m_hbZAt[kDecimMaxStages + 1];    //!< first delay slot of stage i
+    int m_hbZMask[kDecimMaxStages];      //!< its length, a power of two, less 1
+    int m_hbPos[kDecimMaxStages];        //!< write cursor
+    int m_hbPhase[kDecimMaxStages];      //!< 0 emits, 1 swallows
+
     std::vector<double> m_win;    //!< sliding analysis window, a ring
     std::vector<double> m_taper;  //!< Blackman-Harris, precomputed - rebuilding
                                   //!< it per hop would be a cos() per sample

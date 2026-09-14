@@ -154,6 +154,20 @@ void Config::compute(const Params & pIn, double rate) {
     }
     fftOrder = order;
     fftSize  = 1 << order;
+
+    // Decimate as far as kDecimMinRate allows. The window keeps its length in
+    // seconds and its bin width - fftSize is still what sets both - so the only
+    // thing that shrinks is the transform. At every rate this project supports
+    // that lands on a 4096 point window, or 2048 at 192 kHz.
+    decim = 1;
+    decimStages = 0;
+    while (decimStages < (int)kDecimMaxStages
+           && sampleRate / (double)(decim * 2) >= kDecimMinRate
+           && fftSize / (decim * 2) >= 256) {
+        decim *= 2;
+        ++decimStages;
+    }
+    winSize = fftSize / decim;
     // An eighth of the window. Hopping more often does not make the detector
     // decide any sooner: successive frames overlap more, so they are that much
     // more correlated, and the evidence counter has to be raised in step. It was
@@ -235,8 +249,10 @@ Channel::Channel() {
 void Channel::configure(const Config & cfg) {
     m_cfg = cfg;
 
-    const int N = m_cfg.fftSize;
+    const int N = m_cfg.winSize;
     const int M = N / 2;
+
+    designDecimator();
 
     m_win.assign((size_t)N, 0.0);
     m_taper.assign((size_t)N, 0.0);
@@ -256,9 +272,16 @@ void Channel::configure(const Config & cfg) {
     // musical partial from leaking into the baseline around a quiet line.
     const double a0 = 0.35875, a1 = 0.48829, a2 = 0.14128, a3 = 0.01168;
     const double denom = (double)(N - 1);
+    // Scaled by the decimation factor. A transform sums as many terms as it has
+    // points, so decimating would otherwise drop every magnitude by 20*log10 of
+    // decim - 24 dB at 44.1 kHz. Nothing downstream would notice, since the
+    // detector only ever reads differences between bins, but a diagnostic taken
+    // from one build should still mean what it means in the other.
+    const double scale = (double)m_cfg.decim;
     for (int n = 0; n < N; ++n) {
         const double t = 2.0 * kPi * (double)n / denom;
-        m_taper[(size_t)n] = a0 - a1 * cos(t) + a2 * cos(2.0 * t) - a3 * cos(3.0 * t);
+        m_taper[(size_t)n] = scale
+            * (a0 - a1 * cos(t) + a2 * cos(2.0 * t) - a3 * cos(3.0 * t));
     }
 
     // FFT twiddles: tw[t] = exp(-2*pi*i*t/M), t < M/2.
@@ -282,6 +305,7 @@ void Channel::configure(const Config & cfg) {
 
 void Channel::reset() {
     if (!m_win.empty()) memset(&m_win[0], 0, m_win.size() * sizeof(double));
+    clearDecimator();
     if (!m_hist.empty()) memset(&m_hist[0], 0, m_hist.size() * sizeof(double));
     m_winPos = 0;
     m_hopAcc = 0;
@@ -300,7 +324,10 @@ void Channel::reset() {
 
 void Channel::flush() {
     // Drop the analysis window and the integrator transients, keep the lines.
+    // The cascade is part of the window: its delay lines hold audio from before
+    // the seek and would otherwise smear across it.
     if (!m_win.empty()) memset(&m_win[0], 0, m_win.size() * sizeof(double));
+    clearDecimator();
     m_winPos = 0;
     m_hopAcc = 0;
     m_filled = 0;
@@ -606,6 +633,141 @@ double Channel::runRumble(double x) {
 }
 
 // ---------------------------------------------------------------------------
+// Decimation
+// ---------------------------------------------------------------------------
+
+namespace {
+
+//! Modified Bessel function of the first kind, order zero. The series converges
+//! in a couple of dozen terms for the beta a 120 dB Kaiser asks for.
+double besselI0(double x) {
+    double sum = 1.0, term = 1.0;
+    for (int k = 1; k < 64; ++k) {
+        term *= (x * 0.5) / (double)k;
+        const double add = term * term;
+        sum += add;
+        if (add < 1e-18 * sum) break;
+    }
+    return sum;
+}
+
+}  // namespace
+
+//! Design the halfband cascade.
+//!
+//! Stage s runs at rate R and keeps every other sample, so what folds onto the
+//! band the detector reads - [0, kDecimPassHz] - is whatever the filter left
+//! between R/2 - kDecimPassHz and R/2. Pass to kDecimPassHz, stop from
+//! R/2 - kDecimPassHz: a transition centred exactly on R/4, which makes it a
+//! halfband, which is why every other coefficient comes out zero and only the
+//! rest are stored.
+//!
+//! The early stages are the cheap ones. Stage 0 needs to pass 560 Hz out of
+//! 44100 and stop above 21490, a transition 47% of the band wide, so it is 15
+//! taps; by the last stage the same 560 Hz is a fifth of the way to Nyquist and
+//! the filter needs 23. Halving the rate each time, the whole cascade costs
+//! about twice what its first stage costs.
+void Channel::designDecimator() {
+    const int stages = m_cfg.decimStages;
+    m_hbCoef.clear();
+    m_hbTap.clear();
+    m_hbZ.clear();
+    for (int i = 0; i <= (int)kDecimMaxStages; ++i) { m_hbFirst[i] = 0; m_hbZAt[i] = 0; }
+    for (int i = 0; i < (int)kDecimMaxStages; ++i) m_hbZMask[i] = 0;
+    if (stages <= 0) { clearDecimator(); return; }
+
+    const double beta = 0.1102 * (kDecimStopDb - 8.7);
+    const double i0beta = besselI0(beta);
+
+    std::vector<double> h;
+    int zTotal = 0;
+    for (int st = 0; st < stages; ++st) {
+        const double rate = m_cfg.sampleRate / (double)(1 << st);
+        // Normalised passband edge, and the transition width that leaves.
+        const double fp = kDecimPassHz / rate;
+        double trans = 0.5 - 2.0 * fp;
+        if (trans < 0.02) trans = 0.02;
+
+        // Kaiser's length estimate, rounded up to 4k+3 - the length a halfband
+        // needs for its zeros to land on the even taps.
+        int len = (int)ceil((kDecimStopDb - 8.0) / (2.285 * 2.0 * kPi * trans));
+        if (len < 7) len = 7;
+        while ((len - 3) % 4 != 0) ++len;
+        if (len > 255) len = 255;
+
+        const int half = (len - 1) / 2;
+        h.assign((size_t)len, 0.0);
+        double dc = 0.0;
+        for (int j = 0; j < len; ++j) {
+            const int n = j - half;
+            double ideal;
+            if (n == 0)            ideal = 0.5;
+            else if ((n & 1) == 0) ideal = 0.0;   // exactly zero, by halfband
+            else                   ideal = sin(kPi * (double)n * 0.5) / (kPi * (double)n);
+            const double r = (double)n / (double)half;
+            const double w = besselI0(beta * sqrt(1.0 - r * r)) / i0beta;
+            h[(size_t)j] = ideal * w;
+            dc += h[(size_t)j];
+        }
+        // Unity at DC, so the magnitudes the detector measures are the ones the
+        // signal actually has and prominence reads off the same scale at every
+        // sample rate.
+        for (int j = 0; j < len; ++j) h[(size_t)j] /= dc;
+
+        m_hbFirst[st] = (int)m_hbCoef.size();
+        for (int j = 0; j < len; ++j) {
+            if (h[(size_t)j] == 0.0) continue;
+            m_hbCoef.push_back(h[(size_t)j]);
+            m_hbTap.push_back(j);
+        }
+
+        int zlen = 1;
+        while (zlen < len) zlen <<= 1;
+        m_hbZAt[st]   = zTotal;
+        m_hbZMask[st] = zlen - 1;
+        zTotal += zlen;
+    }
+    m_hbFirst[stages] = (int)m_hbCoef.size();
+    m_hbZAt[stages]   = zTotal;
+    m_hbZ.assign((size_t)zTotal, 0.0);
+    clearDecimator();
+}
+
+void Channel::clearDecimator() {
+    if (!m_hbZ.empty()) memset(&m_hbZ[0], 0, m_hbZ.size() * sizeof(double));
+    for (int i = 0; i < (int)kDecimMaxStages; ++i) { m_hbPos[i] = 0; m_hbPhase[i] = 0; }
+}
+
+//! One full rate sample in. True when the cascade produced one, which is once
+//! every m_cfg.decim calls.
+bool Channel::decimate(double x, double * out) {
+    const int stages = m_cfg.decimStages;
+    double v = x;
+    for (int st = 0; st < stages; ++st) {
+        const int mask = m_hbZMask[st];
+        const int base = m_hbZAt[st];
+        const int p = (m_hbPos[st] + 1) & mask;
+        m_hbPos[st] = p;
+        m_hbZ[(size_t)(base + p)] = v;
+
+        // Half the inputs only fill the line; there is no output to compute for
+        // them, and not computing it is the whole point of decimating in stages.
+        m_hbPhase[st] ^= 1;
+        if (m_hbPhase[st] != 0) return false;
+
+        double acc = 0.0;
+        const int lo = m_hbFirst[st], hi = m_hbFirst[st + 1];
+        for (int t = lo; t < hi; ++t) {
+            const int k = (p - m_hbTap[(size_t)t] + mask + 1) & mask;
+            acc += m_hbCoef[(size_t)t] * m_hbZ[(size_t)(base + k)];
+        }
+        v = acc;
+    }
+    *out = v;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // FFT
 // ---------------------------------------------------------------------------
 
@@ -616,7 +778,7 @@ double Channel::runRumble(double x) {
 //! spectrum is unpacked afterwards. Only the bins in the search range are
 //! unpacked, which is a couple of hundred out of tens of thousands.
 void Channel::realFftMagnitudes() {
-    const int N = m_cfg.fftSize;
+    const int N = m_cfg.winSize;
     const int M = N / 2;
     const int mask = N - 1;
 
@@ -928,7 +1090,7 @@ void Channel::detectPeaks(int bins) {
 
 template<typename Sample>
 void Channel::process(Sample * io, size_t frames, size_t stride) {
-    const int N = m_cfg.fftSize;
+    const int N = m_cfg.winSize;
     const double wet = m_cfg.wet;
 
     for (size_t i = 0; i < frames; ++i) {
@@ -939,9 +1101,15 @@ void Channel::process(Sample * io, size_t frames, size_t stride) {
         // signal would be a loop: the line would vanish, its prominence would
         // fall below threshold, the notch would be dropped and the hum would
         // come back.
-        m_win[(size_t)m_winPos] = x;
-        if (++m_winPos >= N) m_winPos = 0;
-        if (m_filled < N) ++m_filled;
+        double dec;
+        if (decimate(x, &dec)) {
+            m_win[(size_t)m_winPos] = dec;
+            if (++m_winPos >= N) m_winPos = 0;
+            if (m_filled < N) ++m_filled;
+        }
+        // Still counted at full rate: hop is a multiple of decim, so a hop
+        // boundary is always a decimated sample boundary too, and cohSmooth was
+        // derived from hop in full rate samples.
         if (++m_hopAcc >= m_cfg.hop) {
             m_hopAcc = 0;
             updateCoherence();                 // probes are read every hop
@@ -993,6 +1161,9 @@ size_t Channel::heapBytes() const {
     size_t b = 0;
     b += m_win.capacity() * sizeof(double);
     b += m_taper.capacity() * sizeof(double);
+    b += m_hbCoef.capacity() * sizeof(double);
+    b += m_hbZ.capacity() * sizeof(double);
+    b += m_hbTap.capacity() * sizeof(int);
     b += m_fftRe.capacity() * sizeof(double);
     b += m_fftIm.capacity() * sizeof(double);
     b += m_twRe.capacity() * sizeof(double);
