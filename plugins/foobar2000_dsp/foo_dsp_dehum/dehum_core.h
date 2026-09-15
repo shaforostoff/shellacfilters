@@ -529,6 +529,8 @@ private:
 
     void   runDetector();
     void   detectPeaks(int bins);
+    void   baselineMedian(int bins);
+    bool   historyMedian(int bins);
     void   updateCoherence();
     void   clearHistory();
     double scoreFor(double prominence) const;
@@ -578,11 +580,14 @@ private:
     std::vector<double> m_mag;             //!< |X| over the search range
 
     std::vector<double> m_hist;    //!< bufHistory x bufBins magnitudes
+    //! The same magnitudes again, bufBins x bufHistory and each bin's row held
+    //! sorted. It buys the median over the history for the price of a memmove
+    //! a frame instead of a sort a frame - see historyMedian().
+    std::vector<double> m_sorted;
     int m_histPos = 0, m_histFill = 0;
     std::vector<double> m_med;     //!< median over history, dB, per bin
     std::vector<double> m_base;    //!< local baseline of m_med, per bin
-    std::vector<double> m_sortBuf; //!< median scratch, kHistory long
-    std::vector<double> m_baseBuf; //!< baseline median scratch
+    std::vector<double> m_baseBuf; //!< the baseline window, held sorted
 
     Line m_line[kMaxLines];
     int  m_lines = 0;
@@ -600,6 +605,13 @@ private:
 
 //! Median of `n` values, reordering `buf`. Exposed so the tests can pin it.
 double medianInPlace(double * buf, int n);
+
+//! In the sorted `buf[0, n)`, drop the value sitting at `at` and admit `v`,
+//! leaving it sorted. Everything between the two positions shifts by one, so
+//! the step is a binary search and a memmove where re-sorting the window would
+//! be quadratic. Both of the detector's medians slide this way; exposed so the
+//! tests can pin it against a sort.
+void sortedReplaceAt(double * buf, int n, int at, double v);
 
 } // namespace dehum
 

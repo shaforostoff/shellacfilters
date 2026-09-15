@@ -91,6 +91,81 @@ void testMedian() {
     checkNear(dehum::medianInPlace(c, 1), 7.0, 0.0, "median of one");
 }
 
+//! The detector's two medians slide a sorted window rather than sorting one per
+//! position, which is only safe if the step leaves the window sorted and holding
+//! the right multiset. Pinned here against the sort it replaced - first the step
+//! on its own, then a whole sliding median of the kind baselineMedian() runs,
+//! which has to agree bit for bit and not merely closely.
+void testSlidingWindow() {
+    printf("\nsliding window\n");
+    unsigned rng = 20240914u;
+    // Few distinct values, so duplicates are the rule and the search has to pick
+    // an occurrence of the departing one rather than assume uniqueness.
+    const int kLevels[3] = { 3, 12, 1000 };
+
+    int bad = 0;
+    for (int trial = 0; trial < 20000; ++trial) {
+        const int levels = kLevels[trial % 3];
+        const int n = 1 + (int)((rng = rng * 1664525u + 1013904223u) >> 24) % 64;
+        double win[65], want[65];
+        for (int k = 0; k < n; ++k) {
+            rng = rng * 1664525u + 1013904223u;
+            win[k] = (double)((rng >> 8) % (unsigned)levels);
+        }
+        dehum::medianInPlace(win, n);
+        rng = rng * 1664525u + 1013904223u;
+        const int at = (int)((rng >> 8) % (unsigned)n);
+        rng = rng * 1664525u + 1013904223u;
+        const double v = (double)((rng >> 8) % (unsigned)levels);
+
+        for (int k = 0; k < n; ++k) want[k] = win[k];
+        want[at] = v;                       // the naive step: swap, then sort
+        dehum::medianInPlace(want, n);
+
+        dehum::sortedReplaceAt(win, n, at, v);
+        for (int k = 0; k < n; ++k) if (win[k] != want[k]) { ++bad; break; }
+    }
+    check(bad == 0, "20000 random window steps match a sort of the same values");
+
+    // And the pass built out of it: a sliding median over an array, edges
+    // clamping, exactly as the baseline of the spectrum is taken.
+    const int bins = 400, span = 30, w = 2 * span + 1;
+    std::vector<double> med((size_t)bins), slid((size_t)bins), naive((size_t)bins);
+    for (int i = 0; i < bins; ++i) {
+        rng = rng * 1664525u + 1013904223u;
+        med[(size_t)i] = -90.0 + (double)((rng >> 8) % 60000u) / 1000.0;
+    }
+    std::vector<double> buf((size_t)w);
+    for (int i = 0; i < bins; ++i) {
+        for (int k = 0; k < w; ++k) {
+            int j = i + k - span;
+            j = j < 0 ? 0 : (j > bins - 1 ? bins - 1 : j);
+            buf[(size_t)k] = med[(size_t)j];
+        }
+        naive[(size_t)i] = dehum::medianInPlace(&buf[0], w);
+    }
+    for (int k = 0; k < w; ++k) {
+        int j = k - span;
+        j = j < 0 ? 0 : (j > bins - 1 ? bins - 1 : j);
+        buf[(size_t)k] = med[(size_t)j];
+    }
+    slid[0] = dehum::medianInPlace(&buf[0], w);
+    for (int i = 1; i < bins; ++i) {
+        int jo = i - 1 - span; jo = jo < 0 ? 0 : (jo > bins - 1 ? bins - 1 : jo);
+        int jn = i + span;     jn = jn < 0 ? 0 : (jn > bins - 1 ? bins - 1 : jn);
+        const double gone = med[(size_t)jo], came = med[(size_t)jn];
+        if (gone != came) {
+            int a = 0;
+            while (a < w && buf[(size_t)a] != gone) ++a;
+            dehum::sortedReplaceAt(&buf[0], w, a, came);
+        }
+        slid[(size_t)i] = buf[(size_t)span];
+    }
+    bool same = true;
+    for (int i = 0; i < bins; ++i) if (slid[(size_t)i] != naive[(size_t)i]) same = false;
+    check(same, "a sliding median over 400 bins is bit-identical to a sorted one");
+}
+
 //! The FFT is checked indirectly but decisively: a tone placed exactly on a bin
 //! must be detected at that frequency to within a small fraction of a bin. A
 //! transposed butterfly, a wrong twiddle sign or a bad unpack all move the peak.
@@ -559,6 +634,7 @@ void testFootprint() {
 int main() {
     printf("dehum_verify\n");
     testMedian();
+    testSlidingWindow();
     testDetectorOnBinCentres();
     testNotchDepth();
     testNotchSelectivity();

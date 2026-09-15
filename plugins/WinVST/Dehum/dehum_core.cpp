@@ -238,6 +238,43 @@ double medianInPlace(double * buf, int n) {
     return 0.5 * (buf[n / 2 - 1] + buf[n / 2]);
 }
 
+namespace {
+
+//! First index of the sorted `buf[0, n)` holding a value not below `v`, which
+//! is where `v` belongs and, when `v` is present, where it already sits.
+inline int lowerBound(const double * buf, int n, double v) {
+    int lo = 0, hi = n;
+    while (lo < hi) {
+        const int mid = lo + ((hi - lo) >> 1);
+        if (buf[mid] < v) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+//! The baseline window centred on bin `i`, sorted, and its median returned.
+//! Outside [0, bins) the edge bin repeats, so the window over bin 0 is bin 0
+//! `span` times over followed by bins 0 to span.
+inline double fillWindow(double * win, int span, const double * med, int bins,
+                         int i) {
+    const int w = 2 * span + 1;
+    for (int k = 0; k < w; ++k) win[k] = med[(size_t)clampi(i + k - span, 0, bins - 1)];
+    return medianInPlace(win, w);
+}
+
+} // anonymous namespace
+
+void sortedReplaceAt(double * buf, int n, int at, double v) {
+    if (v > buf[at]) {
+        const int to = at + 1 + lowerBound(buf + at + 1, n - at - 1, v);
+        memmove(buf + at, buf + at + 1, (size_t)(to - 1 - at) * sizeof(double));
+        buf[to - 1] = v;
+    } else {
+        const int to = lowerBound(buf, at, v);
+        memmove(buf + to + 1, buf + to, (size_t)(at - to) * sizeof(double));
+        buf[to] = v;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Channel
 // ---------------------------------------------------------------------------
@@ -263,9 +300,9 @@ void Channel::configure(const Config & cfg) {
     m_rev.assign((size_t)M, 0);
     m_mag.assign((size_t)m_cfg.bufBins, 0.0);
     m_hist.assign((size_t)m_cfg.bufHistory * (size_t)m_cfg.bufBins, 0.0);
+    m_sorted.assign((size_t)m_cfg.bufBins * (size_t)m_cfg.bufHistory, 0.0);
     m_med.assign((size_t)m_cfg.bufBins, 0.0);
     m_base.assign((size_t)m_cfg.bufBins, 0.0);
-    m_sortBuf.assign((size_t)m_cfg.bufHistory, 0.0);
     m_baseBuf.assign((size_t)(2 * m_cfg.baselineBins + 1), 0.0);
 
     // Blackman-Harris, 4 term. -92 dB sidelobes, which is what keeps a loud
@@ -846,35 +883,105 @@ void Channel::runDetector() {
     realFftMagnitudes();
 
     const int bins = m_cfg.binHi - m_cfg.binLo + 1;
-    const int stride = m_cfg.bufBins;
-    double * row = &m_hist[(size_t)m_histPos * (size_t)stride];
-    for (int i = 0; i < bins; ++i) row[i] = m_mag[(size_t)i];
-    if (++m_histPos >= m_cfg.bufHistory) m_histPos = 0;
-    if (m_histFill < m_cfg.bufHistory) ++m_histFill;
+    if (!historyMedian(bins)) return;
+    baselineMedian(bins);
+    detectPeaks(bins);
+}
 
-    // Four frames is enough for the median to mean something, and waiting for
-    // the full history would put first detection another four seconds out.
-    if (m_histFill < 4) return;
+//! This frame's magnitudes into the history, and the median over the history
+//! of every bin into m_med, in dB. One pass, because they are now the same
+//! operation: every bin keeps its history sorted alongside it in arrival
+//! order, a frame displaces one value in that sorted row rather than calling
+//! for a fresh sort of it, and the median is then a read at the middle.
+//!
+//! False while fewer than four frames are in. Four is enough for the median to
+//! mean something, and waiting for the full history would put first detection
+//! another four seconds out.
+bool Channel::historyMedian(int bins) {
+    const int stride = m_cfg.bufBins;
+    const int hs     = m_cfg.bufHistory;
+    const bool full  = (m_histFill >= hs);
+    double * row     = &m_hist[(size_t)m_histPos * (size_t)stride];
 
     for (int i = 0; i < bins; ++i) {
-        for (int h = 0; h < m_histFill; ++h) {
-            m_sortBuf[(size_t)h] = m_hist[(size_t)h * (size_t)stride + (size_t)i];
+        const double v = m_mag[(size_t)i];
+        double * w = &m_sorted[(size_t)i * (size_t)hs];
+        if (!full) {
+            // Still filling: rows are taken in order, so this one is new and
+            // nothing leaves to make room for it.
+            const int at = lowerBound(w, m_histFill, v);
+            memmove(w + at + 1, w + at,
+                    (size_t)(m_histFill - at) * sizeof(double));
+            w[at] = v;
+        } else {
+            const int at = lowerBound(w, hs, row[i]);
+            if (at < hs && w[at] == row[i]) {
+                sortedReplaceAt(w, hs, at, v);
+            } else {
+                // Only reachable if a magnitude is NaN, which process() rules
+                // out by zeroing anything not sane on the way in. Kept so that
+                // losing that guarantee upstream costs a rebuilt row rather
+                // than a write off the end of one.
+                row[i] = v;
+                for (int h = 0; h < hs; ++h)
+                    w[h] = m_hist[(size_t)h * (size_t)stride + (size_t)i];
+                medianInPlace(w, hs);
+                continue;
+            }
         }
-        const double m = medianInPlace(&m_sortBuf[0], m_histFill);
+        row[i] = v;
+    }
+
+    if (++m_histPos >= hs) m_histPos = 0;
+    if (m_histFill < hs) ++m_histFill;
+    if (m_histFill < 4) return false;
+
+    const int n = m_histFill;
+    for (int i = 0; i < bins; ++i) {
+        const double * w = &m_sorted[(size_t)i * (size_t)hs];
+        const double m = (n & 1) ? w[n / 2] : 0.5 * (w[n / 2 - 1] + w[n / 2]);
         m_med[(size_t)i] = 20.0 * log10(m + 1e-30);
     }
+    return true;
+}
 
+//! The local baseline of m_med into m_base: the median over kBaselineHz either
+//! side of every bin.
+//!
+//! The window is carried sorted from one bin to the next rather than sorted
+//! afresh for each. Stepping one bin along drops one value and admits one, so
+//! the work is a binary search and a memmove instead of a sort - 61 values a
+//! bin at the default settings, where a sort of the same window is nearer
+//! nine hundred operations. This pass was two thirds of the detector's time
+//! before that, and five sixths of it with the search range opened up.
+//!
+//! The result is the same window, so it is the same median: the window length
+//! is odd, which leaves no middle pair to break a tie between.
+void Channel::baselineMedian(int bins) {
     const int span = m_cfg.baselineBins;
-    for (int i = 0; i < bins; ++i) {
-        int n = 0;
-        for (int d = -span; d <= span; ++d) {
-            const int j = clampi(i + d, 0, bins - 1);
-            m_baseBuf[(size_t)n++] = m_med[(size_t)j];
-        }
-        m_base[(size_t)i] = medianInPlace(&m_baseBuf[0], n);
-    }
+    const int w    = 2 * span + 1;
+    double * win   = &m_baseBuf[0];
+    const double * med = &m_med[0];
 
-    detectPeaks(bins);
+    m_base[0] = fillWindow(win, span, med, bins, 0);
+
+    for (int i = 1; i < bins; ++i) {
+        const double gone = med[(size_t)clampi(i - 1 - span, 0, bins - 1)];
+        const double came = med[(size_t)clampi(i + span, 0, bins - 1)];
+        if (gone == came) { m_base[(size_t)i] = win[span]; continue; }
+
+        const int a = lowerBound(win, w, gone);
+        if (a >= w || win[a] != gone) {
+            // Only reachable if m_med holds a NaN, which process() rules out by
+            // zeroing anything not sane on the way in. Kept so that losing that
+            // guarantee upstream costs a rebuilt window rather than a write off
+            // the end of this one.
+            m_base[(size_t)i] = fillWindow(win, span, med, bins, i);
+            continue;
+        }
+        sortedReplaceAt(win, w, a, came);
+        m_base[(size_t)i] = win[span];
+    }
 }
 
 //! Credit for one sighting: one, plus a bonus for how far past the threshold the
@@ -1173,7 +1280,7 @@ size_t Channel::heapBytes() const {
     b += m_hist.capacity() * sizeof(double);
     b += m_med.capacity() * sizeof(double);
     b += m_base.capacity() * sizeof(double);
-    b += m_sortBuf.capacity() * sizeof(double);
+    b += m_sorted.capacity() * sizeof(double);
     b += m_baseBuf.capacity() * sizeof(double);
     return b;
 }

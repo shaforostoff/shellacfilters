@@ -691,10 +691,11 @@ Add *Dehum (line detection)* to the chain and press **Configure selected**.
 | **Dry/Wet** | 0 bypasses, bit-exactly. |
 
 Latency is **zero**: the detector reads the signal but does not sit in the path,
-so the component processes in place and needs no FIFO. Throughput is **159×
-realtime** on x64 and 146× on x86, measured end to end over 177 s of 44.1 kHz
-mono including file I/O. Memory is **2.0 MB per channel** at 44.1 kHz and 3.9 MB
-at 96 kHz, fixed at `configure()` and independent of the parameters.
+so the component processes in place and needs no FIFO. Throughput is **320×
+realtime** on x64 and 310× on x86, measured end to end over 177 s of 44.1 kHz
+mono including file I/O. Memory is **410 kB per channel** at 44.1 kHz, 387 kB at
+96 kHz and 196 kB at 192 kHz, fixed at `configure()` and independent of the
+parameters.
 
 ### The material this was calibrated on
 
@@ -1550,7 +1551,7 @@ zero — a sharper question here than for the declicker, because a whole
 FFT-based detector runs on the audio thread. It covers 37 s of steady
 processing, a 65536-sample block, 4096 single-sample calls, 21 live parameter
 changes, `flush()`, `reset()` and manual mode, and prints the footprint before
-and after so a regression shows up in the log. All zero, 2073 kB either side.
+and after so a regression shows up in the log. All zero, 410 kB either side.
 
 **`dehum_vst_verify`** holds the WinVST dehummer to the same maths — see
 [Sharing a core with the other plug-in formats](#sharing-a-core-with-the-other-plug-in-formats).
@@ -1969,7 +1970,7 @@ and a compiler would not:
 | opcode routing | all seven parameter names arrive at the right index; displays and labels stay inside `kVstMaxParamStrLen` in a buffer bigger than promised |
 | the latency contract | Declick declares 880 samples at 44.1 kHz with `effGetTailSize` matching, and calls `audioMasterIOChanged` twice for the two structural parameters; Dehum declares 0 and calls it **never** |
 | `main` | exported as well as `VSTPluginMain`, for hosts that predate the rename, and reaching the same plug-in when called. On Windows the `.def` makes them one address and that is asserted too; the `.so` gets a forwarder instead, because there is no `.def` to alias with |
-| `effClose` | 24 open/close cycles do not accumulate private bytes. This is a contract, not a nicety: the host frees nothing, so a shim that forgets the `delete` leaks the whole instance on every plug-in scan, and Dehum carries ~2 MB of analysis state per channel |
+| `effClose` | 24 open/close cycles do not accumulate private bytes. This is a contract, not a nicety: the host frees nothing, so a shim that forgets the `delete` leaks the whole instance on every plug-in scan, and Dehum carries ~400 kB of analysis state per channel |
 
 ### Building the VST2 plug-ins
 
