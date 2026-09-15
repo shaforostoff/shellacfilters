@@ -31,7 +31,7 @@ if(POLICY CMP0091)
 endif()
 
 project(shellacfilters_virtualdj
-        VERSION 1.0.0
+        VERSION 1.0.1
         DESCRIPTION "ShellacFilters DSP plug-ins for VirtualDJ"
         LANGUAGES CXX)
 

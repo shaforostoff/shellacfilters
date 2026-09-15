@@ -408,7 +408,7 @@ public:
         info->PluginName  = Engine::pluginName();
         info->Author      = "ShellacFilters (MIT)";
         info->Description = Engine::pluginDescription();
-        info->Version     = "1.0";
+        info->Version     = "1.0.1";
         info->Flags       = 0x00;
         info->Bitmap      = NULL;
         VDJ_TRACEF("%s: OnGetPluginInfo - registered as \"%s\"",
