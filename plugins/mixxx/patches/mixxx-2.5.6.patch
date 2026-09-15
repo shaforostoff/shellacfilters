@@ -1,0 +1,139 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 95eb1c8..0159695 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1103,6 +1103,8 @@ add_library(mixxx-lib STATIC EXCLUDE_FROM_ALL
+   src/preferences/dialog/dlgprefrecorddlg.ui
+   src/preferences/dialog/dlgprefreplaygain.cpp
+   src/preferences/dialog/dlgprefreplaygaindlg.ui
++  src/preferences/dialog/dlgprefrestoration.cpp
++  src/preferences/dialog/dlgprefrestorationdlg.ui
+   src/preferences/dialog/dlgprefsound.cpp
+   src/preferences/dialog/dlgprefsounddlg.ui
+   src/preferences/dialog/dlgprefsounditem.cpp
+@@ -1116,6 +1118,10 @@ add_library(mixxx-lib STATIC EXCLUDE_FROM_ALL
+   src/preferences/settingsmanager.cpp
+   src/preferences/upgrade.cpp
+   src/recording/recordingmanager.cpp
++  src/restoration/audiosourcerestoreproxy.cpp
++  src/restoration/declick_core.cpp
++  src/restoration/dehum_core.cpp
++  src/restoration/restorationconfig.cpp
+   src/skin/legacy/colorschemeparser.cpp
+   src/skin/legacy/imgcolor.cpp
+   src/skin/legacy/imginvert.cpp
+diff --git a/src/engine/cachingreader/cachingreader.cpp b/src/engine/cachingreader/cachingreader.cpp
+index 45a83cf..b7fcb24 100644
+--- a/src/engine/cachingreader/cachingreader.cpp
++++ b/src/engine/cachingreader/cachingreader.cpp
+@@ -58,7 +58,10 @@ CachingReader::CachingReader(const QString& group,
+           m_mruCachingReaderChunk(nullptr),
+           m_lruCachingReaderChunk(nullptr),
+           m_sampleBuffer(CachingReaderChunk::kSamples * kNumberOfCachedChunksInMemory),
+-          m_worker(group, &m_chunkReadRequestFIFO, &m_readerStatusUpdateFIFO) {
++          m_worker(group,
++                  &m_chunkReadRequestFIFO,
++                  &m_readerStatusUpdateFIFO,
++                  config) {
+     m_allocatedCachingReaderChunks.reserve(kNumberOfCachedChunksInMemory);
+     // Divide up the allocated raw memory buffer into total_chunks
+     // chunks. Initialize each chunk to hold nothing and add it to the free
+diff --git a/src/engine/cachingreader/cachingreaderworker.cpp b/src/engine/cachingreader/cachingreaderworker.cpp
+index e21ee8e..cf4143d 100644
+--- a/src/engine/cachingreader/cachingreaderworker.cpp
++++ b/src/engine/cachingreader/cachingreaderworker.cpp
+@@ -5,6 +5,8 @@
+ 
+ #include "analyzer/analyzersilence.h"
+ #include "moc_cachingreaderworker.cpp"
++#include "restoration/audiosourcerestoreproxy.h"
++#include "restoration/restorationconfig.h"
+ #include "sources/soundsourceproxy.h"
+ #include "track/track.h"
+ #include "util/compatibility/qmutex.h"
+@@ -25,8 +27,10 @@ constexpr SINT kNumSoundFrameToVerify = 2;
+ CachingReaderWorker::CachingReaderWorker(
+         const QString& group,
+         FIFO<CachingReaderChunkReadRequest>* pChunkReadRequestFIFO,
+-        FIFO<ReaderStatusUpdate>* pReaderStatusFIFO)
++        FIFO<ReaderStatusUpdate>* pReaderStatusFIFO,
++        UserSettingsPointer pConfig)
+         : m_group(group),
++          m_pConfig(pConfig),
+           m_tag(QString("CachingReaderWorker %1").arg(m_group)),
+           m_pChunkReadRequestFIFO(pChunkReadRequestFIFO),
+           m_pReaderStatusFIFO(pReaderStatusFIFO) {
+@@ -190,7 +194,15 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
+ 
+     mixxx::AudioSource::OpenParams config;
+     config.setChannelCount(CachingReaderChunk::kChannels);
+-    m_pAudioSource = SoundSourceProxy(pTrack).openAudioSource(config);
++    // Restoration, if it is switched on: Declick and Dehum run here, between
++    // the decoder and everything else in Mixxx, because here they can read the
++    // whole track. That is what lets Declick have its lookahead without the deck
++    // playing late, and Dehum find the hum in the opening seconds rather than
++    // the opening minute. With both off this returns the decoder untouched.
++    // See restoration/audiosourcerestoreproxy.h.
++    m_pAudioSource = mixxx::AudioSourceRestoreProxy::wrap(
++            SoundSourceProxy(pTrack).openAudioSource(config),
++            restoration::readSettings(m_pConfig));
+     if (!m_pAudioSource) {
+         kLogger.warning()
+                 << m_group
+diff --git a/src/engine/cachingreader/cachingreaderworker.h b/src/engine/cachingreader/cachingreaderworker.h
+index 309edbd..63aa39f 100644
+--- a/src/engine/cachingreader/cachingreaderworker.h
++++ b/src/engine/cachingreader/cachingreaderworker.h
+@@ -7,6 +7,7 @@
+ #include "audio/types.h"
+ #include "engine/cachingreader/cachingreaderchunk.h"
+ #include "engine/engineworker.h"
++#include "preferences/usersettings.h"
+ #include "sources/audiosource.h"
+ #include "track/track_decl.h"
+ 
+@@ -99,7 +100,8 @@ class CachingReaderWorker : public EngineWorker {
+     // Construct a CachingReader with the given group.
+     CachingReaderWorker(const QString& group,
+             FIFO<CachingReaderChunkReadRequest>* pChunkReadRequestFIFO,
+-            FIFO<ReaderStatusUpdate>* pReaderStatusFIFO);
++            FIFO<ReaderStatusUpdate>* pReaderStatusFIFO,
++            UserSettingsPointer pConfig);
+     ~CachingReaderWorker() override = default;
+ 
+     // Request to load a new track. wake() must be called afterwards.
+@@ -119,6 +121,9 @@ class CachingReaderWorker : public EngineWorker {
+ 
+   private:
+     const QString m_group;
++    // Read once per track load, to size the restoration pipeline. See
++    // restoration/audiosourcerestoreproxy.h.
++    const UserSettingsPointer m_pConfig;
+     QString m_tag;
+ 
+     // Thread-safe FIFOs for communication between the engine callback and
+diff --git a/src/preferences/dialog/dlgpreferences.cpp b/src/preferences/dialog/dlgpreferences.cpp
+index 06e6170..192ceb6 100644
+--- a/src/preferences/dialog/dlgpreferences.cpp
++++ b/src/preferences/dialog/dlgpreferences.cpp
+@@ -38,6 +38,7 @@
+ #include "preferences/dialog/dlgprefkey.h"
+ #include "preferences/dialog/dlgprefrecord.h"
+ #include "preferences/dialog/dlgprefreplaygain.h"
++#include "preferences/dialog/dlgprefrestoration.h"
+ 
+ #ifdef __MODPLUG__
+ #include "preferences/dialog/dlgprefmodplug.h"
+@@ -228,6 +229,12 @@ DlgPreferences::DlgPreferences(
+             tr("Normalization"),
+             "ic_preferences_replaygain.svg");
+ 
++    addPageWidget(PreferencesPage(
++                          new DlgPrefRestoration(this, m_pConfig),
++                          new QTreeWidgetItem(contentsTreeWidget, QTreeWidgetItem::Type)),
++            tr("Restoration"),
++            "ic_preferences_effects.svg");
++
+ #ifdef __MODPLUG__
+     addPageWidget(PreferencesPage(
+                           new DlgPrefModplug(this, m_pConfig),

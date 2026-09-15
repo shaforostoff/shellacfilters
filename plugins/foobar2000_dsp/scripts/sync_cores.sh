@@ -52,9 +52,13 @@ esac
 # of anybody's. The cores are the only thing it shares. vdjplugin is in the same
 # position for the same reason, and takes the cores for both plug-ins it builds
 # out of each - the live one and the buffer one share the folder.
+#
+# mixxx is not a plug-in at all: it is a patch to Mixxx's own source tree, so
+# both cores land in one directory there, the one that gets copied into
+# mixxx/src/restoration. See ../../mixxx/README.md.
 mirrors="
-foobar2000_dsp/foo_dsp_declick|declick_core.h,declick_core.cpp|WinVST/Declick,LinuxVST/src/Declick,MacVST/Declick/source,MacAU/Declick,vdjplugin/vdj_declick
-foobar2000_dsp/foo_dsp_dehum|dehum_core.h,dehum_core.cpp|WinVST/Dehum,LinuxVST/src/Dehum,MacVST/Dehum/source,MacAU/Dehum,vdjplugin/vdj_dehum
+foobar2000_dsp/foo_dsp_declick|declick_core.h,declick_core.cpp|WinVST/Declick,LinuxVST/src/Declick,MacVST/Declick/source,MacAU/Declick,vdjplugin/vdj_declick,mixxx/src/restoration
+foobar2000_dsp/foo_dsp_dehum|dehum_core.h,dehum_core.cpp|WinVST/Dehum,LinuxVST/src/Dehum,MacVST/Dehum/source,MacAU/Dehum,vdjplugin/vdj_dehum,mixxx/src/restoration
 WinVST/Declick|Declick.h,Declick.cpp,DeclickProc.cpp|LinuxVST/src/Declick,MacVST/Declick/source
 WinVST/Dehum|Dehum.h,Dehum.cpp,DehumProc.cpp|LinuxVST/src/Dehum,MacVST/Dehum/source
 "

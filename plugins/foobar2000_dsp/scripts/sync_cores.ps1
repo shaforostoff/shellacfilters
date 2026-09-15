@@ -56,6 +56,10 @@ $plugins = Split-Path -Parent $root                  # plugins
 # vdjplugin is in the same position for the same reason, and one folder there
 # serves the two plug-ins it builds out of each core - the live one and the
 # buffer one.
+#
+# mixxx is not a plug-in at all: it is a patch to Mixxx's own source tree, so
+# both cores land in one directory there, the one that gets copied into
+# mixxx/src/restoration.
 $mirrors = @(
     @{
         From  = Join-Path $root 'foo_dsp_declick'
@@ -64,7 +68,8 @@ $mirrors = @(
                   (Join-Path $plugins 'LinuxVST\src\Declick'),
                   (Join-Path $plugins 'MacVST\Declick\source'),
                   (Join-Path $plugins 'MacAU\Declick'),
-                  (Join-Path $plugins 'vdjplugin\vdj_declick'))
+                  (Join-Path $plugins 'vdjplugin\vdj_declick'),
+                  (Join-Path $plugins 'mixxx\src\restoration'))
     },
     @{
         From  = Join-Path $root 'foo_dsp_dehum'
@@ -73,7 +78,8 @@ $mirrors = @(
                   (Join-Path $plugins 'LinuxVST\src\Dehum'),
                   (Join-Path $plugins 'MacVST\Dehum\source'),
                   (Join-Path $plugins 'MacAU\Dehum'),
-                  (Join-Path $plugins 'vdjplugin\vdj_dehum'))
+                  (Join-Path $plugins 'vdjplugin\vdj_dehum'),
+                  (Join-Path $plugins 'mixxx\src\restoration'))
     },
     @{
         From  = Join-Path $plugins 'WinVST\Declick'

@@ -1,0 +1,438 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DlgPrefRestorationDlg</class>
+ <widget class="QWidget" name="DlgPrefRestorationDlg">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>620</width>
+    <height>640</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Restoration</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="introLabel">
+     <property name="text">
+      <string>Repair shellac and vinyl transfers as they are decoded, before anything else in Mixxx sees them. Because the restoration reads the track rather than the passing buffer, it adds no latency to a deck and hum is found in the first seconds rather than the first minute.
+
+Waveforms, beat detection and key detection are not affected: they read the original file.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="reloadLabel">
+     <property name="text">
+      <string>Changes take effect the next time a track is loaded into a deck.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="declickGroup">
+     <property name="title">
+      <string>Declick</string>
+     </property>
+     <property name="toolTip">
+      <string>Finds the impulses that blow up an autoregressive model's prediction error and rebuilds what the waveform should have been.</string>
+     </property>
+     <property name="checkable">
+      <bool>true</bool>
+     </property>
+     <property name="checked">
+      <bool>false</bool>
+     </property>
+     <layout class="QFormLayout" name="declickForm">
+      <item row="0" column="0">
+       <widget class="QLabel" name="declickSensitivityLabel">
+        <property name="text">
+         <string>Sensitivity:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QDoubleSpinBox" name="declickSensitivity">
+        <property name="toolTip">
+         <string>Trigger, in robust sigmas: 0 is 6.0 and catches only unmistakable clicks, 1 is 2.5 and starts costing music. 0.60 is 3.9 sigma.</string>
+        </property>
+        <property name="decimals">
+         <number>2</number>
+        </property>
+        <property name="maximum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.050000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="declickExtentLabel">
+        <property name="text">
+         <string>Extent:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QDoubleSpinBox" name="declickExtent">
+        <property name="toolTip">
+         <string>How far a detection spreads outwards into its own tail.</string>
+        </property>
+        <property name="decimals">
+         <number>2</number>
+        </property>
+        <property name="maximum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.050000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="declickMaxRepairLabel">
+        <property name="text">
+         <string>Max repair:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QDoubleSpinBox" name="declickMaxRepair">
+        <property name="toolTip">
+         <string>The longest single repair.</string>
+        </property>
+        <property name="suffix">
+         <string> ms</string>
+        </property>
+        <property name="decimals">
+         <number>1</number>
+        </property>
+        <property name="minimum">
+         <double>0.200000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>20.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.200000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="declickDepthLabel">
+        <property name="text">
+         <string>Depth:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QDoubleSpinBox" name="declickDepth">
+        <property name="toolTip">
+         <string>0 subtracts the calibrated fraction of each click, which adds the least error of its own; 1 replaces damaged samples outright.</string>
+        </property>
+        <property name="decimals">
+         <number>2</number>
+        </property>
+        <property name="maximum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.050000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="declickPassesLabel">
+        <property name="text">
+         <string>Passes:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QSpinBox" name="declickPasses">
+        <property name="toolTip">
+         <string>A second pass catches clicks the first uncovers, for about 50% more CPU.</string>
+        </property>
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <number>3</number>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="declickOrderLabel">
+        <property name="text">
+         <string>Model order:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QSpinBox" name="declickOrder">
+        <property name="toolTip">
+         <string>The one control where CPU clearly buys quality. Steps of 8.</string>
+        </property>
+        <property name="minimum">
+         <number>8</number>
+        </property>
+        <property name="maximum">
+         <number>64</number>
+        </property>
+        <property name="singleStep">
+         <number>8</number>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="0">
+       <widget class="QLabel" name="declickDryWetLabel">
+        <property name="text">
+         <string>Dry/Wet:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="1">
+       <widget class="QDoubleSpinBox" name="declickDryWet">
+        <property name="toolTip">
+         <string>0 is a bypass.</string>
+        </property>
+        <property name="decimals">
+         <number>2</number>
+        </property>
+        <property name="maximum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.050000000000000</double>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="dehumGroup">
+     <property name="title">
+      <string>Dehum</string>
+     </property>
+     <property name="toolTip">
+      <string>Finds continuous narrowband tones - mains hum, its harmonics, and the off-frequency drones on speed-corrected disc transfers - without being told the frequency, and cancels them with a tracking notch.</string>
+     </property>
+     <property name="checkable">
+      <bool>true</bool>
+     </property>
+     <property name="checked">
+      <bool>false</bool>
+     </property>
+     <layout class="QFormLayout" name="dehumForm">
+      <item row="0" column="0">
+       <widget class="QLabel" name="dehumSensitivityLabel">
+        <property name="text">
+         <string>Sensitivity:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QDoubleSpinBox" name="dehumSensitivity">
+        <property name="toolTip">
+         <string>Prominence a line has to reach to be believed. 0.50 is 16 dB. Above about 0.70, hum-free material starts activating lines.</string>
+        </property>
+        <property name="decimals">
+         <number>2</number>
+        </property>
+        <property name="maximum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.050000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="dehumBandwidthLabel">
+        <property name="text">
+         <string>Bandwidth:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QDoubleSpinBox" name="dehumBandwidth">
+        <property name="toolTip">
+         <string>Notch half width.</string>
+        </property>
+        <property name="suffix">
+         <string> Hz</string>
+        </property>
+        <property name="decimals">
+         <number>2</number>
+        </property>
+        <property name="minimum">
+         <double>0.100000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>5.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.100000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="dehumSearchToLabel">
+        <property name="text">
+         <string>Search to:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QDoubleSpinBox" name="dehumSearchTo">
+        <property name="toolTip">
+         <string>Top of the automatic search. Higher finds sustained musical notes instead.</string>
+        </property>
+        <property name="suffix">
+         <string> Hz</string>
+        </property>
+        <property name="decimals">
+         <number>0</number>
+        </property>
+        <property name="minimum">
+         <double>40.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>500.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>10.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="dehumHarmonicsLabel">
+        <property name="text">
+         <string>Harmonics:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QSpinBox" name="dehumHarmonics">
+        <property name="toolTip">
+         <string>Multiples of each line to cancel. Only raise for a genuine mains buzz: on rumbly transfers the harmonics took 84% of everything removed.</string>
+        </property>
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <number>8</number>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="dehumFrequencyLabel">
+        <property name="text">
+         <string>Frequency:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QDoubleSpinBox" name="dehumFrequency">
+        <property name="toolTip">
+         <string>Pin the line here and the search is turned off, which also skips scouting the opening of the track. Leave it at Automatic unless you already know the record.</string>
+        </property>
+        <property name="specialValueText">
+         <string>Automatic</string>
+        </property>
+        <property name="suffix">
+         <string> Hz</string>
+        </property>
+        <property name="decimals">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <double>500.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>1.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="dehumRumbleLabel">
+        <property name="text">
+         <string>Rumble:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QDoubleSpinBox" name="dehumRumble">
+        <property name="toolTip">
+         <string>High-pass corner. Wind it back towards 40 Hz where the low end is worth keeping.</string>
+        </property>
+        <property name="specialValueText">
+         <string>Off</string>
+        </property>
+        <property name="suffix">
+         <string> Hz</string>
+        </property>
+        <property name="decimals">
+         <number>0</number>
+        </property>
+        <property name="maximum">
+         <double>200.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>1.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="0">
+       <widget class="QLabel" name="dehumDryWetLabel">
+        <property name="text">
+         <string>Dry/Wet:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="1">
+       <widget class="QDoubleSpinBox" name="dehumDryWet">
+        <property name="toolTip">
+         <string>0 is a bypass.</string>
+        </property>
+        <property name="decimals">
+         <number>2</number>
+        </property>
+        <property name="maximum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.050000000000000</double>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

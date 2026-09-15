@@ -1,0 +1,6 @@
+# Build tree for the verification harness. There is no release artefact here:
+# what this port produces is a patched Mixxx, built from Mixxx's own tree.
+/build/
+/out/
+/.vs/
+CMakeUserPresets.json
