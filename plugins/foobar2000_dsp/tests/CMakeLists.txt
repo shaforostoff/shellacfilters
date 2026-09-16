@@ -32,6 +32,9 @@
 #                        target. Built against plugins/MacAU/au_shim, not
 #                        Apple's CoreAudio sources. No SDK.
 #   dehum_au_verify    - the MacAU port of the dehummer, same arrangement.
+#   paraeq_au_verify   - the MacAU port of the equaliser. The one AU here with
+#                        no dither between it and the core, so this comparison
+#                        is bit-exact rather than within two ULP.
 #                        No SDK.
 #   vst_host_verify    - NOT a target here. It loads a finished VST2 plug-in and
 #                        drives it over the C ABI, so it needs a built one to
@@ -307,10 +310,14 @@ endif()
 # the plug-in asks for is found. Apple's CoreAudio AUPublic and PublicUtility
 # sources are not in this repository - the .xcodeproj reaches for them under
 # $(SYSTEM_DEVELOPER_DIR), where no Xcode has put them for over a decade - so it
-# is a small stand-in that lets the wrapper compile and be driven. Unlike
-# vst2_shim it is not an ABI and nothing loads it, so there is no AU counterpart
-# of vst_host_verify - building a .component needs the Apple sources the shim
-# exists because of. See plugins/MacAU/au_shim/README.md.
+# is a small stand-in that lets the wrapper compile and be driven.
+#
+# Unlike vst2_shim it is not an ABI and nothing loads it, so these establish the
+# DSP, the latency arithmetic and the parameter table and nothing about the
+# bundle. The AU counterpart of vst_host_verify is not a target here: it is
+# plugins/MacAU/scripts/build.sh --validate, which builds the real .component
+# against Apple's AudioUnitSDK and hands it to auval. macOS only, hence not a
+# ctest. See plugins/MacAU/au_shim/README.md.
 #
 # There is no MacVST equivalent of these, for the same reason there is no
 # LinuxVST one: MacVST/Declick/source and MacVST/Dehum/source are required to be
@@ -320,7 +327,7 @@ endif()
 
 set(MACAU_SHIM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../MacAU/au_shim")
 
-foreach(_au Declick Dehum)
+foreach(_au Declick Dehum ParaEQ)
     string(TOLOWER "${_au}" _core)
     set(_dir "${CMAKE_CURRENT_SOURCE_DIR}/../../MacAU/${_au}")
 

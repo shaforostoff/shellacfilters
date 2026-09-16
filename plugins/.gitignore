@@ -5,6 +5,8 @@
 #   vdjplugin\scripts\build.ps1 and build.sh   vdj\{x64,x86,mac}
 #   vdjplugin\scripts\package.ps1              vdj\*-x64-Setup.exe
 #   vdjplugin\scripts\package.sh               vdj\*.pkg
+#   MacAU\scripts\build.sh                     au\mac\*.component
+#   MacAU\scripts\package.sh                   au\mac\*.pkg
 # One level up from foobar2000_dsp because a VST2 DLL is not a foobar2000
-# component, and neither is a VirtualDJ plug-in.
+# component, and neither is a VirtualDJ plug-in or an Audio Unit.
 /dist/
