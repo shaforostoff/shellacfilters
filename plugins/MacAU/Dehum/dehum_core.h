@@ -107,7 +107,15 @@ enum {
     kSearchCeil   = 500,  //!< Hz, highest the top of the range may be set to
 
     //! Halfband stages ahead of the analysis, at most. Six covers 192 kHz.
-    kDecimMaxStages = 8
+    kDecimMaxStages = 8,
+
+    //! Longest halfband a stage may be. The length Kaiser asks for grows as the
+    //! transition narrows, and the narrowest any stage gets is the last one, at
+    //! a rate of at least 2 * kDecimMinRate - about 27 taps. This is the clamp
+    //! that keeps a rate nobody anticipated from asking for an unbounded
+    //! filter, and it is what lets designDecimator() hold its working buffer on
+    //! the stack rather than taking it from the heap on every configure().
+    kDecimMaxTaps = 255
 };
 
 //! Decimation ahead of the detector.

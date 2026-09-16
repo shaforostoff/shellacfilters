@@ -8,7 +8,8 @@
  *  of working buffers, a per-bin history, and a peak list that changes size as
  *  lines come and go. All of it is sized in configure() from the sample rate
  *  alone, so this test replaces global operator new and requires the count to be
- *  zero across processing, every parameter change, flush() and reset().
+ *  zero across processing, every parameter change, flush(), reset() and a
+ *  second configure() at a rate the channel has already been sized for.
  *
  *  The parameter case is the interesting one: the search range, the number of
  *  harmonics and the notch bandwidth all change what the detector and the
@@ -189,6 +190,41 @@ int main() {
             m.process(&buf[0], buf.size(), 1);
         }
         requireQuiet("manual mode, 8 harmonics, 50 blocks");
+    }
+
+    // --- configure() again, on a channel that already holds its buffers -----
+    //
+    // The first configure() is entitled to allocate; a later one at a rate the
+    // channel has already been sized for is not. Every buffer is assigned the
+    // length it already has, which a vector serves out of the capacity it is
+    // still holding, so the only way this fails is a working buffer taken from
+    // the heap instead of kept - which is what designDecimator() did with the
+    // taps it designs, three allocations a call for two kilobytes that never
+    // outlived it. Hosts reconfigure whenever the format changes, and not all
+    // of them do it from a thread that may wait on malloc.
+    {
+        arm();
+        for (int k = 0; k < 4; ++k) ch.configure(cfg);
+        requireQuiet("4 reconfigures at the same rate");
+    }
+
+    // --- the same, with the parameters moved ------------------------------
+    //
+    // configure() rather than retune(), so the pipeline is rebuilt rather than
+    // swapped; the envelope is sized from the sample rate alone, so rebuilding
+    // it may not resize anything either.
+    {
+        arm();
+        for (int a = 0; a < 3; ++a) {
+            Params q = p;
+            q.searchTo  = 40.0f + 230.0f * (float)a;
+            q.harmonics = 1 + 3 * a;
+            q.bandwidth = 0.1f + 2.0f * (float)a;
+            Config c2;
+            c2.compute(q, sr);
+            ch.configure(c2);
+        }
+        requireQuiet("3 reconfigures with the parameters moved");
     }
 
     printf("  footprint at the end:        %zu kB\n", ch.heapBytes() / 1024);

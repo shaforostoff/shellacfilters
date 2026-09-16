@@ -716,7 +716,7 @@ void Channel::designDecimator() {
     const double beta = 0.1102 * (kDecimStopDb - 8.7);
     const double i0beta = besselI0(beta);
 
-    std::vector<double> h;
+    double h[kDecimMaxTaps];
     int zTotal = 0;
     for (int st = 0; st < stages; ++st) {
         const double rate = m_cfg.sampleRate / (double)(1 << st);
@@ -730,10 +730,9 @@ void Channel::designDecimator() {
         int len = (int)ceil((kDecimStopDb - 8.0) / (2.285 * 2.0 * kPi * trans));
         if (len < 7) len = 7;
         while ((len - 3) % 4 != 0) ++len;
-        if (len > 255) len = 255;
+        if (len > (int)kDecimMaxTaps) len = (int)kDecimMaxTaps;
 
         const int half = (len - 1) / 2;
-        h.assign((size_t)len, 0.0);
         double dc = 0.0;
         for (int j = 0; j < len; ++j) {
             const int n = j - half;
