@@ -199,6 +199,34 @@ function Get-ArchFlags {
 }
 
 # ---------------------------------------------------------------------------
+# What a plug-in needs beyond the four files every one of them has.
+#
+# Only ParaEQ has anything: it ships an editor, which is two more sources -
+# ParaEQEditor.cpp, the join between AEffEditor and the editor's Host
+# interface, and paraeq_editor.cpp, the owner-drawn curve itself, mirrored in
+# from foo_dsp_paraeq by sync_cores. Declick and Dehum have no editor and get
+# an empty list, which is also why they still link against nothing but the CRT.
+
+function Get-ExtraSources {
+    param([Parameter(Mandatory)] [string] $Plugin,
+          [Parameter(Mandatory)] [string] $PluginDir)
+    if ($Plugin -eq 'ParaEQ') {
+        return @((Join-Path $PluginDir 'ParaEQEditor.cpp'),
+                 (Join-Path $PluginDir 'paraeq_editor.cpp'))
+    }
+    return @()
+}
+
+# The Win32 libraries an editor pulls in. A DLL that draws nothing links
+# against the CRT alone, so this is empty for Declick and Dehum and the two of
+# them keep the smallest import table they had.
+function Get-ExtraLibs {
+    param([Parameter(Mandatory)] [string] $Plugin)
+    if ($Plugin -eq 'ParaEQ') { return @('user32.lib', 'gdi32.lib') }
+    return @()
+}
+
+# ---------------------------------------------------------------------------
 
 Write-Host "`nmirrored cores" -ForegroundColor Cyan
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'sync_cores.ps1') -Check
@@ -245,7 +273,7 @@ try {
                 (Join-Path $pluginDir "$p.cpp"),
                 (Join-Path $pluginDir "${p}Proc.cpp"),
                 (Join-Path $pluginDir $coreName)
-            )
+            ) + (Get-ExtraSources -Plugin $p -PluginDir $pluginDir)
             foreach ($s in $sources) { if (-not (Test-Path $s)) { throw "missing source: $s" } }
 
             Write-Host ("`n  {0}{1}.dll" -f $p, $suffix) -ForegroundColor White
@@ -258,7 +286,8 @@ try {
             $objs = @(Get-ChildItem (Join-Path $objDir '*.obj') | Select-Object -ExpandProperty FullName)
             $linkArgs = @('/nologo', '/DLL', '/INCREMENTAL:NO', '/OPT:REF', '/OPT:ICF',
                           ('/DEF:' + $defFile), ('/OUT:' + $dll),
-                          ('/IMPLIB:' + (Join-Path $objDir 'plug.lib'))) + $objs
+                          ('/IMPLIB:' + (Join-Path $objDir 'plug.lib'))) +
+                        (Get-ExtraLibs -Plugin $p) + $objs
             $totalWarnings += Invoke-Native -Exe 'link' -Arguments $linkArgs -What "linking $p ($a)"
 
             $machine = Get-MachineType -Image $dll
@@ -283,7 +312,7 @@ try {
                     (Join-Path $pluginDir "$p.cpp"),
                     (Join-Path $pluginDir "${p}Proc.cpp"),
                     (Join-Path $pluginDir $coreName)
-                )
+                ) + (Get-ExtraSources -Plugin $p -PluginDir $pluginDir)
                 # the test links the plug-in statically as well as loading the DLL,
                 # so it must not also pull in vstplugmain.cpp - two definitions of
                 # the entry point, and nothing here needs an exported one
@@ -297,7 +326,7 @@ try {
                 $testObjs = @(Get-ChildItem (Join-Path $testObjDir '*.obj') |
                               Select-Object -ExpandProperty FullName)
                 $testLink = @('/nologo', '/INCREMENTAL:NO', ('/OUT:' + $testExe),
-                              'psapi.lib') + $testObjs
+                              'psapi.lib') + (Get-ExtraLibs -Plugin $p) + $testObjs
                 $totalWarnings += Invoke-Native -Exe 'link' -Arguments $testLink `
                     -What "linking vst_host_verify for $p ($a)"
 

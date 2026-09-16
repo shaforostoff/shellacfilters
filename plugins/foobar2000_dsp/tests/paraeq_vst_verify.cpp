@@ -37,7 +37,9 @@
  *      renegotiate it - the same contract Dehum has and the opposite of
  *      Declick's;
  *    - resume() must drop the filter state without disturbing the settings;
- *    - the slider mappings, hostile input, bypass and the preset chunk.
+ *    - the slider mappings, hostile input, bypass and the preset chunk;
+ *    - the editor, in the two directions a drag and a piece of automation have
+ *      to travel between the curve and the sixteen parameters underneath it.
  *
  *  Built against plugins/WinVST/vst2_shim - the same clean-room VST2 shim the
  *  shipped DLL is built against, not Steinberg's SDK, which is not in this
@@ -69,6 +71,8 @@ namespace {
 
 int g_failures = 0;
 int g_ioChanged = 0;
+int g_automated = 0;
+int g_lastAutomated = -1;
 
 /*  A stand-in host. The shim has no observation hooks of its own - it is the
  *  shim that ships, not a test double - so the only way to see what the plug-in
@@ -78,8 +82,17 @@ int g_ioChanged = 0;
  *  so there is nothing to renegotiate, ever. */
 VstIntPtr VSTCALLBACK hostCallback(AEffect * effect, VstInt32 opcode, VstInt32 index,
                                    VstIntPtr value, void * ptr, float opt) {
-    (void)effect; (void)index; (void)value; (void)ptr; (void)opt;
+    (void)effect; (void)value; (void)ptr; (void)opt;
     if (opcode == audioMasterIOChanged) { ++g_ioChanged; return 1; }
+    //What a host recording automation listens for. The editor is the only thing
+    //in this plug-in that ever sends it - a slider the host moved itself does
+    //not come back - so counting it is how the editor tests below see that a
+    //drag would have been recorded.
+    if (opcode == audioMasterAutomate) {
+        ++g_automated;
+        g_lastAutomated = index;
+        return 1;
+    }
     if (opcode == audioMasterVersion) return 2400;
     return 0;
 }
@@ -500,10 +513,10 @@ void testEveryParameterMovesLive(const std::vector<double> & inL,
     runPlugin(fx, inL, inR, vL, vR, 512);
 
     const char * names[kNumParameters] =
-        { "HP Freq", "HP Slope", "LF Gain", "LF Freq", "LF Shape",
-          "LMF Gain", "LMF Freq", "LMF Q",
-          "HMF Gain", "HMF Freq", "HMF Q",
-          "HF Gain", "HF Freq", "HF Shape", "Output", "Bypass" };
+        { "Low cut", "Slope", "Bass", "Bass Hz", "Bass Shp",
+          "Revrb", "Revrb Hz", "Revrb Q",
+          "Brill", "Brill Hz", "Brill Q",
+          "Hiss", "Hiss Hz", "Hiss Shp", "Output", "Bypass" };
 
     for (int k = 0; k < kNumParameters; ++k) {
         const int before = g_ioChanged;
@@ -690,6 +703,145 @@ void testResumeKeepsTheSettings(const std::vector<double> & inL,
     check(moved < raw * 0.5, "and it is still equalising on the far side", d);
 }
 
+/*  The editor. Not what it draws - nothing here can see a curve - but the two
+ *  things the join between it and the plug-in has to get right, in both
+ *  directions:
+ *
+ *    a drag has to reach the parameters AND the host, because a VST's state is
+ *    its parameters and a host that is recording has to be told a knob moved;
+ *
+ *    a parameter moved by anything else - automation, a preset, the host's own
+ *    generic slider - has to reach the editor, or the curve on screen stops
+ *    describing the audio.
+ *
+ *  The window itself is exercised here only far enough to have one: opening it
+ *  is what makes the editor hold a paraeq_editor::Editor to talk to. The
+ *  lifecycle - open, close, reopen, close twice - is vst_host_verify's, because
+ *  there it goes over the ABI, which is where a host would break it.
+ */
+HWND makeParentWindow() {
+    return CreateWindowExW(0, L"STATIC", L"", WS_OVERLAPPEDWINDOW,
+                           0, 0, 700, 460, NULL, NULL, NULL, NULL);
+}
+
+void testEditorIsOffered() {
+    printf("\nthe editor is offered to the host\n");
+    ParaEQ fx(hostCallback);
+
+    char d[64];
+    snprintf(d, sizeof(d), "0x%04X", (unsigned)fx.getAeffect()->flags);
+    check((fx.getAeffect()->flags & effFlagsHasEditor) != 0,
+          "effFlagsHasEditor is set", d);
+    check(fx.getEditor() != NULL, "and there is an editor behind it");
+
+    //Before any window exists, because that is when a host asks.
+    ERect * r = NULL;
+    const bool got = fx.getEditor()->getRect(&r);
+    if (r) snprintf(d, sizeof(d), "%d x %d", (int)(r->right - r->left),
+                    (int)(r->bottom - r->top));
+    check(got && r != NULL && r->right > r->left && r->bottom > r->top,
+          "it has a size before it has a window", d);
+}
+
+void testADragReachesTheParametersAndTheHost() {
+    printf("\na drag on the curve moves the sliders, and says so\n");
+    ParaEQ fx(hostCallback);
+    fx.setSampleRate((float)kRate);
+
+    HWND parent = makeParentWindow();
+    if (!parent) { check(false, "a parent window is created"); return; }
+    ParaEQEditor * ed = static_cast<ParaEQEditor *>(fx.getEditor());
+    if (!ed->open(parent)) {
+        check(false, "the editor opens");
+        DestroyWindow(parent);
+        return;
+    }
+    check(true, "the editor opens");
+
+    //What the editor hands over when the user lets go of a handle: a whole
+    //Params, already sanitised, not a single control.
+    paraeq::Params p = fx.paramsFromControls();
+    p.lmfGain      = -12.0f;
+    p.lmfFrequency = 1200.0f;
+    p.lmfQ         = 2.5f;
+
+    g_automated = 0;
+    ed->editorParamsChanged(p);
+
+    const paraeq::Params back = fx.paramsFromControls();
+    char d[112];
+    snprintf(d, sizeof(d), "%.2f dB at %.1f Hz, Q %.2f",
+             (double)back.lmfGain, (double)back.lmfFrequency, (double)back.lmfQ);
+    check(fabs(back.lmfGain + 12.0) < 0.05
+          && fabs(back.lmfFrequency - 1200.0) < 1.0
+          && fabs(back.lmfQ - 2.5) < 0.02,
+          "the move arrives in the plug-in's parameters", d);
+
+    //Three controls moved, so three lanes should have been told and the other
+    //thirteen left alone: a drag on one band must not write automation for the
+    //whole equaliser.
+    snprintf(d, sizeof(d), "audioMasterAutomate called %d times", g_automated);
+    check(g_automated == 3, "and the host is told about exactly those three", d);
+
+    //And a second, identical push says nothing at all, which is what stops a
+    //drag that lands back where it started from filling an automation lane.
+    g_automated = 0;
+    ed->editorParamsChanged(p);
+    snprintf(d, sizeof(d), "%d further calls", g_automated);
+    check(g_automated == 0, "a push that changes nothing tells the host nothing", d);
+
+    ed->close();
+    DestroyWindow(parent);
+}
+
+void testTheEditorFollowsTheHost() {
+    printf("\nand it follows a parameter moved anywhere else\n");
+    ParaEQ fx(hostCallback);
+    fx.setSampleRate((float)kRate);
+
+    HWND parent = makeParentWindow();
+    if (!parent) { check(false, "a parent window is created"); return; }
+    ParaEQEditor * ed = static_cast<ParaEQEditor *>(fx.getEditor());
+    if (!ed->open(parent)) {
+        check(false, "the editor opens");
+        DestroyWindow(parent);
+        return;
+    }
+
+    const paraeq::Params * shown = ed->shownParams();
+    check(shown != NULL, "an open editor is showing something");
+    if (!shown) { ed->close(); DestroyWindow(parent); return; }
+
+    char d[112];
+    snprintf(d, sizeof(d), "%.2f dB", (double)shown->hfGain);
+    check(fabs(shown->hfGain - fx.paramsFromControls().hfGain) < 1e-6,
+          "and it opened on the plug-in's current settings", d);
+
+    //The host moves a slider - automation, a preset, its own generic UI. VST2
+    //tells the plug-in and nobody tells the editor, so idle() is where it finds
+    //out, and a host that never sends effEditIdle is the documented gap.
+    fx.setParameter(kParamL, 0.1f);          //Hiss gain hard down
+    ed->idle();
+
+    shown = ed->shownParams();
+    snprintf(d, sizeof(d), "%.2f dB, wanted %.2f",
+             (double)shown->hfGain, (double)fx.paramsFromControls().hfGain);
+    check(fabs(shown->hfGain - fx.paramsFromControls().hfGain) < 1e-6,
+          "idle() pulls the change into the editor", d);
+
+    //An idle() with nothing to do must not push anything back at the host: that
+    //is the loop this join could have, and m_synced is what stops it.
+    g_automated = 0;
+    ed->idle();
+    ed->idle();
+    snprintf(d, sizeof(d), "%d calls", g_automated);
+    check(g_automated == 0, "and a quiet idle() writes no automation", d);
+
+    ed->close();
+    check(ed->shownParams() == NULL, "a closed editor is showing nothing");
+    DestroyWindow(parent);
+}
+
 //! The sliders must land on the core's own defaults, or the two ports ship
 //! different tunings while looking identical.
 void testParameterMapping() {
@@ -705,13 +857,13 @@ void testParameterMapping() {
     //5 kHz comes back as 5000.0005, which is one ULP and about four
     //thousandths of a cent.
     struct { const char * name; double got; double want; } freqs[] = {
-        { "HP Freq",  got.hpFrequency,  want.hpFrequency  },
-        { "LF Freq",  got.lfFrequency,  want.lfFrequency  },
-        { "LMF Freq", got.lmfFrequency, want.lmfFrequency },
-        { "LMF Q",    got.lmfQ,         want.lmfQ         },
-        { "HMF Freq", got.hmfFrequency, want.hmfFrequency },
-        { "HMF Q",    got.hmfQ,         want.hmfQ         },
-        { "HF Freq",  got.hfFrequency,  want.hfFrequency  }
+        { "Low cut",  got.hpFrequency,  want.hpFrequency  },
+        { "Bass Hz",  got.lfFrequency,  want.lfFrequency  },
+        { "Revrb Hz", got.lmfFrequency, want.lmfFrequency },
+        { "Revrb Q",  got.lmfQ,         want.lmfQ         },
+        { "Brill Hz", got.hmfFrequency, want.hmfFrequency },
+        { "Brill Q",  got.hmfQ,         want.hmfQ         },
+        { "Hiss Hz",  got.hfFrequency,  want.hfFrequency  }
     };
     for (size_t i = 0; i < sizeof freqs / sizeof freqs[0]; ++i) {
         const double rel = fabs(freqs[i].got - freqs[i].want) / freqs[i].want;
@@ -738,13 +890,13 @@ void testParameterMapping() {
     fx.setParameter(kParamH, 1.0f);
     const paraeq::Params ends = fx.paramsFromControls();
     snprintf(d, sizeof(d), "%.1f Hz", ends.hpFrequency);
-    check(fabs(ends.hpFrequency - paraeq::kHpFreqMax) < 0.1, "HP Freq reaches the top of its range", d);
+    check(fabs(ends.hpFrequency - paraeq::kHpFreqMax) < 0.1, "Low cut reaches the top of its range", d);
     snprintf(d, sizeof(d), "%.1f Hz", ends.lfFrequency);
-    check(fabs(ends.lfFrequency - paraeq::kLfFreqMin) < 0.1, "LF Freq reaches the bottom of its range", d);
+    check(fabs(ends.lfFrequency - paraeq::kLfFreqMin) < 0.1, "Bass Hz reaches the bottom of its range", d);
     snprintf(d, sizeof(d), "%.1f Hz", ends.hfFrequency);
-    check(fabs(ends.hfFrequency - paraeq::kHfFreqMax) < 1.0, "HF Freq reaches the top of its range", d);
+    check(fabs(ends.hfFrequency - paraeq::kHfFreqMax) < 1.0, "Hiss Hz reaches the top of its range", d);
     snprintf(d, sizeof(d), "%.3f", ends.lmfQ);
-    check(fabs(ends.lmfQ - paraeq::kQMax) < 0.01, "LMF Q reaches the top of its range", d);
+    check(fabs(ends.lmfQ - paraeq::kQMax) < 0.01, "Revrb Q reaches the top of its range", d);
 
     //A log slider is the point of the exercise: the geometric middle of the
     //range sits at the middle of the travel, where a linear one would put it
@@ -753,7 +905,7 @@ void testParameterMapping() {
     const double mid = fx.paramsFromControls().hfFrequency;
     const double geometric = sqrt((double)paraeq::kHfFreqMin * (double)paraeq::kHfFreqMax);
     snprintf(d, sizeof(d), "%.1f Hz, geometric mean %.1f Hz", mid, geometric);
-    check(fabs(mid - geometric) < 1.0, "the HF Freq slider is logarithmic", d);
+    check(fabs(mid - geometric) < 1.0, "the Hiss Hz slider is logarithmic", d);
 
     //The discrete ones, through the displays a host shows.
     char text[64];
@@ -765,7 +917,7 @@ void testParameterMapping() {
         fx.getParameterDisplay(kParamB, text);
         if (strcmp(text, slopeIs[i]) != 0) slopes = false;
     }
-    check(slopes, "HP Slope reads off, 12 and 24 across its three buckets");
+    check(slopes, "Slope reads off, 12 and 24 across its three buckets");
 
     fx.setParameter(kParamE, 0.0f);
     fx.getParameterDisplay(kParamE, text);
@@ -773,7 +925,7 @@ void testParameterMapping() {
     fx.setParameter(kParamE, 1.0f);
     fx.getParameterDisplay(kParamE, text);
     shapes = shapes && (strcmp(text, "bell") == 0);
-    check(shapes, "LF Shape reads shelf and bell at the two ends");
+    check(shapes, "Bass Shp reads shelf and bell at the two ends");
 
     fx.setParameter(kParamP, 1.0f);
     fx.getParameterDisplay(kParamP, text);
@@ -868,6 +1020,9 @@ int main() {
     testRobustness(inL, inR);
     testFloatPathIsDoublePlusDither(inL, inR);
     testResumeKeepsTheSettings(inL, inR);
+    testEditorIsOffered();
+    testADragReachesTheParametersAndTheHost();
+    testTheEditorFollowsTheHost();
     testParameterMapping();
     testChunk();
 

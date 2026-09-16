@@ -6,12 +6,22 @@
  *  which is a verbatim copy of the file foo_dsp_paraeq builds - see the note at
  *  the top of that header.
  *
- *  Sixteen parameters, which is a lot for a host's generic slider list and is
- *  the price of a fixed layout: the foobar2000 build draws a curve and lets the
- *  user grab a band, and a VST2 with no editor has nothing to draw with. The
- *  mapping from sliders to the core's units is in ParaEQ.cpp, and every
- *  frequency and Q slider is logarithmic there - the one thing a generic UI can
- *  still get right.
+ *  Sixteen parameters, which is a lot for a host's generic slider list - so
+ *  there is an editor, and it is the same curve with five handles on it that
+ *  the foobar2000 build draws. See ParaEQEditor.h. The sliders are still there
+ *  underneath it, because that is what a VST parameter is and what a host
+ *  automates; the editor moves them rather than replacing them.
+ *
+ *  The mapping from sliders to the core's units is in ParaEQ.cpp, and every
+ *  frequency and Q slider is logarithmic there - which matters less now that a
+ *  generic list is the fallback rather than the interface, but a host's own
+ *  knob is still the only thing some users will see.
+ *
+ *  The names are the ones the restoration literature uses - Low cut, Bass,
+ *  Reverb cut, Brilliance, Hiss cut - rather than a console's HP/LF/LMF/HMF/HF,
+ *  so that an automation lane says what the knob is for. kVstMaxParamStrLen is
+ *  eight characters, which is why two of them are abbreviated; the editor has
+ *  the room to write them out in full and does.
  * ======================================== */
 
 #ifndef __ParaEQ_H
@@ -26,22 +36,23 @@
 #include <math.h>
 
 #include "paraeq_core.h"
+#include "ParaEQEditor.h"
 
 enum {
-	kParamA =0,     //HP Freq
-	kParamB =1,     //HP Slope
-	kParamC =2,     //LF Gain
-	kParamD =3,     //LF Freq
-	kParamE =4,     //LF Shape
-	kParamF =5,     //LMF Gain
-	kParamG =6,     //LMF Freq
-	kParamH =7,     //LMF Q
-	kParamI =8,     //HMF Gain
-	kParamJ =9,     //HMF Freq
-	kParamK =10,    //HMF Q
-	kParamL =11,    //HF Gain
-	kParamM =12,    //HF Freq
-	kParamN =13,    //HF Shape
+	kParamA =0,     //Low cut  - corner        (the strip's HP)
+	kParamB =1,     //Slope    - off/12/24
+	kParamC =2,     //Bass     - gain          (LF)
+	kParamD =3,     //Bass Hz  - corner
+	kParamE =4,     //Bass Shp - shelf or bell
+	kParamF =5,     //Revrb    - gain          (LMF)
+	kParamG =6,     //Revrb Hz - centre
+	kParamH =7,     //Revrb Q
+	kParamI =8,     //Brill    - gain          (HMF)
+	kParamJ =9,     //Brill Hz - centre
+	kParamK =10,    //Brill Q
+	kParamL =11,    //Hiss     - gain          (HF)
+	kParamM =12,    //Hiss Hz  - corner
+	kParamN =13,    //Hiss Shp - shelf or bell
 	kParamO =14,    //Output
 	kParamP =15,    //Bypass
   kNumParameters = 16
@@ -89,6 +100,11 @@ public:
 	//it.
 	paraeq::Params paramsFromControls();
 
+	//The inverse: the sixteen slider positions that mean `p`. Static because it
+	//is a pure mapping with no plug-in state in it, and public because
+	//ParaEQEditor turns a dragged curve back into sliders with it.
+	static void controlsFromParams(const paraeq::Params & p, float * out);
+
 private:
     char _programName[kVstMaxProgNameLen + 1];
     std::set< std::string > _canDo;
@@ -110,12 +126,18 @@ private:
     float O;
     float P;
 
-	//setControlsFromParams() is the inverse of paramsFromControls() above, and
-	//exists so the constructor can place the sliders on
-	//paraeq::Params::defaults() rather than on a second copy of those numbers
-	//written out in this file. updateConfig() is what notices a slider moved.
+	//setControlsFromParams() writes controlsFromParams() into A..P, and exists
+	//so the constructor can place the sliders on paraeq::Params::defaults()
+	//rather than on a second copy of those numbers written out in this file.
+	//updateConfig() is what notices a slider moved.
 	void setControlsFromParams(const paraeq::Params & p);
 	void updateConfig();
+
+	//By value and always constructed, because it costs a few dozen bytes until a
+	//host opens it: the window is created by ParaEQEditor::open() and nothing
+	//before that touches the screen. The constructor hands its address to
+	//setEditor(), which is what sets effFlagsHasEditor.
+	ParaEQEditor editorImpl;
 
 	paraeq::Channel chanL;
 	paraeq::Channel chanR;

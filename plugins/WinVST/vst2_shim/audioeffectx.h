@@ -16,10 +16,17 @@
  *  so this has to be called that and has to define that guard macro. What it
  *  contains is the surface those plug-ins actually use, plus the virtuals the
  *  dispatcher needs somewhere to send an opcode. It is not the whole SDK:
- *  there is no editor, no MIDI, no offline processing, no speaker
- *  arrangements, no parameter properties. Every one of those is answered
- *  "not supported", which is what the stock plug-ins answered anyway by not
- *  overriding them.
+ *  there is no MIDI, no offline processing, no speaker arrangements, no
+ *  parameter properties. Every one of those is answered "not supported", which
+ *  is what the stock plug-ins answered anyway by not overriding them.
+ *
+ *  There IS an editor, as of ParaEQ. AEffEditor below is the SDK's class cut
+ *  down to the four opcodes a host actually needs to put a window on screen -
+ *  getRect, open, close, idle - with no VSTGUI and no knowledge of what is
+ *  drawn inside. A plug-in that calls setEditor() gets effFlagsHasEditor set
+ *  for it and the eff*Edit* opcodes routed; one that does not is exactly the
+ *  plug-in it was before, which is why Declick and Dehum are untouched by
+ *  this and still assert that no editor is claimed.
  *
  *  Deliberate departures from the SDK, all in the same direction - toward the
  *  plug-in actually loading and behaving:
@@ -76,6 +83,66 @@ inline void vst_strncat(char * dst, const char * src, size_t maxLen)
     if (at >= maxLen) { dst[maxLen] = 0; return; }
     vst_strncpy(dst + at, src, maxLen - at);
 }
+
+/* ---------------------------------------------------------------------------
+ *  AEffEditor - the plug-in's window, as much of it as the ABI cares about
+ *
+ *  The SDK's class carries a VSTGUI dependency and a pile of opcodes no host
+ *  in practice sends. This is the part that matters: the host asks how big the
+ *  window wants to be, hands over a parent to put it in, takes it away again,
+ *  and pings it while it is up. Everything about what the window contains is
+ *  the subclass's business.
+ *
+ *  Lifetime is the plug-in's. The editor is constructed by the plug-in's
+ *  constructor and destroyed by its destructor, and open()/close() may happen
+ *  many times in between - a host opens the window when the user asks for it
+ *  and closes it when they put it away, repeatedly, without the plug-in being
+ *  touched. So an editor must survive close() with its state intact, and must
+ *  not assume open() happens at all.
+ * ------------------------------------------------------------------------ */
+
+class AudioEffect;
+
+class AEffEditor
+{
+public:
+    AEffEditor() : effect(0), systemWindow(0) {}
+    virtual ~AEffEditor() {}
+
+    /*  The size the editor wants, as a pointer to storage the EDITOR owns. The
+     *  host reads it and moves on; it never frees it. Return false, or leave
+     *  *rect null, and the host will decide the size itself - usually badly. */
+    virtual bool getRect(ERect ** rect) { (void)rect; return false; }
+
+    /*  `ptr` is the platform's parent window: an HWND on Windows, an NSView on
+     *  macOS, a Window on X11. The host has already created it and will destroy
+     *  it after close(), so the editor parents its own window to it and must
+     *  not outlive it. Returning false tells the host the editor did not open. */
+    virtual bool open(void * ptr) { systemWindow = ptr; return true; }
+
+    /*  The window is going away. Whatever open() created is destroyed here, not
+     *  in the destructor: the host may open it again afterwards. */
+    virtual void close() { systemWindow = 0; }
+
+    /*  Called by the host while the editor is up, at whatever rate it likes and
+     *  possibly never. Nothing here needs it - the editor is a real child
+     *  window with its own message loop behind it - so the default does
+     *  nothing, and that is the honest implementation rather than a stub. */
+    virtual void idle() {}
+
+    virtual bool isOpen() { return systemWindow != 0; }
+
+    /*  Set by AudioEffect::setEditor(), so an editor can reach the plug-in it
+     *  belongs to without being handed it twice. */
+    virtual void setEffect(AudioEffect * eff) { effect = eff; }
+    AudioEffect * getEffect() const { return effect; }
+
+    void * getSystemWindow() const { return systemWindow; }
+
+protected:
+    AudioEffect * effect;
+    void *        systemWindow;
+};
 
 /* ---------------------------------------------------------------------------
  *  AudioEffect - VST 1.0's surface, and the part that owns the AEffect
@@ -150,6 +217,19 @@ public:
     void setInitialDelay(VstInt32 delay) { cEffect.initialDelay = delay; }
     VstInt32 getInitialDelay() const { return cEffect.initialDelay; }
 
+    /*  Hands the plug-in its editor and sets effFlagsHasEditor, which is the
+     *  flag a host reads to decide whether to offer a window at all. Passing 0
+     *  clears both. The plug-in keeps ownership - this stores the pointer and
+     *  does not delete it - because an Airwindows-pattern plug-in holds its
+     *  editor as a member and the destructor order is then the compiler's
+     *  problem rather than ours. */
+    void setEditor(AEffEditor * e) {
+        editor = e;
+        if (editor) editor->setEffect(this);
+        setFlag(effFlagsHasEditor, editor != 0);
+    }
+    AEffEditor * getEditor() const { return editor; }
+
     float    getSampleRate() { return sampleRate; }
     VstInt32 getBlockSize()  { return blockSize; }
     VstInt32 getNumPrograms() const { return numPrograms; }
@@ -170,6 +250,7 @@ protected:
     { if (state) cEffect.flags |= flag; else cEffect.flags &= ~flag; }
 
     audioMasterCallback audioMaster;
+    AEffEditor * editor;      //!< not owned; see setEditor()
     AEffect  cEffect;
     float    sampleRate;
     VstInt32 blockSize;

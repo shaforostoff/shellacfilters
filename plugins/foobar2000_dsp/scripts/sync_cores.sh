@@ -53,10 +53,18 @@ esac
 # position for the same reason, and takes the cores for both plug-ins it builds
 # out of each - the live one and the buffer one share the folder.
 #
+# ParaEQ mirrors its curve editor as well as its core, which nothing else here
+# does, and to WinVST only. paraeq_editor.{h,cpp} is plain Win32 with no SDK in
+# it, so the foobar2000 component and the VST compile the same file and the two
+# get the same instrument - the alternative was a second owner-drawn editor of
+# that size for the VST, which would have diverged inside a month. MacAU is not
+# on that list and must not be: an Audio Unit has no Win32 window to put it in.
+#
 mirrors="
 foobar2000_dsp/foo_dsp_declick|declick_core.h,declick_core.cpp|WinVST/Declick,LinuxVST/src/Declick,MacVST/Declick/source,MacAU/Declick,vdjplugin/vdj_declick
 foobar2000_dsp/foo_dsp_dehum|dehum_core.h,dehum_core.cpp|WinVST/Dehum,LinuxVST/src/Dehum,MacVST/Dehum/source,MacAU/Dehum,vdjplugin/vdj_dehum
 foobar2000_dsp/foo_dsp_paraeq|paraeq_core.h,paraeq_core.cpp|WinVST/ParaEQ,MacAU/ParaEQ
+foobar2000_dsp/foo_dsp_paraeq|paraeq_editor.h,paraeq_editor.cpp|WinVST/ParaEQ
 WinVST/Declick|Declick.h,Declick.cpp,DeclickProc.cpp|LinuxVST/src/Declick,MacVST/Declick/source
 WinVST/Dehum|Dehum.h,Dehum.cpp,DehumProc.cpp|LinuxVST/src/Dehum,MacVST/Dehum/source
 "

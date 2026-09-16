@@ -2,9 +2,12 @@
  *  foo_dsp_paraeq - the curve editor
  * ======================================== */
 
-#include "stdafx.h"
-
+// paraeq_editor.h brings windows.h. windowsx.h is for GET_X_LPARAM and its
+// sibling, which are the only macros out of it this file uses. No SDK: the
+// WinVST port compiles this same file with no foobar2000 anywhere in sight.
 #include "paraeq_editor.h"
+
+#include <windowsx.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -14,6 +17,18 @@ using namespace paraeq;
 namespace paraeq_editor {
 
 namespace {
+
+/*  The module this code is linked into, for RegisterClassExW and
+ *  CreateWindowExW. It used to be core_api::get_my_instance(), which is the
+ *  right answer and the wrong way to ask: there is no core_api in a VST. The
+ *  linker's own __ImageBase sits at the start of the module's mapped image, so
+ *  its address IS the HINSTANCE, resolved at link time with nothing to call and
+ *  nothing to fail. MSVC and every toolchain that targets PE provide it, which
+ *  is the whole of what this file needs to compile against.
+ */
+EXTERN_C IMAGE_DOS_HEADER __ImageBase;
+
+inline HINSTANCE thisModule() { return (HINSTANCE)&__ImageBase; }
 
 // ---------------------------------------------------------------------------
 // The bands, as the interface sees them
@@ -271,7 +286,7 @@ bool registerClass()
     // class erase first would flicker.
     wc.style         = CS_DBLCLKS;
     wc.lpfnWndProc   = &Editor::wndProc;
-    wc.hInstance     = core_api::get_my_instance();
+    wc.hInstance     = thisModule();
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = NULL;
     wc.lpszClassName = kClassName;
@@ -329,7 +344,7 @@ HWND Editor::create(HWND parent, const RECT & rc, UINT id, const Params & initia
         0, kClassName, L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_TABSTOP,
         rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
-        parent, (HMENU)(UINT_PTR)id, core_api::get_my_instance(), this);
+        parent, (HMENU)(UINT_PTR)id, thisModule(), this);
 
     return m_wnd;
 }
@@ -410,10 +425,10 @@ bool Editor::showSelection() const
 
 void Editor::theme()
 {
-    if (!m_host.editorColor(ui_color_background, m_colBack)) {
+    if (!m_host.editorColor(kColorBackground, m_colBack)) {
         m_colBack = GetSysColor(COLOR_WINDOW);
     }
-    if (!m_host.editorColor(ui_color_text, m_colText)) {
+    if (!m_host.editorColor(kColorText, m_colText)) {
         m_colText = GetSysColor(COLOR_WINDOWTEXT);
     }
 
@@ -424,7 +439,7 @@ void Editor::theme()
     m_colFill  = blend(m_colBack, m_colText, 0.10);
     m_colCurve = m_colText;
 
-    if (!m_host.editorColor(ui_color_selection, m_colSel)) {
+    if (!m_host.editorColor(kColorSelection, m_colSel)) {
         m_colSel = GetSysColor(COLOR_HIGHLIGHT);
     }
     // A host may hand back a selection colour equal to the background - some

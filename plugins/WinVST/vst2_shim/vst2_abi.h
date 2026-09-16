@@ -50,6 +50,7 @@
  *  makes AEffect a different size on the two architectures. Using the stdint
  *  spellings rather than the SDK's #if ladder gets the same types with none of
  *  the platform guessing. */
+typedef int16_t  VstInt16;
 typedef int32_t  VstInt32;
 typedef int64_t  VstInt64;
 typedef intptr_t VstIntPtr;
@@ -399,6 +400,23 @@ enum VstPlugCategory {
     kPlugCategShell,
     kPlugCategGenerator,
     kPlugCategMaxCount
+};
+
+/*  The editor's size, in pixels. Four 16 bit fields and the order is
+ *  top, left, bottom, right - not the left, top, right, bottom a Win32 RECT
+ *  uses, which is a transposition waiting to happen and is why ParaEQEditor
+ *  converts between the two in one place.
+ *
+ *  A host receives a pointer to one of these from effEditGetRect and reads it
+ *  immediately; it never frees it and never writes to it, so the plug-in keeps
+ *  the storage and hands out its address. Eight bytes with no padding on either
+ *  architecture, which is what lets a 32 bit host read a struct a 32 bit
+ *  plug-in wrote without either side negotiating. */
+struct ERect {
+    VstInt16 top;
+    VstInt16 left;
+    VstInt16 bottom;
+    VstInt16 right;
 };
 
 /*  Declared, never defined: nothing in this tree processes MIDI or overrides

@@ -265,6 +265,13 @@ endif()
 # There is no LinuxVST or MacVST ParaEQ, so unlike its two siblings this target
 # is not also standing in for ports it is required to be byte-identical to. It
 # is testing one plug-in.
+#
+# It compiles two files the others have no equivalent of: ParaEQEditor.cpp, the
+# join between the VST2 editor interface and the curve editor, and
+# paraeq_editor.cpp, the curve editor itself - which is mirrored in from
+# foo_dsp_paraeq and is the same file the foobar2000 component draws with. So
+# the editor's own code is compiled twice in this test suite, once per host, and
+# sync_cores is what says the two copies are the same file.
 
 set(WINVST_PARAEQ_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../WinVST/ParaEQ")
 
@@ -274,12 +281,19 @@ if(EXISTS "${WINVST_PARAEQ_DIR}/ParaEQ.cpp")
         "${WINVST_SHIM_DIR}/audioeffectx.cpp"
         "${WINVST_PARAEQ_DIR}/ParaEQ.cpp"
         "${WINVST_PARAEQ_DIR}/ParaEQProc.cpp"
+        "${WINVST_PARAEQ_DIR}/ParaEQEditor.cpp"
+        "${WINVST_PARAEQ_DIR}/paraeq_editor.cpp"
         "${WINVST_PARAEQ_DIR}/paraeq_core.cpp"
     )
 
     target_include_directories(paraeq_vst_verify PRIVATE
         "${WINVST_SHIM_DIR}"
         "${WINVST_PARAEQ_DIR}")
+
+    # The editor draws, so this one links what a window needs. The other two VST
+    # tests link nothing but the CRT, and that stays true: Declick and Dehum have
+    # no editor.
+    target_link_libraries(paraeq_vst_verify PRIVATE user32 gdi32)
 
     if(MSVC)
         target_compile_options(paraeq_vst_verify PRIVATE /W4)

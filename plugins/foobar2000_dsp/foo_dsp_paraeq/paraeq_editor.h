@@ -46,9 +46,29 @@
 
 #include "paraeq_core.h"
 
+// Plain Win32 and nothing else. The editor was written inside a foobar2000
+// component and has since acquired a second host - plugins/WinVST/ParaEQ, which
+// has no SDK to include - so it asks for what it actually uses rather than
+// leaning on whatever the includer's precompiled header happened to bring in.
+// In the foobar2000 build this is always reached after stdafx.h, which pulls
+// windows.h in behind the SDK for the WinSock2 reason documented there, so this
+// include is a no-op in that tree and the ordering is untouched.
+#include <windows.h>
+
 #include <vector>
 
 namespace paraeq_editor {
+
+//! The colours the editor asks its host for. An enum rather than the
+//! foobar2000 GUIDs it used to be: a VST host has no ui_color_* to answer with,
+//! and these three are the whole of what is ever asked. Everything else the
+//! editor draws is blended from them - see Editor::theme() - so a host that
+//! answers these is correct in light mode, dark mode and whatever comes next.
+enum Color {
+    kColorBackground,
+    kColorText,
+    kColorSelection
+};
 
 //! What the editor needs from whoever put it on screen. Both implementations
 //! are a dozen lines; everything else the editor does for itself.
@@ -69,9 +89,9 @@ public:
     //! button that only appears while editorEngaged() is false.
     virtual void editorEngage() {}
 
-    //! A foobar2000 theme colour, e.g. ui_color_background. False to fall back
-    //! to the system colours, which is what the modal dialog does.
-    virtual bool editorColor(const GUID & what, COLORREF & out) {
+    //! One of the three theme colours. False to fall back to the system ones,
+    //! which is what the modal dialog and the VST editor both do.
+    virtual bool editorColor(Color what, COLORREF & out) {
         (void)what; (void)out; return false;
     }
 

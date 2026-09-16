@@ -56,6 +56,13 @@ $plugins = Split-Path -Parent $root                  # plugins
 # vdjplugin is in the same position for the same reason, and one folder there
 # serves the two plug-ins it builds out of each core - the live one and the
 # buffer one.
+#
+# ParaEQ mirrors its curve editor as well as its core, which nothing else here
+# does, and to WinVST only. paraeq_editor.{h,cpp} is plain Win32 with no SDK in
+# it, so the foobar2000 component and the VST compile the same file and the two
+# get the same instrument - the alternative was a second owner-drawn editor of
+# that size for the VST, which would have diverged inside a month. MacAU is not
+# on that list and must not be: an Audio Unit has no Win32 window to put it in.
 
 $mirrors = @(
     @{
@@ -81,6 +88,11 @@ $mirrors = @(
         Files = @('paraeq_core.h', 'paraeq_core.cpp')
         To    = @((Join-Path $plugins 'WinVST\ParaEQ'),
                   (Join-Path $plugins 'MacAU\ParaEQ'))
+    },
+    @{
+        From  = Join-Path $root 'foo_dsp_paraeq'
+        Files = @('paraeq_editor.h', 'paraeq_editor.cpp')
+        To    = @((Join-Path $plugins 'WinVST\ParaEQ'))
     },
     @{
         From  = Join-Path $plugins 'WinVST\Declick'
