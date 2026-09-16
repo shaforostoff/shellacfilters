@@ -18,7 +18,7 @@
 			<key>type</key>
 			<string>aufx</string>
 			<key>version</key>
-			<integer>65536</integer>
+			<integer>65537</integer>
 		</dict>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
@@ -36,11 +36,11 @@
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>1.0.1</string>
 	<key>CFBundleSignature</key>
 	<string>Shlc</string>
 	<key>CFBundleVersion</key>
-	<string>1.0</string>
+	<string>1.0.1</string>
 	<key>CSResourcesFileMapped</key>
 	<true/>
 </dict>

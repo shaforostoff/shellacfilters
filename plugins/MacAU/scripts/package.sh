@@ -326,37 +326,45 @@ tsa_retry() {
     done
 }
 
-# The version the plug-ins were compiled with, so the receipt and the file name
-# say the same thing the bundles do. k<Name>Version is a packed hex constant -
-# 0x00010000 is 1.0.0 - and all three have to agree, because this is one package
-# and a version that described only one of them would be a lie about the other
-# two.
+# k<Name>Version is where a plug-in's version lives: a packed hex constant, so
+# 0x00010001 is 1.0.1. It is the number the bundle registers with, the number a
+# host displays, and the number the Component Manager keys a cached registration
+# on - which is the one that bites if it does not move when the code does.
 #
 # Each *Version.h defines the constant twice, once per side of an #ifdef DEBUG,
 # and the debug one is 0xFFFFFFFF - the Airwindows convention for "this is not a
-# release". Taking the first match gets that one and calls the package 65535.255.255,
-# so it is skipped by value rather than by counting lines.
-packed_version=""
+# release". Taking the first match gets that one and calls the package
+# 65535.255.255, so it is skipped by value rather than by counting lines.
+packed_version_of() {
+    pv_raw=$(sed -n "s/^[[:space:]]*#define[[:space:]]*k$1Version[[:space:]]*0[xX]\([0-9A-Fa-f]*\).*/\1/p" \
+             "$root/$1/$1Version.h" |
+             awk 'toupper($0) != "FFFFFFFF" { print; exit }')
+    [ -n "$pv_raw" ] || return 1
+    printf '%d\n' $((0x$pv_raw))
+}
+
+dotted_version_of() {
+    printf '%d.%d.%d\n' $(($1 >> 16)) $((($1 >> 8) & 255)) $(($1 & 255))
+}
+
+# The package takes the highest of them, not a consensus. The three are versioned
+# independently and are meant to be: ParaEQ arrived after the other two had
+# already had a fix, so requiring them to agree would mean bumping a plug-in
+# that had not changed just to make a package name come out. A package carrying
+# a 1.0.1 Declick while calling itself 1.0.0 would be describing its oldest
+# contents rather than itself, so the newest wins.
 if [ -z "$version" ]; then
+    packed_version=""
     for name in $plugin_names; do
-        raw=$(sed -n "s/^[[:space:]]*#define[[:space:]]*k${name}Version[[:space:]]*0[xX]\([0-9A-Fa-f]*\).*/\1/p" \
-              "$root/$name/${name}Version.h" |
-              awk 'toupper($0) != "FFFFFFFF" { print; exit }')
-        [ -n "$raw" ] || {
+        pv=$(packed_version_of "$name") || {
             echo "no release k${name}Version in $name/${name}Version.h; pass --version" >&2
             exit 1
         }
-        decoded=$(printf '%d.%d.%d\n' \
-                  $((0x$raw >> 16)) $(((0x$raw >> 8) & 255)) $((0x$raw & 255)))
-        if [ -z "$version" ]; then
-            version="$decoded"
-            packed_version=$((0x$raw))
-        elif [ "$version" != "$decoded" ]; then
-            echo "the three plug-ins disagree about the version: $version vs $decoded ($name)." >&2
-            echo "Line them up in the *Version.h files, or pass --version." >&2
-            exit 1
+        if [ -z "$packed_version" ] || [ "$pv" -gt "$packed_version" ]; then
+            packed_version="$pv"
         fi
     done
+    version=$(dotted_version_of "$packed_version")
 fi
 [ -n "$version" ] || { echo "could not work out a version; pass --version" >&2; exit 1; }
 
@@ -371,6 +379,7 @@ fi
 echo "=== collect ==="
 for name in $plugin_names; do
     comp="$src/$name.component"
+    want_dotted=""        # sh has no locals; do not report the last one's
     [ -x "$comp/Contents/MacOS/$name" ] || {
         echo "missing $comp/Contents/MacOS/$name" >&2
         echo "run scripts/build.sh first, or drop --skip-build." >&2
@@ -384,21 +393,31 @@ for name in $plugin_names; do
         echo "$name.component has no AudioComponents entry in its Info.plist" >&2
         exit 1
     }
-    # The version in there is the number a host displays, and it is written by
-    # hand in the Info.plist while k<Name>Version is written by hand in the
-    # header. Nothing makes them agree, so this does - skipped when --version
-    # overrode the derivation and there is nothing to be consistent with.
-    if [ -n "$packed_version" ]; then
-        plist_version=$(/usr/libexec/PlistBuddy -c "Print :AudioComponents:0:version" \
-                        "$comp/Contents/Info.plist" 2>/dev/null || echo "")
-        [ "$plist_version" = "$packed_version" ] || {
-            echo "$name: Info.plist says version $plist_version, k${name}Version says" >&2
-            echo "$packed_version ($version). One of the two is out of date." >&2
+    # A plug-in's version is written by hand in three places - the constant in
+    # the header, the registration integer, and the string Finder shows - and
+    # nothing makes them agree, so this does. Per plug-in and against its own
+    # header, not against the package version, which is a different number by
+    # design. Run whatever --version said, because this is about each bundle
+    # being internally consistent rather than about what the .pkg is called.
+    if want_packed=$(packed_version_of "$name"); then
+        want_dotted=$(dotted_version_of "$want_packed")
+        got_packed=$(/usr/libexec/PlistBuddy -c "Print :AudioComponents:0:version" \
+                     "$comp/Contents/Info.plist" 2>/dev/null || echo "")
+        got_dotted=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+                     "$comp/Contents/Info.plist" 2>/dev/null || echo "")
+        [ "$got_packed" = "$want_packed" ] || {
+            echo "$name: Info.plist registers version $got_packed, k${name}Version says" >&2
+            echo "  $want_packed ($want_dotted). One of the two is out of date." >&2
+            exit 1
+        }
+        [ "$got_dotted" = "$want_dotted" ] || {
+            echo "$name: CFBundleShortVersionString is $got_dotted, k${name}Version says" >&2
+            echo "  $want_dotted. One of the two is out of date." >&2
             exit 1
         }
     fi
     archs=$(lipo -archs "$comp/Contents/MacOS/$name" 2>/dev/null || echo '?')
-    printf '  %-20s %s\n' "$name.component" "$archs"
+    printf '  %-20s %-8s %s\n' "$name.component" "${want_dotted:-?}" "$archs"
     case "$archs" in
         *x86_64*arm64*|*arm64*x86_64*) ;;
         *) echo "  note: not universal - a host running under the other" >&2
