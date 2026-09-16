@@ -2,6 +2,25 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>AudioComponents</key>
+	<array>
+		<dict>
+			<key>description</key>
+			<string>Declick AU (AR interpolation)</string>
+			<key>factoryFunction</key>
+			<string>${PRODUCT_NAME:identifier}Factory</string>
+			<key>manufacturer</key>
+			<string>Shlc</string>
+			<key>name</key>
+			<string>ShellacFilters: Declick</string>
+			<key>subtype</key>
+			<string>dclk</string>
+			<key>type</key>
+			<string>aufx</string>
+			<key>version</key>
+			<integer>65536</integer>
+		</dict>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleExecutable</key>

@@ -125,11 +125,14 @@ public:
 												 AudioUnitParameterID	inParameterID,
 												 AudioUnitParameterInfo	&outParameterInfo);
     
+	//`bool &` where the other 542 folders here say `Boolean &`. AudioUnitSDK
+	//spells it bool, and that is what scripts/build.sh builds against - so
+	//this is what makes the override an override, not a typo to tidy up.
 	virtual ComponentResult		GetPropertyInfo(AudioUnitPropertyID		inID,
 												AudioUnitScope			inScope,
 												AudioUnitElement		inElement,
 												UInt32 &			outDataSize,
-												Boolean	&			outWritable );
+												bool	&			outWritable );
 	
 	virtual ComponentResult		GetProperty(AudioUnitPropertyID inID,
 											AudioUnitScope 		inScope,

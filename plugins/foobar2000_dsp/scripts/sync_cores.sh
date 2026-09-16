@@ -53,13 +53,10 @@ esac
 # position for the same reason, and takes the cores for both plug-ins it builds
 # out of each - the live one and the buffer one share the folder.
 #
-# ParaEQ is WinVST only so far, so its core line has one destination rather than
-# five and there is no wrapper line for it: those keep the other VST2 ports in
-# step with WinVST, and it has none.
 mirrors="
 foobar2000_dsp/foo_dsp_declick|declick_core.h,declick_core.cpp|WinVST/Declick,LinuxVST/src/Declick,MacVST/Declick/source,MacAU/Declick,vdjplugin/vdj_declick
 foobar2000_dsp/foo_dsp_dehum|dehum_core.h,dehum_core.cpp|WinVST/Dehum,LinuxVST/src/Dehum,MacVST/Dehum/source,MacAU/Dehum,vdjplugin/vdj_dehum
-foobar2000_dsp/foo_dsp_paraeq|paraeq_core.h,paraeq_core.cpp|WinVST/ParaEQ
+foobar2000_dsp/foo_dsp_paraeq|paraeq_core.h,paraeq_core.cpp|WinVST/ParaEQ,MacAU/ParaEQ
 WinVST/Declick|Declick.h,Declick.cpp,DeclickProc.cpp|LinuxVST/src/Declick,MacVST/Declick/source
 WinVST/Dehum|Dehum.h,Dehum.cpp,DehumProc.cpp|LinuxVST/src/Dehum,MacVST/Dehum/source
 "

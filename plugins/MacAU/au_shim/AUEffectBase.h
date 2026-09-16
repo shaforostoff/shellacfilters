@@ -45,25 +45,43 @@ typedef const char * CFStringRef;
 typedef const void * CFArrayRef;
 #define CFSTR(s) (s)
 
-static const OSStatus kAudioUnitErr_InvalidProperty  = -10879;
-static const OSStatus kAudioUnitErr_InvalidParameter = -10878;
+//! A plug-in with an indexed parameter hands the host an array of names for it.
+//! With C strings for the names there is nothing to allocate and nothing to
+//! retain, so both of these are the identity - which is all the tests ask of
+//! them: that the plug-in offers strings for the parameters that should have
+//! them and refuses for the ones that should not.
+inline CFArrayRef CFArrayCreate(const void * /*allocator*/, const void ** values,
+                                long /*count*/, const void * /*callBacks*/)
+{ return (CFArrayRef)values; }
+
+inline CFStringRef CFRetain(CFStringRef s) { return s; }
+
+static const OSStatus kAudioUnitErr_InvalidProperty      = -10879;
+static const OSStatus kAudioUnitErr_InvalidParameter     = -10878;
+static const OSStatus kAudioUnitErr_InvalidPropertyValue = -10851;
 
 static const AudioUnitScope kAudioUnitScope_Global = 0;
 
 static const AudioUnitPropertyID kAudioUnitProperty_Latency = 12;
 
-static const AudioUnitParameterUnit kAudioUnitParameterUnit_Generic = 0;
+static const AudioUnitParameterUnit kAudioUnitParameterUnit_Generic  = 0;
+static const AudioUnitParameterUnit kAudioUnitParameterUnit_Indexed  = 1;
+static const AudioUnitParameterUnit kAudioUnitParameterUnit_Boolean  = 2;
+static const AudioUnitParameterUnit kAudioUnitParameterUnit_Hertz    = 8;
+static const AudioUnitParameterUnit kAudioUnitParameterUnit_Decibels = 13;
 
-static const UInt32 kAudioUnitParameterFlag_HasCFNameString = (1u << 20);
-static const UInt32 kAudioUnitParameterFlag_IsReadable      = (1u << 30);
-static const UInt32 kAudioUnitParameterFlag_IsWritable      = (1u << 31);
+static const UInt32 kAudioUnitParameterFlag_HasClump           = (1u << 20);
+static const UInt32 kAudioUnitParameterFlag_DisplayLogarithmic = (1u << 22);
+static const UInt32 kAudioUnitParameterFlag_HasCFNameString    = (1u << 27);
+static const UInt32 kAudioUnitParameterFlag_IsReadable         = (1u << 30);
+static const UInt32 kAudioUnitParameterFlag_IsWritable         = (1u << 31);
 
 static const AudioUnitRenderActionFlags kAudioUnitRenderAction_OutputIsSilence = (1u << 4);
 
 //! Real AudioBufferList ends in a flexible mBuffers[1] that callers
-//! over-allocate. Both plug-ins here are stereo only - SupportedNumChannels()
-//! says 2 in 2 out and nothing else - so two is the whole story and a plain
-//! array keeps the test's stack frames honest.
+//! over-allocate. Nothing in this folder goes past stereo - Declick and Dehum
+//! say 2 in 2 out and nothing else, ParaEQ adds mono - so two is the whole
+//! story and a plain array keeps the test's stack frames honest.
 struct AudioBuffer {
     UInt32 mNumberChannels;
     UInt32 mDataByteSize;
@@ -195,12 +213,22 @@ public:
                                              AudioUnitParameterInfo &)
     { return kAudioUnitErr_InvalidParameter; }
 
+    //! `bool &`, not the `Boolean &` the Xcode 3 headers had: AudioUnitSDK
+    //! spells it bool, and the plug-in sources have to override whichever of
+    //! the two this folder is built against.
     virtual ComponentResult GetPropertyInfo(AudioUnitPropertyID, AudioUnitScope,
-                                            AudioUnitElement, UInt32 &, Boolean &)
+                                            AudioUnitElement, UInt32 &, bool &)
     { return kAudioUnitErr_InvalidProperty; }
 
     virtual ComponentResult GetProperty(AudioUnitPropertyID, AudioUnitScope,
                                         AudioUnitElement, void *)
+    { return kAudioUnitErr_InvalidProperty; }
+
+    //! How a host asks what to call a group of parameters. The real SDK
+    //! dispatches kAudioUnitProperty_ParameterClumpName to this before it
+    //! consults GetProperty, so a plug-in that groups its controls - ParaEQ -
+    //! answers here.
+    virtual ComponentResult CopyClumpName(AudioUnitScope, UInt32, UInt32, CFStringRef *)
     { return kAudioUnitErr_InvalidProperty; }
 
     virtual bool    SupportsTail() { return false; }
@@ -210,9 +238,10 @@ public:
     virtual ComponentResult Version() { return 0; }
 };
 
-//! The real macro builds the component's factory and its exported entry point.
-//! Here it is just the entry point, so that a missing or misspelled one is
-//! still a link error rather than something nobody notices until a DAW scans.
+//! Against the real SDK this expands to the factory function a modern host
+//! looks up by name from the Info.plist - see ../au_compat/AUEffectBase.h.
+//! Here it is a plain entry point, so that a missing or misspelled one is still
+//! a link error rather than something nobody notices until a DAW scans.
 #define COMPONENT_ENTRY(Class)                          \
     extern "C" void * Class##Entry(void);               \
     extern "C" void * Class##Entry(void) { return new Class((AudioUnit)0); }

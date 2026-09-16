@@ -1586,13 +1586,16 @@ corner above Nyquist; hostile input; `resume()`; the slider mappings against
 `Params::defaults()`; and the preset chunk, including the NaN that
 `pinParameter()` lets through and `sanitize()` stops.
 
-**`declick_au_verify`** and **`dehum_au_verify`** do the same job for the MacAU
-ports — see [Sharing a core with the other plug-in
-formats](#sharing-a-core-with-the-other-plug-in-formats). An Audio Unit renders
-into 32-bit float and the house dither is on the way out, so there is no
+**`declick_au_verify`**, **`dehum_au_verify`** and **`paraeq_au_verify`** do the
+same job for the MacAU ports — see [Sharing a core with the other plug-in
+formats](#sharing-a-core-with-the-other-plug-in-formats). Declick and Dehum
+render into 32-bit float with the house dither on the way out, so there is no
 undithered path to compare and the requirement is the core driven directly to
 within **two ULP** rather than to the bit: measured **1.36 ULP** worst for the
-declicker and **1.41 ULP** for the dehummer. What that still catches is any
+declicker and **1.41 ULP** for the dehummer. ParaEQ has no dither — it asks the
+core for floats directly, `process()` being instantiated for them — so that test
+requires **0 of 30000 samples to differ**, and gets it, at every block size,
+in place, in mono, and at five sample rates. What that still catches is any
 difference that is not rounding, and the gross ones cannot hide in a ULP — a
 wrong pre-roll makes the core zero-fill mid-stream. Around it, the things an AU
 has to get right that a VST does not:
@@ -1611,14 +1614,23 @@ has to get right that a VST does not:
   trusts it clips the tail of the pipeline off every gap;
 * a host may hand the same buffer in and out, so both are run in place as well.
 
-Plus what the host is told about the controls: seven parameters, named, in the
-VST's order, all 0..1, readable and writable, with the advertised default equal
-to the one the constructor actually set — the classic template slip — and a bad
-index or a non-global scope refused. Both are built against
-`plugins/MacAU/au_shim` and need no SDK. Read that folder's
-[README](../MacAU/au_shim/README.md) first: unlike `vst2_shim` it is **not an
-ABI**, nothing loads it, and **these two plug-ins have not been opened by a real
-host**.
+Plus what the host is told about the controls: for Declick and Dehum, seven
+parameters, named, in the VST's order, all 0..1, readable and writable, with the
+advertised default equal to the one the constructor actually set — the classic
+template slip — and a bad index or a non-global scope refused. For ParaEQ,
+sixteen, each in the core's own units with the core's own constant for its range,
+each in one of six clumps, value strings on the one indexed control and on
+nothing else, and the whole set round-tripping to `paraeq::Params::defaults()`.
+
+All three are built against `plugins/MacAU/au_shim` and need no SDK. Read that
+folder's [README](../MacAU/au_shim/README.md) first: unlike `vst2_shim` it is
+**not an ABI** and nothing loads it, so what these tests establish is the DSP,
+the latency arithmetic and the parameter table, and nothing about the bundle.
+The other half is `plugins/MacAU/scripts/build.sh --validate`, which builds the
+real universal components against Apple's AudioUnitSDK and hands each one to
+**`auval`** — Apple's host-side conformance suite. All three pass. That is the
+AU counterpart of `vst_host_verify`, and it is a shell script rather than a
+ctest because it only runs on macOS.
 
 **`preset_roundtrip`** saves each component's parameters to a `dsp_preset` and
 reads them back, checking every field individually with values chosen so that a
@@ -1735,6 +1747,8 @@ tests/
   paraeq_vst_verify.cpp           the WinVST equaliser vs. the core it shares
   declick_au_verify.cpp           the MacAU declicker vs. the core it shares
   dehum_au_verify.cpp             the MacAU dehummer vs. the core it shares
+  paraeq_au_verify.cpp            the MacAU equaliser vs. the core it shares -
+                                  bit-exact, there being no dither in between
   paraeq_verify.cpp               the cookbook sections vs. their formulas, the
                                   glide vs. the stability triangle, and the fast
                                   drawing path vs. the slow one it replaces
@@ -1766,15 +1780,25 @@ on both platforms, so only `vstplugmain.cpp` has a platform branch in it — how
 a symbol is exported, and how the `main` alias is made without a `.def` file to
 make it in.
 
-The stand-in the two `*_au_verify` tests build against lives with its plug-ins
+The stand-in the three `*_au_verify` tests build against lives with its plug-ins
 too, and exists for the same reason — Apple's CoreAudio sources are not
-redistributable either:
+redistributable either. Beside it is the other half of the arrangement, which
+maps the same names onto Apple's current SDK so that a real `.component` can be
+built from the same unmodified sources:
 
 ```
 ../MacAU/au_shim/
   AUEffectBase.h                  AUBase / AUEffectBase, the CoreAudio types the
-                                  two plug-ins name, and COMPONENT_ENTRY
+                                  three plug-ins name, and COMPONENT_ENTRY
   README.md                       what it is not: an ABI, or a real host
+../MacAU/au_compat/
+  AUEffectBase.h                  the same names, forwarded to Apple's
+                                  AudioUnitSDK. 50 lines, and what the shipped
+                                  components are built against
+../MacAU/scripts/
+  get_sdk.sh                      fetches AudioUnitSDK (git-ignored, pinned)
+  build.sh                        the three .component bundles, universal
+  package.sh                      sign, notarise and wrap them in a .pkg
 ```
 
 `decrackle_core.{h,cpp}` deliberately knows nothing about foobar2000, VST or
@@ -1793,7 +1817,7 @@ for hosts on three platforms, in two plug-in formats:
 | `plugins/WinVST/Declick`, `plugins/WinVST/Dehum`, `plugins/WinVST/ParaEQ` | VST2, `.dll`, 32 and 64 bit |
 | `plugins/LinuxVST/src/Declick`, `plugins/LinuxVST/src/Dehum` | VST2, `.so` |
 | `plugins/MacVST/Declick`, `plugins/MacVST/Dehum` | VST2, `.vst` bundle |
-| `plugins/MacAU/Declick`, `plugins/MacAU/Dehum` | Audio Unit, `.component` |
+| `plugins/MacAU/Declick`, `plugins/MacAU/Dehum`, `plugins/MacAU/ParaEQ` | Audio Unit, `.component` |
 
 ParaEQ is the newest and so far the narrowest: WinVST only, with no Linux, Mac or
 vdjplugin port of it yet.
@@ -1823,25 +1847,6 @@ which is a foobar2000 component and has no VST wrapper at all.
 `plugins/MacAU` takes the cores and not the wrapper. An Audio Unit is a
 different interface, so its `.cpp` is a wrapper in its own right rather than a
 copy of anybody's — see [The Mac ports](#the-mac-ports).
-
-`paraeq_core.{h,cpp}` is in `sync_cores` with one destination rather than five —
-`plugins/WinVST/ParaEQ`, and nothing else, because that is the only port of the
-equaliser there is. It has no wrapper entry at all: those exist to keep the other
-VST2 ports in step with WinVST, and it has none to keep in step.
-
-It has a further mirror **outside** this repository: the core was written for
-EmbraceNG, which carries its own copy under `Source/`. This port added the
-`curveTrig()` / `curveDb()` drawing path and simplified the flush-to-zero
-setter, and both files have since been copied back, so the two are
-byte-identical as things stand. **This tree is the canonical one** — it is
-where the core is developed and where the harness that exercises it lives —
-so a future sync copies foobar2000 to EmbraceNG and not the other way.
-
-The tests are a copy rather than a mirror: `tests/paraeq_verify.cpp` and
-EmbraceNG's `Tests/ParaEQCoreTests.cpp` hold the same checks in the same order
-and differ only in their opening comment and in `M_PI` against a local constant,
-which MSVC needs and clang does not. Keeping them diffable is deliberate —
-anything added to one should be added to the other.
 
 So the copies are mechanical and checked:
 
@@ -1967,8 +1972,9 @@ separately: `declick_vst_verify` and `dehum_vst_verify` are already compiling
 that code, or the mirror check fails first.
 
 **`plugins/MacAU` is a different wrapper**, because an Audio Unit is a different
-interface. Same seven sliders, same mappings, same defaults, same core, same
-dither — the differences are all in how the host is talked to:
+interface. For Declick and Dehum it is the same seven sliders, same mappings,
+same defaults, same core, same dither — the differences are all in how the host
+is talked to:
 
 | | |
 | --- | --- |
@@ -1978,9 +1984,29 @@ dither — the differences are all in how the host is talked to:
 | **`Initialize()`** | The one thing an AU makes *easier*. It is told its sample rate before it renders, which a VST is not, so the reallocation a rate change forces happens here instead of on the first render call. |
 | **`kAudioUnitRenderAction_OutputIsSilence`** | Cleared by both. Declick holds `cfg.latency` samples of pipeline and Dehum's notches are integrators that ring on into a gap, so silence in is not silence out for either, and a host that trusts the flag would clip that off. |
 | **No `getChunk`/`setChunk`** | An AU's parameters *are* its state; the host serialises them. So there is no preset chunk to get wrong, and no equivalent of the VST tests' chunk round trip. |
-| **No `getParameterDisplay`** | The cost of keeping every slider generic 0..1 like the other 540 AUs in the tree — and of keeping the two formats interchangeable, since `paramsFromControls()` is then the VST's unchanged. Max repair reads `0.2` in an AU host rather than `4.0 ms`. The mapping tables in [Declick parameters](#declick-parameters) and [Dehum parameters](#dehum-parameters) are what to read it against. |
+| **No `getParameterDisplay`** | The cost of keeping every slider generic 0..1 like the other 542 AUs in the tree — and of keeping the two formats interchangeable, since `paramsFromControls()` is then the VST's unchanged. Max repair reads `0.2` in an AU host rather than `4.0 ms`. The mapping tables in [Declick parameters](#declick-parameters) and [Dehum parameters](#dehum-parameters) are what to read it against. |
 
-Two things to know about building them.
+**`plugins/MacAU/ParaEQ` departs from that last row deliberately**, because it is
+the one plug-in here with no VST twin to stay interchangeable with. Nothing
+constrains its parameters to 0..1, so they are not: each of the sixteen carries
+its real unit — `kAudioUnitParameterUnit_Hertz` for the five frequencies,
+`_Decibels` for the five gains and the trim, `_Indexed` with value strings for
+the high-pass slope, `_Boolean` for the two bell switches and bypass — with
+`DisplayLogarithmic` on everything that is a ratio, and the six bands as parameter
+clumps so a generic view draws headings instead of sixteen undifferentiated
+sliders. The payoff is not only that a host shows `100 Hz` rather than `0.43`:
+the number the host stores **is** the number `paraeq::Params` holds, so a setting
+written down in an AU session is the same setting in `foo_dsp_paraeq`, with no
+mapping table in between to get wrong.
+
+Its wrapper is also much the shortest of the three, and by subtraction. The core
+is zero latency and allocates nothing — `heapBytes()` is 0, `retune()` cannot
+fail — so there is no `GetLatency()`, no `GetTailTime()`, no `PropertyChanged`,
+no pre-roll and no rebuild path. What is left is gathering sixteen controls,
+noticing when one moved, and handing the host's own `Float32` buffer to the core
+in place.
+
+Three things to know about building them.
 
 The `.xcodeproj` files are the Airwindows templates, cloned from the DeCrackle
 folders next to them and left alone otherwise, so the documented route still
@@ -1993,13 +2019,29 @@ ignores it, and cannot build these two plug-ins.
 The Audio Unit projects also reach for Apple's CoreAudio `AUPublic` and
 `PublicUtility` sources under `$(SYSTEM_DEVELOPER_DIR)`, where no Xcode has put
 them for over a decade. Those are not redistributable and are not here, which is
-the same hole `plugins/WinVST/vst2_shim` fills on the Windows side;
+the same hole `plugins/WinVST/vst2_shim` fills on the Windows side.
 `plugins/MacAU/au_shim` fills enough of it to compile the wrappers and drive
-them from a test. It is **not** an ABI and nothing loads it, so unlike the VST2
-side there is no `vst_host_verify` equivalent and **these two Audio Units have
-not been opened by a real host**. Read that folder's
-[README](../MacAU/au_shim/README.md) before trusting anything about them beyond
-their DSP.
+them from a test — it is **not** an ABI and nothing loads it.
+
+The third thing is what actually produces a loadable plug-in, and it is not the
+`.xcodeproj`. Apple's replacement for those missing sources is
+[AudioUnitSDK](https://github.com/apple/AudioUnitSDK): the same base classes,
+maintained in the open under Apache 2.0, namespaced into `ausdk` and with a
+factory-function entry point in place of the Component Manager one.
+`plugins/MacAU/au_compat/AUEffectBase.h` is 50 lines reconciling those spellings,
+so putting it ahead of the SDK on the include path compiles the three wrappers
+**unmodified** — and `scripts/build.sh` then links universal `.component` bundles
+whose `Info.plist` carries the `AudioComponents` array a modern host registers
+from. That plist change and the entry point are the useful half of what
+`plugins/MacSignedAU` is, and they are in these three sources now; the other half
+of MacSignedAU is a Header Search Path pointing at a CoreAudio SDK on somebody
+else's desktop, which is the problem rather than the answer.
+
+So **all three of these Audio Units do load in a real host**: `scripts/build.sh
+--validate` builds them and puts each through `auval`, and all three pass. Read
+`au_shim`'s [README](../MacAU/au_shim/README.md) for which of the two headers a
+given build gets, and for what each half of the verification does and does not
+establish.
 
 ### Checking that they agree
 
@@ -2140,6 +2182,53 @@ things push back:
 What none of that proves is that 144 and 192 and `effGetChunk == 23` are
 themselves right, because the shim and its test read the same header and so agree
 by construction. Only a real host settles that.
+
+### Building the Audio Units
+
+```sh
+plugins/MacAU/scripts/build.sh --validate
+```
+
+All three, universal (x86_64 + arm64), into `../dist/au/mac/`:
+
+| File | For |
+| --- | --- |
+| `Declick.component`, `Dehum.component`, `ParaEQ.component` | any AU host — Logic, Live, Reaper, Audio Hijack |
+
+macOS only, and it needs nothing installed but the Xcode command line tools: on
+the first run it fetches Apple's AudioUnitSDK into `plugins/MacAU/external/`
+(git-ignored, pinned to 1.3.0 — 1.4.0 wants `std::expected` and so an Xcode
+16.3 libc++). It runs the three `*_au_verify` suites before it builds anything,
+and with `--validate` it installs the result into
+`~/Library/Audio/Plug-Ins/Components` and runs `auval` over each one. The
+components come out ad-hoc signed, which is not a nicety: `clang` signs an arm64
+slice as it links it and `lipo` discards that, so an unsigned universal
+component is not merely unsigned on Apple Silicon — it does not load.
+
+The build does not go through each plug-in's `.xcodeproj`, for the same reason
+`build_winvst.ps1` does not go through `VSTProject.vcxproj` — those expect an SDK
+at a path outside this tree — and the projects are left exactly as the Airwindows
+template ships them, so the documented route still works for anyone who has it.
+There is also no `Rez` step: Component Manager registration has been dead since
+10.7 and building a `.rsrc` would need `AUResources.r` from the same missing SDK,
+so the `.r` files are left in place unbuilt and the `AudioComponents` array in
+each `Info.plist` does the registering.
+
+```sh
+plugins/MacAU/scripts/package.sh --sign "Developer ID Installer: ..." \
+                                --codesign "Developer ID Application: ..." \
+                                --notarize --notary-profile ShellacFilters
+```
+
+One `ShellacFilters-AudioUnits-<version>.pkg` beside them, installing all three
+into the user's `~/Library/Audio/Plug-Ins/Components` — a home-directory install,
+so it asks for no administrator password. The notarisation arrangement is the
+same one `plugins/vdjplugin/scripts/package.sh` uses and the options are spelled
+the same way, including the refusal to take an app-specific password as a
+command-line argument where it would land in the shell history; `--help` on
+either script has the three ways to supply credentials. The version comes from
+the `k<Name>Version` constants, which all three have to agree on, because one
+package cannot honestly carry three versions.
 
 ---
 

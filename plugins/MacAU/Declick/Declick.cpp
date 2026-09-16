@@ -216,7 +216,7 @@ ComponentResult			Declick::GetPropertyInfo (AudioUnitPropertyID	inID,
                                                         AudioUnitScope		inScope,
                                                         AudioUnitElement	inElement,
                                                         UInt32 &		outDataSize,
-                                                        Boolean &		outWritable)
+                                                        bool &		outWritable)
 {
 	return AUEffectBase::GetPropertyInfo (inID, inScope, inElement, outDataSize, outWritable);
 }
