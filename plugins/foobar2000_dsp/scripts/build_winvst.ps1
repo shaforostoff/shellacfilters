@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Builds the Windows VST2 plug-ins in plugins/WinVST into release DLLs.
 
@@ -9,6 +9,8 @@
         plugins\dist\winvst\Declick64.dll   <- 64 bit hosts
         plugins\dist\winvst\Dehum32.dll
         plugins\dist\winvst\Dehum64.dll
+        plugins\dist\winvst\ParaEQ32.dll
+        plugins\dist\winvst\ParaEQ64.dll
 
     A VST2 host identifies a plug-in by its uniqueID rather than its filename,
     so the 32 and 64 bit builds can sit in the same VST folder.
@@ -30,7 +32,9 @@
     tests/vst_host_verify.cpp, which loads it the way a host does - through
     LoadLibrary and the C ABI and nothing else - and requires its audio to match
     the same plug-in linked statically, to the bit. That test is shared with
-    scripts/build_linuxvst.sh, which does the same for the LinuxVST ports.
+    scripts/build_linuxvst.sh, which does the same for the LinuxVST ports -
+    for Declick and Dehum, which are the two plug-ins that have a LinuxVST port.
+    ParaEQ is built here only.
 
 .PARAMETER Plugin
     Which plug-ins to build. Default: both.
@@ -55,8 +59,8 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Declick', 'Dehum')]
-    [string[]] $Plugin = @('Declick', 'Dehum'),
+    [ValidateSet('Declick', 'Dehum', 'ParaEQ')]
+    [string[]] $Plugin = @('Declick', 'Dehum', 'ParaEQ'),
     [ValidateSet('x86', 'x64')]
     [string[]] $Arch = @('x86', 'x64'),
     [switch]   $SkipTests,

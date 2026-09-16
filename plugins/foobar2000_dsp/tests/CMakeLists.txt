@@ -21,6 +21,11 @@
 #                        two sources against the LinuxVST copies, which are
 #                        required to be byte-identical. So are the MacVST ones,
 #                        which is why MacVST gets no target of its own.
+#   paraeq_vst_verify  - the WinVST port of the equaliser vs. the core it
+#                        shares. Same arrangement, except that ParaEQ has no
+#                        LinuxVST or MacVST port to mirror, so this target is
+#                        the only place that code is compiled outside the DLL.
+#                        No SDK.
 #   declick_au_verify  - the MacAU port of the declicker vs. the core it shares.
 #                        MacAU is a wrapper in its own right rather than a
 #                        mirror of the VST one, so unlike MacVST it does need a
@@ -247,6 +252,48 @@ if(EXISTS "${WINVST_DEHUM_DIR}/Dehum.cpp")
     set_target_properties(dehum_vst_verify PROPERTIES FOLDER "tests")
 else()
     message(STATUS "plugins/WinVST/Dehum not present - skipping dehum_vst_verify")
+endif()
+
+# ---------------------------------------------------------------------------
+# The WinVST port of the parametric equaliser, against the core it shares.
+# Same arrangement as the two above: it compiles the WinVST folder's own copy of
+# paraeq_core.cpp, because that is the file the VST project builds.
+#
+# There is no LinuxVST or MacVST ParaEQ, so unlike its two siblings this target
+# is not also standing in for ports it is required to be byte-identical to. It
+# is testing one plug-in.
+
+set(WINVST_PARAEQ_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../WinVST/ParaEQ")
+
+if(EXISTS "${WINVST_PARAEQ_DIR}/ParaEQ.cpp")
+    add_executable(paraeq_vst_verify
+        paraeq_vst_verify.cpp
+        "${WINVST_SHIM_DIR}/audioeffectx.cpp"
+        "${WINVST_PARAEQ_DIR}/ParaEQ.cpp"
+        "${WINVST_PARAEQ_DIR}/ParaEQProc.cpp"
+        "${WINVST_PARAEQ_DIR}/paraeq_core.cpp"
+    )
+
+    target_include_directories(paraeq_vst_verify PRIVATE
+        "${WINVST_SHIM_DIR}"
+        "${WINVST_PARAEQ_DIR}")
+
+    if(MSVC)
+        target_compile_options(paraeq_vst_verify PRIVATE /W4)
+        # The wrapper follows the Airwindows house pattern - `fpdL = 1.0;` on a
+        # uint32_t, `out1[i] = inputSampleL;` from a double, and setChunk()
+        # ignoring byteSize on purpose - so it warns exactly where the other 519
+        # plug-ins do. Those are not ours to fix.
+        set_source_files_properties(
+            "${WINVST_PARAEQ_DIR}/ParaEQ.cpp"
+            "${WINVST_PARAEQ_DIR}/ParaEQProc.cpp"
+            PROPERTIES COMPILE_OPTIONS "/wd4244;/wd4305;/wd4100")
+    endif()
+
+    add_test(NAME paraeq_vst_verify COMMAND paraeq_vst_verify)
+    set_target_properties(paraeq_vst_verify PROPERTIES FOLDER "tests")
+else()
+    message(STATUS "plugins/WinVST/ParaEQ not present - skipping paraeq_vst_verify")
 endif()
 
 # ---------------------------------------------------------------------------

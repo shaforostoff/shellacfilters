@@ -120,6 +120,17 @@ if(MSVC)
     # reachable, and both wrappers catch it rather than letting it cross the
     # ABI back into VirtualDJ.
     add_compile_options(/EHsc /Zi /utf-8 /MP)
+
+    # /Gw gives every global and static its own COMDAT, and /Zc:inline drops
+    # unreferenced inline functions along with the data only they touched, so
+    # the /OPT:REF below can throw away what nothing reaches. Neither of them
+    # changes the code that is kept.
+    #
+    # /GR- because nothing here needs RTTI: there is not one dynamic_cast or
+    # typeid in these plug-ins or in the three SDK headers, and the /EHsc above
+    # does not use it - catch matching carries its own type descriptors, which
+    # is what lets both wrappers go on catching bad_alloc.
+    add_compile_options(/Gw /Zc:inline /GR-)
     if(MSVC_VERSION GREATER_EQUAL 1929)
         add_compile_options(/external:W0)
     endif()

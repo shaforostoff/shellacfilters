@@ -119,6 +119,26 @@ cmake --build build/x64 --config Release
 ctest --test-dir build/x64 -C Release
 ```
 
+No Visual C++ redistributable is needed. `VDJ_STATIC_CRT` defaults to `ON`, and
+the finished `Declick.dll` and `Dehum.dll` import nothing but `KERNEL32.dll`.
+
+That is not a choice this port gets to make twice. The foobar2000 components can
+drop the static CRT because foobar2000 ships `msvcp140.dll` and
+`vcruntime140.dll` beside its exe, so on a normal install they are already in the
+process; `virtualdj.exe` imports no VC runtime at all and the install directory
+holds none, so it statically links its own. `VDJ_STATIC_CRT=OFF` takes the two
+x64 plug-ins from 404 kB to 114 kB — 72 % of what ships is CRT — and every one of
+those bytes has to stay, because a stock VirtualDJ install has nothing to resolve
+`MSVCP140.dll` against.
+
+Release builds also carry `/Gw`, `/Zc:inline` and `/GR-`, the same three switches
+as the foobar2000 ports: `/OPT:REF` can then discard globals and inline functions
+nothing reaches, and there is not one `dynamic_cast` or `typeid` here or in the
+three SDK headers. They are worth far less here than there — about 1 kB per
+plug-in, against 7.6 % of a foobar2000 component — because what they mostly trim
+in that tree is the foobar2000 SDK, and this SDK is three headers. What they
+remove is unreachable rather than slower, which is the only reason to take them.
+
 ### macOS
 
 ```bash

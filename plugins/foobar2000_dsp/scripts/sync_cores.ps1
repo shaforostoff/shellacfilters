@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Keeps the files more than one plug-in format compiles byte-identical
     across those formats.
@@ -56,6 +56,10 @@ $plugins = Split-Path -Parent $root                  # plugins
 # vdjplugin is in the same position for the same reason, and one folder there
 # serves the two plug-ins it builds out of each core - the live one and the
 # buffer one.
+#
+# ParaEQ is WinVST only so far, so its core has one mirror rather than five and
+# there is no wrapper entry for it below: those exist to keep the other VST2
+# ports in step with WinVST, and it has none yet.
 $mirrors = @(
     @{
         From  = Join-Path $root 'foo_dsp_declick'
@@ -74,6 +78,11 @@ $mirrors = @(
                   (Join-Path $plugins 'MacVST\Dehum\source'),
                   (Join-Path $plugins 'MacAU\Dehum'),
                   (Join-Path $plugins 'vdjplugin\vdj_dehum'))
+    },
+    @{
+        From  = Join-Path $root 'foo_dsp_paraeq'
+        Files = @('paraeq_core.h', 'paraeq_core.cpp')
+        To    = @((Join-Path $plugins 'WinVST\ParaEQ'))
     },
     @{
         From  = Join-Path $plugins 'WinVST\Declick'

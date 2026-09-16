@@ -61,24 +61,60 @@
 
 #include <vector>
 
+/*  One slider position, applied to both copies as they open. Two of these
+ *  plug-ins do something audible on their defaults and want none; ParaEQ's
+ *  defaults are flat, and a flat equaliser is a passthrough - which the audio
+ *  comparison below would happily report as two identical copies. So it is
+ *  armed with a curve first, the same way on both sides. */
+struct Setting { int index; float value; };   //int, not VstInt32: this is above the include
+
 #if defined(VST_PLUGIN_DEHUM)
   #include "Dehum.h"
   typedef Dehum Plugin;
   static const char * kPluginName    = "Dehum";
   static const char * kProductString = "Dehum (line detection)";
   static const bool   kZeroLatency   = true;
-  static const char * kParamNames[7] =
+  static const char * const kParamNames[] =
       { "Sensitv", "Bandwid", "SrchTo", "Harmncs", "Freq", "Rumble", "Dry/Wet" };
+  static const Setting * const kArm = 0;
+  static const size_t kArmCount = 0;
 #elif defined(VST_PLUGIN_DECLICK)
   #include "Declick.h"
   typedef Declick Plugin;
   static const char * kPluginName    = "Declick";
   static const char * kProductString = "Declick (AR interpolation)";
   static const bool   kZeroLatency   = false;
-  static const char * kParamNames[7] =
+  static const char * const kParamNames[] =
       { "Sensitv", "Extent", "MaxLen", "Depth", "Passes", "Order", "Dry/Wet" };
+  static const Setting * const kArm = 0;
+  static const size_t kArmCount = 0;
+#elif defined(VST_PLUGIN_PARAEQ)
+  #include "ParaEQ.h"
+  typedef ParaEQ Plugin;
+  static const char * kPluginName    = "ParaEQ";
+  static const char * kProductString = "ParaEQ (console strip)";
+  static const bool   kZeroLatency   = true;
+  static const char * const kParamNames[] =
+      { "HP Freq", "HP Slope", "LF Gain", "LF Freq", "LF Shape",
+        "LMF Gain", "LMF Freq", "LMF Q",
+        "HMF Gain", "HMF Freq", "HMF Q",
+        "HF Gain", "HF Freq", "HF Shape", "Output", "Bypass" };
+  //A plausible transfer curve: 24 dB/oct of rumble filter, weight back in at
+  //the bottom, the boxiness out of the low mids, brilliance up, hiss down.
+  static const Setting kArmSettings[] = {
+      { kParamA, 0.50f },   //HP Freq   ~75 Hz
+      { kParamB, 0.90f },   //HP Slope  24 dB/oct
+      { kParamC, 0.80f },   //LF Gain   +12 dB
+      { kParamF, 0.20f },   //LMF Gain  -12 dB
+      { kParamH, 0.60f },   //LMF Q     ~2.6
+      { kParamI, 0.75f },   //HMF Gain  +10 dB
+      { kParamL, 0.30f },   //HF Gain   -8 dB
+      { kParamO, 0.55f }    //Output    +2 dB
+  };
+  static const Setting * const kArm = kArmSettings;
+  static const size_t kArmCount = sizeof kArmSettings / sizeof kArmSettings[0];
 #else
-  #error define VST_PLUGIN_DEHUM or VST_PLUGIN_DECLICK
+  #error define VST_PLUGIN_DEHUM, VST_PLUGIN_DECLICK or VST_PLUGIN_PARAEQ
 #endif
 
 namespace {
@@ -188,6 +224,7 @@ void openThroughAbi(AEffect * e) {
     send(e, effSetProcessPrecision, 0, (VstIntPtr)kVstProcessPrecision64);
     send(e, effMainsChanged, 0, 1);
     send(e, effStartProcess);
+    for (size_t i = 0; i < kArmCount; ++i) e->setParameter(e, kArm[i].index, kArm[i].value);
 }
 
 void openStatically(Plugin & fx) {
@@ -197,6 +234,7 @@ void openStatically(Plugin & fx) {
     fx.setProcessPrecision(kVstProcessPrecision64);
     fx.resume();
     fx.startProcess();
+    for (size_t i = 0; i < kArmCount; ++i) fx.setParameter(kArm[i].index, kArm[i].value);
 }
 
 void runThroughAbi(AEffect * e, const std::vector<double> & inL,

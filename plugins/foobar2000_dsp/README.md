@@ -1567,6 +1567,25 @@ double path plus dither to within a float ULP; hostile input; dry/wet 0 as a
 bit-exact bypass; the slider mappings against `Params::defaults()`, including the
 off positions on Freq and Rumble; and the preset chunk.
 
+**`paraeq_vst_verify`** does the same for the WinVST equaliser. Its central
+check drives `paraeq::Channel` with the same `Config` and requires
+`processDoubleReplacing` to be **bit-identical**, worst deviation **0.000e+00** —
+and it repeats that across a control move, which is the case a wrapper can get
+wrong without anything else noticing: `configure()` where `retune()` belongs
+zeroes the filter states and snaps the coefficients, and the stream that comes
+out is a different one. It asks the plug-in for its `Params` rather than assuming
+`Params::defaults()`, because a logarithmic slider takes a default through a
+`powf()` of a `logf()` and 5 kHz comes back as 5000.0005 — one float ULP, held to
+account with a tolerance in the mapping checks where it belongs. It also covers:
+block sizes from 1 to 4096 including 1025, one past the scratch; bypass settling
+to a bit-exact passthrough; that a control move puts no step in the audio, by
+requiring no sample in the glide to jump further than the settled signal does;
+that a +20 dB bell is +20 dB and a 24 dB/oct high-pass is 92.9 dB down on the
+rumble; that all sixteen sliders move live without renegotiating latency; a
+corner above Nyquist; hostile input; `resume()`; the slider mappings against
+`Params::defaults()`; and the preset chunk, including the NaN that
+`pinParameter()` lets through and `sanitize()` stops.
+
 **`declick_au_verify`** and **`dehum_au_verify`** do the same job for the MacAU
 ports — see [Sharing a core with the other plug-in
 formats](#sharing-a-core-with-the-other-plug-in-formats). An Audio Unit renders
@@ -1713,6 +1732,7 @@ tests/
   dehum_verify.cpp                FFT, notch, tracker and detector vs. references
   dehum_rt_verify.cpp             ditto for the dehummer's audio thread
   dehum_vst_verify.cpp            the WinVST dehummer vs. the core it shares
+  paraeq_vst_verify.cpp           the WinVST equaliser vs. the core it shares
   declick_au_verify.cpp           the MacAU declicker vs. the core it shares
   dehum_au_verify.cpp             the MacAU dehummer vs. the core it shares
   paraeq_verify.cpp               the cookbook sections vs. their formulas, the
@@ -1765,20 +1785,24 @@ source directly.
 
 ## Sharing a core with the other plug-in formats
 
-Two of the four cores have further consumers — builds of the same algorithms for
-hosts on three platforms, in two plug-in formats:
+Three of the four cores have further consumers — builds of the same algorithms
+for hosts on three platforms, in two plug-in formats:
 
 | | |
 | --- | --- |
-| `plugins/WinVST/Declick`, `plugins/WinVST/Dehum` | VST2, `.dll`, 32 and 64 bit |
+| `plugins/WinVST/Declick`, `plugins/WinVST/Dehum`, `plugins/WinVST/ParaEQ` | VST2, `.dll`, 32 and 64 bit |
 | `plugins/LinuxVST/src/Declick`, `plugins/LinuxVST/src/Dehum` | VST2, `.so` |
 | `plugins/MacVST/Declick`, `plugins/MacVST/Dehum` | VST2, `.vst` bundle |
 | `plugins/MacAU/Declick`, `plugins/MacAU/Dehum` | Audio Unit, `.component` |
 
-They all compile `declick_core.{h,cpp}` and `dehum_core.{h,cpp}` — not
-reimplementations of them, and not translations. There is exactly one copy of
-each piece of maths in this repository that anything is allowed to diverge from,
-and it is the one under `foo_dsp_declick/` or `foo_dsp_dehum/`.
+ParaEQ is the newest and so far the narrowest: WinVST only, with no Linux, Mac or
+vdjplugin port of it yet.
+
+They all compile `declick_core.{h,cpp}`, `dehum_core.{h,cpp}` or
+`paraeq_core.{h,cpp}` — not reimplementations of them, and not translations.
+There is exactly one copy of each piece of maths in this repository that anything
+is allowed to diverge from, and it is the one under `foo_dsp_declick/`,
+`foo_dsp_dehum/` or `foo_dsp_paraeq/`.
 
 Each plug-in folder holds a **byte-identical copy** rather than reaching across
 the tree for it. That is not laziness: an Airwindows WinVST folder has to stand
@@ -1800,8 +1824,12 @@ which is a foobar2000 component and has no VST wrapper at all.
 different interface, so its `.cpp` is a wrapper in its own right rather than a
 copy of anybody's — see [The Mac ports](#the-mac-ports).
 
-`paraeq_core.{h,cpp}` has no mirrors in this repository and so is not in
-`sync_cores`. It does have one **outside** it: the core was written for
+`paraeq_core.{h,cpp}` is in `sync_cores` with one destination rather than five —
+`plugins/WinVST/ParaEQ`, and nothing else, because that is the only port of the
+equaliser there is. It has no wrapper entry at all: those exist to keep the other
+VST2 ports in step with WinVST, and it has none to keep in step.
+
+It has a further mirror **outside** this repository: the core was written for
 EmbraceNG, which carries its own copy under `Source/`. This port added the
 `curveTrig()` / `curveDb()` drawing path and simplified the flush-to-zero
 setter, and both files have since been copied back, so the two are
@@ -1868,6 +1896,64 @@ to be a local class in `dsp_declick.cpp`. FTZ changes results in the last bits,
 so it is part of the numerical contract rather than an optimisation, and two
 ports that disagree about it are not comparable. It is now
 `declick::scoped_flush_denormals` and both wrappers hold one.
+
+### The ParaEQ VST wrapper is the Dehum one, plus sixteen sliders
+
+The same shape — no pre-roll, no FIFO, no latency, no tail, a 1024-sample double
+scratch and a dither — because the equaliser asks the host for even less than the
+dehummer does. What is different is above the DSP rather than in it:
+
+| | |
+| --- | --- |
+| **Sixteen parameters** | `kParamA`–`kParamP`, against Declick's and Dehum's seven. That is the price of a fixed layout in a format with no editor: the foobar2000 build draws a curve and lets the operator grab a band, and a VST2 with `effFlagsHasEditor` clear has nothing to draw with, so every control the curve editor exposes has to become a slider of its own. |
+| **Logarithmic frequency and Q** | A linear 1.5–16 kHz control spends four fifths of its travel in the top octave and a half, and the useful settings on a transfer are clustered at the bottom of every one of these ranges. So the frequency and Q sliders are `lo * (hi/lo)^x`, and the midpoint of the travel is the geometric mean of the range rather than its arithmetic one. Gains stay linear because dB already is, which also puts unity exactly at the centre detent. |
+| **No default constants** | Dehum writes its default slider positions out as named constants and has a test pinning them against `Params::defaults()`. ParaEQ runs the mapping backwards instead — the constructor calls `setControlsFromParams(paraeq::Params::defaults())` — so this file holds no second opinion about what a default is and there is nothing to pin. |
+| **A snap on a rate change, a glide on everything else** | Nothing here is sized by the parameters, so `retune()` cannot fail and there is no rebuild branch — not even the one Dehum needs for a sample rate change. A rate change takes `configure()` instead, because the filter states describe samples at a rate that is no longer the rate, and gliding across that would be gliding over a discontinuity. |
+| **Bypass is a real bypass** | It retargets every stage to unity and the trim to 0 dB rather than blending a dry path in, and `checkSettled()` lands exactly on the target rather than asymptotically near it. So once the glide has arrived the cascade is six unity biquads and the output is the input **to the bit**, which `paraeq_vst_verify` asserts as an identity rather than a tolerance. |
+
+The sliders, in order, with the shorthand from [Parametric EQ
+parameters](#parametric-eq-parameters):
+
+| | Control | Range | Slider |
+| --- | --- | --- | --- |
+| A | `HP Freq` | 16–350 Hz | logarithmic |
+| B | `HP Slope` | off / 12 / 24 dB per octave | three equal buckets |
+| C | `LF Gain` | ±20 dB | linear |
+| D | `LF Freq` | 30–450 Hz | logarithmic |
+| E | `LF Shape` | shelf / bell | two equal buckets |
+| F | `LMF Gain` | ±20 dB | linear |
+| G | `LMF Freq` | 200–3000 Hz | logarithmic |
+| H | `LMF Q` | 0.5–8 | logarithmic |
+| I | `HMF Gain` | ±20 dB | linear |
+| J | `HMF Freq` | 600–8000 Hz | logarithmic |
+| K | `HMF Q` | 0.5–8 | logarithmic |
+| L | `HF Gain` | ±20 dB | linear |
+| M | `HF Freq` | 1500–16000 Hz | logarithmic |
+| N | `HF Shape` | shelf / bell | two equal buckets |
+| O | `Output` | ±20 dB | linear |
+| P | `Bypass` | off / on | two equal buckets |
+
+A discrete control's inverse returns the **centre** of its bucket rather than the
+lower edge, so a stored preset cannot come back as the neighbouring setting.
+
+`paramsFromControls()` is public here, unlike its two siblings'.
+`paraeq_vst_verify` needs the exact `Params` the plug-in is running in order to
+build the same `Config` and compare to the bit, and a second copy of the mapping
+living in the test is the thing that would drift. It is not part of the VST2
+interface; a host never sees it.
+
+One property is worth knowing before reading that test's block size checks.
+`Channel::process()` tests every `kSettleCheck` = 32 samples whether a glide has
+arrived, and counts those 32 from the start of each call — so a block size that
+is not a multiple of 32 puts the test on a different grid, and `checkSettled()`
+snaps exactly onto the target when it fires. A **settled** equaliser is therefore
+bit-identical at every block size, and a **gliding** one is not: at block 1025
+the streams differ by 1.7e-06 for the length of the glide and by 1.3e-14 — the
+double rounding floor — a second later. That is a residual coefficient move
+bounded by the core's `kSettleTolerance` of 1e-6, around 120 dB down, lasting a
+fraction of a second. It is in the core, so `foo_dsp_paraeq` has it too, a
+foobar2000 chunk being no more a fixed size than a VST buffer is, and neither
+wrapper can do anything about it from outside.
 
 ### The Mac ports
 
@@ -1956,15 +2042,15 @@ One file covers both platforms. A `.dll` and a `.so` differ in how the module is
 opened and in how a process asks how much memory it is using, and in nothing
 else that matters here — which is the same fact that lets one plug-in source
 tree serve hosts on both. `build_winvst.ps1` runs it against each DLL it
-produces and `build_linuxvst.sh` against each `.so`. All six pass, worst
-deviation **0.000e+00**. Along the way it checks the things a host would notice
+produces and `build_linuxvst.sh` against each `.so`. All eight pass — six DLLs
+and two `.so`s — worst deviation **0.000e+00**. Along the way it checks the things a host would notice
 and a compiler would not:
 
 | | |
 | --- | --- |
 | `sizeof(AEffect)` | 144 on x86, 192 on x64, read out of the loaded module |
 | flags | exactly `canReplacing \| programChunks \| canDoubleReplacing`, no editor |
-| `uniqueID` | `0x64636C6B` `'dclk'`, `0x6468756D` `'dhum'` |
+| `uniqueID` | `0x64636C6B` `'dclk'`, `0x6468756D` `'dhum'`, `0x70726571` `'preq'` |
 | `resvd1`, `resvd2`, `future[56]` | left zeroed, as the host expects |
 | the deprecated `process` | a no-op function, not a null pointer, because a host old enough to call it will not check first |
 | opcode routing | all seven parameter names arrive at the right index; displays and labels stay inside `kVstMaxParamStrLen` in a buffer bigger than promised |
@@ -1978,12 +2064,12 @@ and a compiler would not:
 .\scripts\build_winvst.ps1
 ```
 
-Both plug-ins, both architectures, into `..\dist\winvst\`:
+All three plug-ins, both architectures, into `..\dist\winvst\`:
 
 | File | For |
 | --- | --- |
-| `Declick32.dll`, `Dehum32.dll` | 32-bit hosts |
-| `Declick64.dll`, `Dehum64.dll` | 64-bit hosts |
+| `Declick32.dll`, `Dehum32.dll`, `ParaEQ32.dll` | 32-bit hosts |
+| `Declick64.dll`, `Dehum64.dll`, `ParaEQ64.dll` | 64-bit hosts |
 
 A VST2 host identifies a plug-in by its `uniqueID` rather than its filename, so
 both architectures can live in the same VST folder. Install by copying.
