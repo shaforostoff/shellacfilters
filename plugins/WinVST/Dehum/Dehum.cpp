@@ -57,6 +57,7 @@ Dehum::Dehum(audioMasterCallback audioMaster) :
     setNumInputs(kNumInputs);
     setNumOutputs(kNumOutputs);
     setUniqueID(kUniqueId);
+    setVersion(kVersion);
     canProcessReplacing();     // supports output replacing
     canDoubleReplacing();      // supports double precision processing
 	programsAreChunks(true);
@@ -64,7 +65,7 @@ Dehum::Dehum(audioMasterCallback audioMaster) :
 }
 
 Dehum::~Dehum() {}
-VstInt32 Dehum::getVendorVersion () {return 1000;}
+VstInt32 Dehum::getVendorVersion () {return kVersion;}
 void Dehum::setProgramName(char *name) {vst_strncpy (_programName, name, kVstMaxProgNameLen);}
 void Dehum::getProgramName(char *name) {vst_strncpy (name, _programName, kVstMaxProgNameLen);}
 //airwindows likes to ignore this stuff. Make your own programs, and make a different plugin rather than
