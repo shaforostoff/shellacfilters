@@ -130,6 +130,25 @@ void check(bool ok, const char * what, const char * detail = "") {
     if (!ok) ++g_failures;
 }
 
+/*  A packed version the way a host prints one: the four bytes, most significant
+ *  first, leading zeroes dropped. Audacity does exactly this, which is why the
+ *  stock Airwindows answer of 1000 reads as "3.232" there - 0x000003E8 is 3 and
+ *  then 232. Printed beside the raw number, so a failure says both. */
+void versionText(char * out, size_t n, VstInt32 v) {
+    char dotted[32];
+    size_t at = 0;
+    bool started = false;
+    for (int i = 3; i >= 0; --i) {
+        const int byte = (int)(((uint32_t)v >> (i * 8)) & 0xFFu);
+        if (!started && byte == 0 && i != 0) continue;
+        const int wrote = snprintf(dotted + at, sizeof dotted - at,
+                                   started ? ".%d" : "%d", byte);
+        if (wrote > 0) at += (size_t)wrote;
+        started = true;
+    }
+    snprintf(out, n, "0x%08lX (%s)", (unsigned long)(uint32_t)v, dotted);
+}
+
 const int    kRate   = 44100;
 const int    kFrames = 44100 * 20;    //long enough for the detectors to engage
 const int    kBlock  = 512;
@@ -428,6 +447,12 @@ void testTheAEffect(AEffect * e) {
     snprintf(d, sizeof d, "0x%08lX", (unsigned long)(uint32_t)e->uniqueID);
     check(e->uniqueID == (VstInt32)kUniqueId, "uniqueID is the plug-in's four character code", d);
 
+    /*  Set as well as answered. A host is free to read this field instead of
+     *  asking, and the two disagreeing is how one plug-in ends up displayed as
+     *  two different versions in two different hosts. */
+    versionText(d, sizeof d, e->version);
+    check(e->version == (VstInt32)kVersion, "version is the plug-in's, not the stock 1", d);
+
     check(e->resvd1 == 0 && e->resvd2 == 0, "the host's reserved fields are left alone");
     bool futureZero = true;
     for (size_t i = 0; i < sizeof e->future; ++i) if (e->future[i]) futureZero = false;
@@ -451,8 +476,8 @@ void testIdentityOpcodes(AEffect * e) {
 
     char d[64];
     const VstIntPtr ver = send(e, effGetVendorVersion);
-    snprintf(d, sizeof d, "%d", (int)ver);
-    check(ver == 1000, "effGetVendorVersion", d);
+    versionText(d, sizeof d, (VstInt32)ver);
+    check(ver == (VstIntPtr)kVersion, "effGetVendorVersion agrees with the field", d);
 
     const VstIntPtr vst = send(e, effGetVstVersion);
     snprintf(d, sizeof d, "%d", (int)vst);

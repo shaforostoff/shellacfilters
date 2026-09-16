@@ -207,6 +207,16 @@ public:
     void setNumInputs(VstInt32 inputs)   { cEffect.numInputs  = inputs; }
     void setNumOutputs(VstInt32 outputs) { cEffect.numOutputs = outputs; }
     void setUniqueID(VstInt32 iD)        { cEffect.uniqueID   = iD; }
+
+    /*  The plug-in's own version, byte packed and most significant first, so
+     *  0x00010001 is 1.0.1. Hosts that print a version split it back into
+     *  bytes - Audacity does - which is why the stock Airwindows answer of
+     *  1000 shows up there as "3.232" rather than as anything like a version.
+     *  Whatever is set here should also come back from getVendorVersion(): a
+     *  host reads whichever of the two it prefers, and Audacity asks for the
+     *  vendor version first and only falls back to this field. The three
+     *  plug-ins in this tree keep the number in kVersion, beside kUniqueId,
+     *  and their AU ports carry the same one in k<Name>Version. */
     void setVersion(VstInt32 version)    { cEffect.version    = version; }
     void canProcessReplacing(bool state = true) { setFlag(effFlagsCanReplacing, state); }
     void programsAreChunks(bool state = true)   { setFlag(effFlagsProgramChunks, state); }
@@ -282,6 +292,9 @@ public:
     virtual bool getEffectName(char * name)    { (void)name; return false; }
     virtual bool getVendorString(char * text)  { (void)text; return false; }
     virtual bool getProductString(char * text) { (void)text; return false; }
+
+    /*  Answered to effGetVendorVersion. 0 is "did not say"; the plug-ins here
+     *  return their kVersion, so it agrees with setVersion() - see there. */
     virtual VstInt32 getVendorVersion() { return 0; }
     virtual VstPlugCategory getPlugCategory();
 

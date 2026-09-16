@@ -62,6 +62,7 @@ const int kNumPrograms = 0;
 const int kNumInputs = 2;
 const int kNumOutputs = 2;
 const unsigned long kUniqueId = 'preq';    //Change this to what the AU identity is!
+const int kVersion = 0x00010000;           //1.0.0, matching the AU. See setVersion().
 
 class ParaEQ :
     public AudioEffectX

@@ -35,6 +35,7 @@ const int kNumPrograms = 0;
 const int kNumInputs = 2;
 const int kNumOutputs = 2;
 const unsigned long kUniqueId = 'dhum';    //Change this to what the AU identity is!
+const int kVersion = 0x00010001;           //1.0.1, matching the AU. See setVersion().
 
 class Dehum :
     public AudioEffectX

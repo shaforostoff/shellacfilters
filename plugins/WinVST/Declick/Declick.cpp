@@ -46,6 +46,7 @@ Declick::Declick(audioMasterCallback audioMaster) :
     setNumInputs(kNumInputs);
     setNumOutputs(kNumOutputs);
     setUniqueID(kUniqueId);
+    setVersion(kVersion);
     canProcessReplacing();     // supports output replacing
     canDoubleReplacing();      // supports double precision processing
 	programsAreChunks(true);
@@ -53,7 +54,7 @@ Declick::Declick(audioMasterCallback audioMaster) :
 }
 
 Declick::~Declick() {}
-VstInt32 Declick::getVendorVersion () {return 1000;}
+VstInt32 Declick::getVendorVersion () {return kVersion;}
 void Declick::setProgramName(char *name) {vst_strncpy (_programName, name, kVstMaxProgNameLen);}
 void Declick::getProgramName(char *name) {vst_strncpy (name, _programName, kVstMaxProgNameLen);}
 //airwindows likes to ignore this stuff. Make your own programs, and make a different plugin rather than

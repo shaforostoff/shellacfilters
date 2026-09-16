@@ -2026,6 +2026,37 @@ window lifecycle over the ABI, where a host would break it: size before there is
 a window, open, close, open again, close again, and a second `effEditClose` in a
 row for the hosts that send one.
 
+### What version a host shows
+
+`AEffect::version` and `effGetVendorVersion` are both **byte packed**, most
+significant byte first: `0x00010001` is 1.0.1. A host that prints a version
+splits it back into bytes — Audacity does — which is why the stock Airwindows
+answer of `1000` appears there as **3.232**. `0x000003E8` is 3, and then 232.
+All 518 stock plug-ins in `WinVST` answer 1000 and are left alone: it is a house
+pattern rather than a version, exactly as `0x00010000` was on the Audio Unit
+side until these three shipped.
+
+The three that do ship keep the number in `kVersion`, beside `kUniqueId` in the
+wrapper's header, and use it twice:
+
+| | |
+| --- | --- |
+| `setVersion(kVersion)` in the constructor | Fills `AEffect::version`, which a host may read straight out of the struct without asking for anything. |
+| `getVendorVersion()` returns `kVersion` | Answers `effGetVendorVersion`, which is what a host asks when it would rather ask. |
+
+Both of them, because hosts differ on which one they want and some consult one
+and fall back to the other — Audacity asks first and falls back to the field —
+so a plug-in that answers two different numbers is one that displays as two
+different versions in two different hosts. `vst_host_verify` checks each against
+`kVersion` and prints them the way a host would, so a mismatch reads as
+`0x00010001 (1.0.1)` beside whatever it should have been.
+
+The numbers are the Audio Units': **Declick and Dehum at 1.0.1, ParaEQ at
+1.0.0**, matching `k<Name>Version` and the `version` integer in each bundle's
+`Info.plist`, so that one plug-in is one version wherever it is loaded. Moving a
+version means moving all of them — nothing here is a single place a version
+lives across three plug-in formats, only checks that the copies agree.
+
 ### The Mac ports
 
 **`plugins/MacVST` is the same wrapper**, mirrored from `WinVST` by
@@ -2118,7 +2149,9 @@ what the bundle registers with, what a host displays, and what the Component
 Manager keys a cached registration on. A shipped 1.0.1 that registers as
 `0x00010000` is one a host may keep serving from cache. So the three here carry
 their own versions — Declick and Dehum at 1.0.1, ParaEQ at 1.0.0, having only
-just arrived — and the other 542 are untouched.
+just arrived — and the other 542 are untouched. The VST2 ports carry the same
+three numbers in `kVersion`, for the same reason and with the same consequence
+if they drift: see [What version a host shows](#what-version-a-host-shows).
 
 ### Checking that they agree
 

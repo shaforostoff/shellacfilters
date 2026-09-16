@@ -184,6 +184,7 @@ ParaEQ::ParaEQ(audioMasterCallback audioMaster) :
     setNumInputs(kNumInputs);
     setNumOutputs(kNumOutputs);
     setUniqueID(kUniqueId);
+    setVersion(kVersion);
     canProcessReplacing();     // supports output replacing
     canDoubleReplacing();      // supports double precision processing
 	programsAreChunks(true);
@@ -194,7 +195,7 @@ ParaEQ::ParaEQ(audioMasterCallback audioMaster) :
 }
 
 ParaEQ::~ParaEQ() {}
-VstInt32 ParaEQ::getVendorVersion () {return 1000;}
+VstInt32 ParaEQ::getVendorVersion () {return kVersion;}
 void ParaEQ::setProgramName(char *name) {vst_strncpy (_programName, name, kVstMaxProgNameLen);}
 void ParaEQ::getProgramName(char *name) {vst_strncpy (name, _programName, kVstMaxProgNameLen);}
 //airwindows likes to ignore this stuff. Make your own programs, and make a different plugin rather than
