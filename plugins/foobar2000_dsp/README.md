@@ -2043,6 +2043,17 @@ So **all three of these Audio Units do load in a real host**: `scripts/build.sh
 given build gets, and for what each half of the verification does and does not
 establish.
 
+That is also why `kDeclickVersion` and `kDehumVersion` now move. They read
+`0x00010000` in all 542 Airwindows folders here, and when `foo_dsp_declick` and
+`foo_dsp_dehum` went to 1.0.1 these were deliberately left alone as house
+pattern rather than a per-plug-in version — correct at the time, because nothing
+could build them. Now that they ship, the constant is doing its real job: it is
+what the bundle registers with, what a host displays, and what the Component
+Manager keys a cached registration on. A shipped 1.0.1 that registers as
+`0x00010000` is one a host may keep serving from cache. So the three here carry
+their own versions — Declick and Dehum at 1.0.1, ParaEQ at 1.0.0, having only
+just arrived — and the other 542 are untouched.
+
 ### Checking that they agree
 
 `processDoubleReplacing` is left undithered — that is the standard Airwindows
@@ -2226,9 +2237,13 @@ so it asks for no administrator password. The notarisation arrangement is the
 same one `plugins/vdjplugin/scripts/package.sh` uses and the options are spelled
 the same way, including the refusal to take an app-specific password as a
 command-line argument where it would land in the shell history; `--help` on
-either script has the three ways to supply credentials. The version comes from
-the `k<Name>Version` constants, which all three have to agree on, because one
-package cannot honestly carry three versions.
+either script has the three ways to supply credentials. The three plug-ins are
+versioned independently — `k<Name>Version` in each folder, which is what the
+bundle registers with and what a host displays — and the package takes the
+highest of them, because a package carrying a 1.0.1 Declick while calling itself
+1.0.0 would be describing its oldest contents rather than itself. Each bundle's
+registration integer and `CFBundleShortVersionString` are checked against its own
+constant on the way past, those being three hand-written copies of one number.
 
 ---
 
