@@ -74,6 +74,7 @@ struct Setting { int index; float value; };   //int, not VstInt32: this is above
   static const char * kPluginName    = "Dehum";
   static const char * kProductString = "Dehum (line detection)";
   static const bool   kZeroLatency   = true;
+  static const bool   kHasEditor     = false;
   static const char * const kParamNames[] =
       { "Sensitv", "Bandwid", "SrchTo", "Harmncs", "Freq", "Rumble", "Dry/Wet" };
   static const Setting * const kArm = 0;
@@ -84,6 +85,7 @@ struct Setting { int index; float value; };   //int, not VstInt32: this is above
   static const char * kPluginName    = "Declick";
   static const char * kProductString = "Declick (AR interpolation)";
   static const bool   kZeroLatency   = false;
+  static const bool   kHasEditor     = false;
   static const char * const kParamNames[] =
       { "Sensitv", "Extent", "MaxLen", "Depth", "Passes", "Order", "Dry/Wet" };
   static const Setting * const kArm = 0;
@@ -94,21 +96,22 @@ struct Setting { int index; float value; };   //int, not VstInt32: this is above
   static const char * kPluginName    = "ParaEQ";
   static const char * kProductString = "ParaEQ (console strip)";
   static const bool   kZeroLatency   = true;
+  static const bool   kHasEditor     = true;
   static const char * const kParamNames[] =
-      { "HP Freq", "HP Slope", "LF Gain", "LF Freq", "LF Shape",
-        "LMF Gain", "LMF Freq", "LMF Q",
-        "HMF Gain", "HMF Freq", "HMF Q",
-        "HF Gain", "HF Freq", "HF Shape", "Output", "Bypass" };
+      { "Low cut", "Slope", "Bass", "Bass Hz", "Bass Shp",
+        "Revrb", "Revrb Hz", "Revrb Q",
+        "Brill", "Brill Hz", "Brill Q",
+        "Hiss", "Hiss Hz", "Hiss Shp", "Output", "Bypass" };
   //A plausible transfer curve: 24 dB/oct of rumble filter, weight back in at
   //the bottom, the boxiness out of the low mids, brilliance up, hiss down.
   static const Setting kArmSettings[] = {
-      { kParamA, 0.50f },   //HP Freq   ~75 Hz
-      { kParamB, 0.90f },   //HP Slope  24 dB/oct
-      { kParamC, 0.80f },   //LF Gain   +12 dB
-      { kParamF, 0.20f },   //LMF Gain  -12 dB
-      { kParamH, 0.60f },   //LMF Q     ~2.6
-      { kParamI, 0.75f },   //HMF Gain  +10 dB
-      { kParamL, 0.30f },   //HF Gain   -8 dB
+      { kParamA, 0.50f },   //Low cut   ~75 Hz
+      { kParamB, 0.90f },   //Slope     24 dB/oct
+      { kParamC, 0.80f },   //Bass      +12 dB
+      { kParamF, 0.20f },   //Revrb     -12 dB
+      { kParamH, 0.60f },   //Revrb Q   ~2.6
+      { kParamI, 0.75f },   //Brill     +10 dB
+      { kParamL, 0.30f },   //Hiss      -8 dB
       { kParamO, 0.55f }    //Output    +2 dB
   };
   static const Setting * const kArm = kArmSettings;
@@ -411,11 +414,16 @@ void testTheAEffect(AEffect * e) {
           && e->numParams == kNumParameters && e->numPrograms == 0,
           "the counts are the plug-in's", d);
 
-    const VstInt32 want = effFlagsCanReplacing | effFlagsProgramChunks
-                        | effFlagsCanDoubleReplacing;
+    /*  effFlagsHasEditor is set by setEditor() and by nothing else, so this is
+     *  also the check that a plug-in with no editor has not acquired one by
+     *  accident - which is what Declick and Dehum are asserting here. */
+    VstInt32 want = effFlagsCanReplacing | effFlagsProgramChunks
+                  | effFlagsCanDoubleReplacing;
+    if (kHasEditor) want |= effFlagsHasEditor;
     snprintf(d, sizeof d, "0x%04lX", (unsigned long)(uint32_t)e->flags);
     check(e->flags == want, "flags are canReplacing | programChunks | canDoubleReplacing", d);
-    check((e->flags & effFlagsHasEditor) == 0, "and no editor is claimed");
+    check(((e->flags & effFlagsHasEditor) != 0) == kHasEditor,
+          kHasEditor ? "and an editor is claimed" : "and no editor is claimed");
 
     snprintf(d, sizeof d, "0x%08lX", (unsigned long)(uint32_t)e->uniqueID);
     check(e->uniqueID == (VstInt32)kUniqueId, "uniqueID is the plug-in's four character code", d);
@@ -545,6 +553,69 @@ void testLatencyContract(AEffect * e) {
         check(tail == e->initialDelay,
               "effGetTailSize matches it, so an offline bounce collects the end", d);
     }
+}
+
+/*  The editor, as a host drives it. Windows only, and only for a plug-in that
+ *  claims one - which today is ParaEQ and nothing else, and there is no
+ *  LinuxVST ParaEQ for the .so side of this file to reach.
+ *
+ *  What is being checked is the contract rather than the drawing: a host asks
+ *  the size BEFORE it has a parent to put anything in, creates one, hands it
+ *  over, takes it away again, and is entitled to do the last two as many times
+ *  as the user opens and closes the window. A plug-in that only survives one
+ *  round of that leaks a window per opening, and an editor whose child outlives
+ *  effEditClose leaves one parented to something the host is about to destroy.
+ */
+void testTheEditor(AEffect * e) {
+    if (!kHasEditor) return;
+
+#if defined(_WIN32)
+    printf("\nthe editor, over the ABI\n");
+    char d[128];
+
+    /*  Before any window exists. Hosts really do ask in this order - they size
+     *  the frame first and create it afterwards - so an editor that can only
+     *  answer once it is open gets a frame of somebody else's choosing. */
+    ERect * r = 0;
+    const VstIntPtr gotRect = send(e, effEditGetRect, 0, 0, &r);
+    if (r) snprintf(d, sizeof d, "%d x %d", (int)(r->right - r->left),
+                    (int)(r->bottom - r->top));
+    else   snprintf(d, sizeof d, "no rect");
+    check(gotRect == 1 && r != 0 && r->right > r->left && r->bottom > r->top,
+          "effEditGetRect answers before there is a window", d);
+
+    HWND parent = CreateWindowExW(0, L"STATIC", L"", WS_OVERLAPPEDWINDOW,
+                                  0, 0, 700, 460, NULL, NULL, NULL, NULL);
+    if (!parent) { check(false, "a parent window is created"); return; }
+
+    check(send(e, effEditOpen, 0, 0, parent) == 1, "effEditOpen is accepted");
+    HWND child = GetWindow(parent, GW_CHILD);
+    check(child != NULL, "and a child window appears in the parent");
+
+    /*  A host pings this while the window is up. Nothing should come of it
+     *  here - there is no automation running - but it must not fall over. */
+    send(e, effEditIdle);
+
+    send(e, effEditClose);
+    check(GetWindow(parent, GW_CHILD) == NULL,
+          "effEditClose takes the child away again");
+
+    /*  The one that catches a destructor doing what close() should: a host
+     *  opens and closes this window every time the user shows and hides it. */
+    check(send(e, effEditOpen, 0, 0, parent) == 1, "it opens a second time");
+    check(GetWindow(parent, GW_CHILD) != NULL, "with a child window again");
+    send(e, effEditClose);
+    check(GetWindow(parent, GW_CHILD) == NULL, "and closes a second time");
+
+    /*  Out of order, which some hosts do on teardown. It must be a no-op rather
+     *  than a second destruction of something already gone. */
+    send(e, effEditClose);
+    check(true, "a second effEditClose in a row is harmless");
+
+    DestroyWindow(parent);
+#else
+    (void)e;
+#endif
 }
 
 void testTheChunk(AEffect * e) {
@@ -787,6 +858,7 @@ int main(int argc, char ** argv) {
     testIdentityOpcodes(e);
     testParameterOpcodes(e);
     testLatencyContract(e);
+    testTheEditor(e);
     testTheChunk(e);
 
     //done with this one; the audio tests each want an instance that has not been

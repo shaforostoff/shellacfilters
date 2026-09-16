@@ -99,42 +99,59 @@ paraeq::Params ParaEQ::paramsFromControls()
 	return p;
 }
 
-//Core units back to sliders. Only the constructor calls this, and only with
-//paraeq::Params::defaults() - which is the point of it existing. Dehum writes
-//its default slider positions out as constants and has a test pinning them
-//against the core's defaults; running the mapping backwards instead means there
-//is nothing to pin, because this file no longer holds a second opinion about
-//what a default is.
-void ParaEQ::setControlsFromParams(const paraeq::Params & in)
+//Core units back to sliders, as a pure mapping. Two callers want different
+//things done with the answer - the constructor writes it into A..P, and the
+//editor compares it against A..P so it can report only the sliders that
+//actually moved - so the arithmetic is here and neither of them owns it.
+void ParaEQ::controlsFromParams(const paraeq::Params & in, float * out)
 {
+	if (!out) return;
+
 	paraeq::Params p = in;
 	p.sanitize();
 
-	A = pinParameter(controlFromLog(p.hpFrequency, paraeq::kHpFreqMin, paraeq::kHpFreqMax));
-	B = controlFromBucket(p.hpSlope, 3);
+	out[kParamA] = pinParameter(controlFromLog(p.hpFrequency, paraeq::kHpFreqMin, paraeq::kHpFreqMax));
+	out[kParamB] = controlFromBucket(p.hpSlope, 3);
 
-	C = pinParameter(controlFromLinear(p.lfGain, -paraeq::kGainMaxDb, paraeq::kGainMaxDb));
-	D = pinParameter(controlFromLog(p.lfFrequency, paraeq::kLfFreqMin, paraeq::kLfFreqMax));
-	E = controlFromBucket(p.lfBell ? 1 : 0, 2);
+	out[kParamC] = pinParameter(controlFromLinear(p.lfGain, -paraeq::kGainMaxDb, paraeq::kGainMaxDb));
+	out[kParamD] = pinParameter(controlFromLog(p.lfFrequency, paraeq::kLfFreqMin, paraeq::kLfFreqMax));
+	out[kParamE] = controlFromBucket(p.lfBell ? 1 : 0, 2);
 
-	F = pinParameter(controlFromLinear(p.lmfGain, -paraeq::kGainMaxDb, paraeq::kGainMaxDb));
-	G = pinParameter(controlFromLog(p.lmfFrequency, paraeq::kLmfFreqMin, paraeq::kLmfFreqMax));
-	H = pinParameter(controlFromLog(p.lmfQ, paraeq::kQMin, paraeq::kQMax));
+	out[kParamF] = pinParameter(controlFromLinear(p.lmfGain, -paraeq::kGainMaxDb, paraeq::kGainMaxDb));
+	out[kParamG] = pinParameter(controlFromLog(p.lmfFrequency, paraeq::kLmfFreqMin, paraeq::kLmfFreqMax));
+	out[kParamH] = pinParameter(controlFromLog(p.lmfQ, paraeq::kQMin, paraeq::kQMax));
 
-	I = pinParameter(controlFromLinear(p.hmfGain, -paraeq::kGainMaxDb, paraeq::kGainMaxDb));
-	J = pinParameter(controlFromLog(p.hmfFrequency, paraeq::kHmfFreqMin, paraeq::kHmfFreqMax));
-	K = pinParameter(controlFromLog(p.hmfQ, paraeq::kQMin, paraeq::kQMax));
+	out[kParamI] = pinParameter(controlFromLinear(p.hmfGain, -paraeq::kGainMaxDb, paraeq::kGainMaxDb));
+	out[kParamJ] = pinParameter(controlFromLog(p.hmfFrequency, paraeq::kHmfFreqMin, paraeq::kHmfFreqMax));
+	out[kParamK] = pinParameter(controlFromLog(p.hmfQ, paraeq::kQMin, paraeq::kQMax));
 
-	L = pinParameter(controlFromLinear(p.hfGain, -paraeq::kGainMaxDb, paraeq::kGainMaxDb));
-	M = pinParameter(controlFromLog(p.hfFrequency, paraeq::kHfFreqMin, paraeq::kHfFreqMax));
-	N = controlFromBucket(p.hfBell ? 1 : 0, 2);
+	out[kParamL] = pinParameter(controlFromLinear(p.hfGain, -paraeq::kGainMaxDb, paraeq::kGainMaxDb));
+	out[kParamM] = pinParameter(controlFromLog(p.hfFrequency, paraeq::kHfFreqMin, paraeq::kHfFreqMax));
+	out[kParamN] = controlFromBucket(p.hfBell ? 1 : 0, 2);
 
-	O = pinParameter(controlFromLinear(p.outputGain, -paraeq::kOutputMaxDb, paraeq::kOutputMaxDb));
-	P = controlFromBucket(p.bypass ? 1 : 0, 2);
+	out[kParamO] = pinParameter(controlFromLinear(p.outputGain, -paraeq::kOutputMaxDb, paraeq::kOutputMaxDb));
+	out[kParamP] = controlFromBucket(p.bypass ? 1 : 0, 2);
+}
+
+//Only the constructor calls this, and only with paraeq::Params::defaults() -
+//which is the point of it existing. Dehum writes its default slider positions
+//out as constants and has a test pinning them against the core's defaults;
+//running the mapping backwards instead means there is nothing to pin, because
+//this file no longer holds a second opinion about what a default is.
+void ParaEQ::setControlsFromParams(const paraeq::Params & in)
+{
+	float c[kNumParameters];
+	controlsFromParams(in, c);
+
+	A = c[kParamA]; B = c[kParamB]; C = c[kParamC]; D = c[kParamD];
+	E = c[kParamE]; F = c[kParamF]; G = c[kParamG]; H = c[kParamH];
+	I = c[kParamI]; J = c[kParamJ]; K = c[kParamK]; L = c[kParamL];
+	M = c[kParamM]; N = c[kParamN]; O = c[kParamO]; P = c[kParamP];
 }
 
 ParaEQ::ParaEQ(audioMasterCallback audioMaster) :
-    AudioEffectX(audioMaster, kNumPrograms, kNumParameters)
+    AudioEffectX(audioMaster, kNumPrograms, kNumParameters),
+    editorImpl(*this)
 {
 	//The sixteen sliders start wherever the core's own defaults put them - flat,
 	//with every band parked on the target its knob is for.
@@ -170,6 +187,9 @@ ParaEQ::ParaEQ(audioMasterCallback audioMaster) :
     canProcessReplacing();     // supports output replacing
     canDoubleReplacing();      // supports double precision processing
 	programsAreChunks(true);
+	//Sets effFlagsHasEditor, which is what a host reads to decide whether to
+	//offer a window. Nothing is drawn until it asks for one.
+	setEditor(&editorImpl);
     vst_strncpy (_programName, "Default", kVstMaxProgNameLen); // default program name
 }
 
@@ -330,20 +350,25 @@ float ParaEQ::getParameter(VstInt32 index) {
 
 void ParaEQ::getParameterName(VstInt32 index, char *text) {
     switch (index) {
-        case kParamA: vst_strncpy (text, "HP Freq", kVstMaxParamStrLen); break;
-		case kParamB: vst_strncpy (text, "HP Slope", kVstMaxParamStrLen); break;
-		case kParamC: vst_strncpy (text, "LF Gain", kVstMaxParamStrLen); break;
-		case kParamD: vst_strncpy (text, "LF Freq", kVstMaxParamStrLen); break;
-		case kParamE: vst_strncpy (text, "LF Shape", kVstMaxParamStrLen); break;
-		case kParamF: vst_strncpy (text, "LMF Gain", kVstMaxParamStrLen); break;
-		case kParamG: vst_strncpy (text, "LMF Freq", kVstMaxParamStrLen); break;
-		case kParamH: vst_strncpy (text, "LMF Q", kVstMaxParamStrLen); break;
-		case kParamI: vst_strncpy (text, "HMF Gain", kVstMaxParamStrLen); break;
-		case kParamJ: vst_strncpy (text, "HMF Freq", kVstMaxParamStrLen); break;
-		case kParamK: vst_strncpy (text, "HMF Q", kVstMaxParamStrLen); break;
-		case kParamL: vst_strncpy (text, "HF Gain", kVstMaxParamStrLen); break;
-		case kParamM: vst_strncpy (text, "HF Freq", kVstMaxParamStrLen); break;
-		case kParamN: vst_strncpy (text, "HF Shape", kVstMaxParamStrLen); break;
+        //The restoration names, not a console's. "Revrb" and "Brill" are
+        //"Reverb cut" and "Brilliance" cut to the eight characters
+        //kVstMaxParamStrLen allows; the editor has room for the whole word and
+        //writes it, and both names appear together in its context menu, so
+        //neither is a secret from anyone who knows only the other.
+        case kParamA: vst_strncpy (text, "Low cut", kVstMaxParamStrLen); break;
+		case kParamB: vst_strncpy (text, "Slope", kVstMaxParamStrLen); break;
+		case kParamC: vst_strncpy (text, "Bass", kVstMaxParamStrLen); break;
+		case kParamD: vst_strncpy (text, "Bass Hz", kVstMaxParamStrLen); break;
+		case kParamE: vst_strncpy (text, "Bass Shp", kVstMaxParamStrLen); break;
+		case kParamF: vst_strncpy (text, "Revrb", kVstMaxParamStrLen); break;
+		case kParamG: vst_strncpy (text, "Revrb Hz", kVstMaxParamStrLen); break;
+		case kParamH: vst_strncpy (text, "Revrb Q", kVstMaxParamStrLen); break;
+		case kParamI: vst_strncpy (text, "Brill", kVstMaxParamStrLen); break;
+		case kParamJ: vst_strncpy (text, "Brill Hz", kVstMaxParamStrLen); break;
+		case kParamK: vst_strncpy (text, "Brill Q", kVstMaxParamStrLen); break;
+		case kParamL: vst_strncpy (text, "Hiss", kVstMaxParamStrLen); break;
+		case kParamM: vst_strncpy (text, "Hiss Hz", kVstMaxParamStrLen); break;
+		case kParamN: vst_strncpy (text, "Hiss Shp", kVstMaxParamStrLen); break;
 		case kParamO: vst_strncpy (text, "Output", kVstMaxParamStrLen); break;
 		case kParamP: vst_strncpy (text, "Bypass", kVstMaxParamStrLen); break;
         default: break; // unknown parameter, shouldn't happen!

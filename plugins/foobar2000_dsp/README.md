@@ -1168,6 +1168,12 @@ while a handle is being dragged.
 The whole interface is the curve, painted rather than assembled out of
 trackbars. Everything is reachable three ways.
 
+The VST2 build has the same editor, not a second one: `paraeq_editor.{h,cpp}` is
+plain Win32 with no SDK in it and both hosts compile that one file. So everything
+described here is true of `ParaEQ64.dll` as well, bar the "Add to DSP chain"
+button, which exists for the UI element and has nothing to mean in a plug-in
+window. See [The ParaEQ editor](#the-paraeq-editor).
+
 **Mouse**
 
 | | |
@@ -1584,7 +1590,11 @@ that a +20 dB bell is +20 dB and a 24 dB/oct high-pass is 92.9 dB down on the
 rumble; that all sixteen sliders move live without renegotiating latency; a
 corner above Nyquist; hostile input; `resume()`; the slider mappings against
 `Params::defaults()`; and the preset chunk, including the NaN that
-`pinParameter()` lets through and `sanitize()` stops.
+`pinParameter()` lets through and `sanitize()` stops. It also covers the editor
+in both directions: that a drag reaches the parameters and tells the host about
+exactly the sliders that moved, that `idle()` pulls a host-side change into the
+curve, and that a quiet `idle()` writes no automation — the feedback loop this
+join could have had.
 
 **`declick_au_verify`**, **`dehum_au_verify`** and **`paraeq_au_verify`** do the
 same job for the MacAU ports — see [Sharing a core with the other plug-in
@@ -1726,7 +1736,8 @@ foo_dsp_dehum/                    same layout, dehum_core.{h,cpp} etc., plus
                                   find the line the slow way
 foo_dsp_paraeq/                   same layout, paraeq_core.{h,cpp} etc., plus
   paraeq_editor.{h,cpp}           the owner-drawn curve editor, used unchanged by
-                                  the modal dialog and by the UI element
+                                  the modal dialog, by the UI element and - via
+                                  sync_cores - by the WinVST plug-in
   ui_element.cpp                  the Default UI element, so the editor can live
                                   in the main window; edits the DSP chain directly
 tools/
@@ -1848,6 +1859,13 @@ which is a foobar2000 component and has no VST wrapper at all.
 different interface, so its `.cpp` is a wrapper in its own right rather than a
 copy of anybody's — see [The Mac ports](#the-mac-ports).
 
+One **editor** is mirrored as well, which nothing else here does: cores are
+shared between formats and wrappers between ports, and `paraeq_editor.{h,cpp}`
+is the only *interface* two hosts have in common. It is canonical in
+`foo_dsp_paraeq` like the core and goes to `plugins/WinVST/ParaEQ` and nowhere
+else — MacAU is deliberately not on that list, an Audio Unit having no Win32
+window to put it in. See [The ParaEQ editor](#the-paraeq-editor).
+
 So the copies are mechanical and checked:
 
 ```powershell
@@ -1902,41 +1920,45 @@ so it is part of the numerical contract rather than an optimisation, and two
 ports that disagree about it are not comparable. It is now
 `declick::scoped_flush_denormals` and both wrappers hold one.
 
-### The ParaEQ VST wrapper is the Dehum one, plus sixteen sliders
+### The ParaEQ VST wrapper is the Dehum one, plus an editor
 
-The same shape — no pre-roll, no FIFO, no latency, no tail, a 1024-sample double
-scratch and a dither — because the equaliser asks the host for even less than the
-dehummer does. What is different is above the DSP rather than in it:
+The same shape underneath — no pre-roll, no FIFO, no latency, no tail, a
+1024-sample double scratch and a dither — because the equaliser asks the host for
+even less than the dehummer does. What is different is above the DSP rather than
+in it:
 
 | | |
 | --- | --- |
-| **Sixteen parameters** | `kParamA`–`kParamP`, against Declick's and Dehum's seven. That is the price of a fixed layout in a format with no editor: the foobar2000 build draws a curve and lets the operator grab a band, and a VST2 with `effFlagsHasEditor` clear has nothing to draw with, so every control the curve editor exposes has to become a slider of its own. |
+| **Sixteen parameters, and a curve to move them with** | `kParamA`–`kParamP`, against Declick's and Dehum's seven, because a fixed layout has five bands and each of them has two or three controls. Sixteen sliders in a host's generic list is not an interface, so this is the one plug-in here that sets `effFlagsHasEditor` — see [The ParaEQ editor](#the-paraeq-editor) below. The sliders do not go away: they are what a VST parameter *is* and what a host automates, and the editor moves them rather than replacing them. |
 | **Logarithmic frequency and Q** | A linear 1.5–16 kHz control spends four fifths of its travel in the top octave and a half, and the useful settings on a transfer are clustered at the bottom of every one of these ranges. So the frequency and Q sliders are `lo * (hi/lo)^x`, and the midpoint of the travel is the geometric mean of the range rather than its arithmetic one. Gains stay linear because dB already is, which also puts unity exactly at the centre detent. |
 | **No default constants** | Dehum writes its default slider positions out as named constants and has a test pinning them against `Params::defaults()`. ParaEQ runs the mapping backwards instead — the constructor calls `setControlsFromParams(paraeq::Params::defaults())` — so this file holds no second opinion about what a default is and there is nothing to pin. |
 | **A snap on a rate change, a glide on everything else** | Nothing here is sized by the parameters, so `retune()` cannot fail and there is no rebuild branch — not even the one Dehum needs for a sample rate change. A rate change takes `configure()` instead, because the filter states describe samples at a rate that is no longer the rate, and gliding across that would be gliding over a discontinuity. |
 | **Bypass is a real bypass** | It retargets every stage to unity and the trim to 0 dB rather than blending a dry path in, and `checkSettled()` lands exactly on the target rather than asymptotically near it. So once the glide has arrived the cascade is six unity biquads and the output is the input **to the bit**, which `paraeq_vst_verify` asserts as an identity rather than a tolerance. |
 
-The sliders, in order, with the shorthand from [Parametric EQ
-parameters](#parametric-eq-parameters):
+The sliders, in order. The names are the restoration ones from [Parametric EQ
+parameters](#parametric-eq-parameters) rather than a console's HP/LF/LMF/HMF/HF,
+so that an automation lane says what the knob is *for*; `kVstMaxParamStrLen` is
+eight characters, which is why two of them are cut short. The editor has the room
+and writes them out in full.
 
-| | Control | Range | Slider |
-| --- | --- | --- | --- |
-| A | `HP Freq` | 16–350 Hz | logarithmic |
-| B | `HP Slope` | off / 12 / 24 dB per octave | three equal buckets |
-| C | `LF Gain` | ±20 dB | linear |
-| D | `LF Freq` | 30–450 Hz | logarithmic |
-| E | `LF Shape` | shelf / bell | two equal buckets |
-| F | `LMF Gain` | ±20 dB | linear |
-| G | `LMF Freq` | 200–3000 Hz | logarithmic |
-| H | `LMF Q` | 0.5–8 | logarithmic |
-| I | `HMF Gain` | ±20 dB | linear |
-| J | `HMF Freq` | 600–8000 Hz | logarithmic |
-| K | `HMF Q` | 0.5–8 | logarithmic |
-| L | `HF Gain` | ±20 dB | linear |
-| M | `HF Freq` | 1500–16000 Hz | logarithmic |
-| N | `HF Shape` | shelf / bell | two equal buckets |
-| O | `Output` | ±20 dB | linear |
-| P | `Bypass` | off / on | two equal buckets |
+| | Control | Band | Range | Slider |
+| --- | --- | --- | --- | --- |
+| A | `Low cut` | Low cut | 16–350 Hz | logarithmic |
+| B | `Slope` | | off / 12 / 24 dB per octave | three equal buckets |
+| C | `Bass` | Bass | ±20 dB | linear |
+| D | `Bass Hz` | | 30–450 Hz | logarithmic |
+| E | `Bass Shp` | | shelf / bell | two equal buckets |
+| F | `Revrb` | Reverb cut | ±20 dB | linear |
+| G | `Revrb Hz` | | 200–3000 Hz | logarithmic |
+| H | `Revrb Q` | | 0.5–8 | logarithmic |
+| I | `Brill` | Brilliance | ±20 dB | linear |
+| J | `Brill Hz` | | 600–8000 Hz | logarithmic |
+| K | `Brill Q` | | 0.5–8 | logarithmic |
+| L | `Hiss` | Hiss cut | ±20 dB | linear |
+| M | `Hiss Hz` | | 1500–16000 Hz | logarithmic |
+| N | `Hiss Shp` | | shelf / bell | two equal buckets |
+| O | `Output` | Output | ±20 dB | linear |
+| P | `Bypass` | | off / on | two equal buckets |
 
 A discrete control's inverse returns the **centre** of its bucket rather than the
 lower edge, so a stored preset cannot come back as the neighbouring setting.
@@ -1959,6 +1981,50 @@ bounded by the core's `kSettleTolerance` of 1e-6, around 120 dB down, lasting a
 fraction of a second. It is in the core, so `foo_dsp_paraeq` has it too, a
 foobar2000 chunk being no more a fixed size than a VST buffer is, and neither
 wrapper can do anything about it from outside.
+
+### The ParaEQ editor
+
+It is the same editor the foobar2000 component draws — a curve with five handles
+on it, the readout strip under it, and Bypass / Flatten / Reset along the bottom.
+Not a port of it and not a second one: `paraeq_editor.{h,cpp}` is one file that
+both hosts compile, mirrored into `plugins/WinVST/ParaEQ` by `sync_cores`
+alongside the core. Two owner-drawn editors of that size would have diverged
+inside a month, and the one thing worse than no curve in the VST would be a
+different curve.
+
+Making that possible took three small changes to the editor, all of them in the
+direction of it knowing less:
+
+| | |
+| --- | --- |
+| **No `stdafx.h`** | It includes `windows.h` and `windowsx.h` and names what it uses. In the foobar2000 build it is still reached after the SDK's own header, so the WinSock2 ordering that `stdafx.h` documents is untouched. |
+| **Colours by enum, not by GUID** | It used to ask for `ui_color_background` and friends. A VST2 host has no theme to ask about — there is nothing in the ABI that corresponds — so the editor now names the three colours it wants as `paraeq_editor::Color` and `ui_element.cpp` maps those onto the SDK's GUIDs. Everything else it draws is blended from those three, so it is correct in light and dark without knowing which it is in. The VST answers "no" to all three and gets `GetSysColor()`. |
+| **`__ImageBase`, not `core_api::get_my_instance()`** | `RegisterClassExW` and `CreateWindowExW` want the module handle. The linker's `__ImageBase` sits at the start of the mapped image, so its address *is* the `HINSTANCE`, resolved at link time with nothing to call and nothing to fail. |
+
+What is left on the VST side is `ParaEQEditor`, which is a join and nothing else:
+`AEffEditor` on one face, `paraeq_editor::Host` on the other, and in the middle
+the one thing neither can know — that a VST parameter is a float in 0..1 and a
+`paraeq::Params` is not.
+
+| | |
+| --- | --- |
+| **640 × 400, fixed** | The one number here that is a taste. Resizing a VST2 window needs `audioMasterSizeWindow` and a host that honours it, and the hosts that do not leave the plug-in drawing outside a window they still think is the old size. For comparison the foobar2000 modal dialog gives the same editor about 486 × 384, and the UI element gets whatever it is dragged to. |
+| **A drag becomes `setParameterAutomated()`** | Not `setParameter()`. A host that is recording has to be told a knob moved, and `audioMasterAutomate` is the only thing in VST2 that says so. Only the sliders that actually changed are sent, which is what keeps a drag on one handle out of the other fifteen lanes. |
+| **`effEditIdle` is how the editor finds out** | VST2 has no callback in the plug-in's direction saying a parameter moved: the host calls `setParameter()` and nothing tells the editor. So `idle()` compares the sixteen sliders against the last agreed set and pushes a change in when it finds one. **A host that never sends `effEditIdle` shows an editor that does not follow automation.** There is no second mechanism in the ABI to fall back on, and building one out of a timer would fight the editor's own. |
+| **Comparison is on sliders, not on `Params`** | The round trip through the mapping is not exact to the last bit, so comparing `Params` would make every push look like a fresh change and bounce it back. Comparing the sixteen floats is exact, and that is what `m_synced` holds. |
+| **The window is per-opening, the settings are not** | `open()` creates the editor and `close()` destroys it, because a host opens and closes the window every time the user shows and hides it. Nothing is lost with it: the settings live in the sixteen parameters, which is where a VST's state belongs. |
+
+The footer's fourth button, "Add to DSP chain", never appears: it exists for the
+foobar2000 UI element, which can be on screen while the equaliser is not in the
+chain. A VST in a host's window is in the chain by construction, so
+`editorEngaged()` takes the default and says so.
+
+`paraeq_vst_verify` drives both directions — a push arrives in the parameters and
+in exactly three automation lanes, an `idle()` pulls a host-side move into the
+editor, and a quiet `idle()` writes nothing — and `vst_host_verify` does the
+window lifecycle over the ABI, where a host would break it: size before there is
+a window, open, close, open again, close again, and a second `effEditClose` in a
+row for the hosts that send one.
 
 ### The Mac ports
 
@@ -2102,7 +2168,7 @@ and a compiler would not:
 | | |
 | --- | --- |
 | `sizeof(AEffect)` | 144 on x86, 192 on x64, read out of the loaded module |
-| flags | exactly `canReplacing \| programChunks \| canDoubleReplacing`, no editor |
+| flags | exactly `canReplacing \| programChunks \| canDoubleReplacing`, plus `hasEditor` for ParaEQ and for neither of the others |
 | `uniqueID` | `0x64636C6B` `'dclk'`, `0x6468756D` `'dhum'`, `0x70726571` `'preq'` |
 | `resvd1`, `resvd2`, `future[56]` | left zeroed, as the host expects |
 | the deprecated `process` | a no-op function, not a null pointer, because a host old enough to call it will not check first |
@@ -2156,9 +2222,14 @@ discontinued SDK, so **`plugins/WinVST/vst2_shim`** is a clean-room
 implementation of the VST2 ABI: the `AEffect` structure, the opcode dispatcher
 and `VSTPluginMain`, written from the published description of the interface and
 MIT licensed with the rest of the tree. JUCE, Ardour and LMMS all arrived at the
-same place. There is no editor, no MIDI, no offline processing and no speaker
-arrangements; those opcodes answer "not supported", which is what the stock
-Airwindows plug-ins answered by not overriding them.
+same place. There is no MIDI, no offline processing and no speaker arrangements;
+those opcodes answer "not supported", which is what the stock Airwindows plug-ins
+answered by not overriding them.
+
+There **is** an editor, as of ParaEQ: `AEffEditor` plus the four `eff*Edit*`
+opcodes a host actually sends, with no VSTGUI and no idea what is drawn inside.
+A plug-in that never calls `setEditor()` is exactly the plug-in it was before,
+which is why Declick and Dehum still assert that no editor is claimed.
 
 The build does not go through each plug-in's `VSTProject.vcxproj`. Those ask for
 toolset v140 and Windows SDK 8.1 and expect the SDK at a path outside this tree,

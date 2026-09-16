@@ -30,6 +30,12 @@
     <ClCompile Include="ParaEQProc.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ParaEQEditor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="paraeq_editor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="paraeq_core.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -48,6 +54,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="paraeq_core.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ParaEQEditor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="paraeq_editor.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

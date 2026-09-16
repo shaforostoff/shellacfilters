@@ -24,6 +24,8 @@
     <ClCompile Include="..\..\..\vstsdk2.4\public.sdk\source\vst2.x\vstplugmain.cpp" />
     <ClCompile Include="ParaEQ.cpp" />
     <ClCompile Include="ParaEQProc.cpp" />
+    <ClCompile Include="ParaEQEditor.cpp" />
+    <ClCompile Include="paraeq_editor.cpp" />
     <ClCompile Include="paraeq_core.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -32,6 +34,8 @@
     <ClInclude Include="..\..\..\vstsdk2.4\public.sdk\source\vst2.x\audioeffectx.h" />
     <ClInclude Include="ParaEQ.h" />
     <ClInclude Include="paraeq_core.h" />
+    <ClInclude Include="ParaEQEditor.h" />
+    <ClInclude Include="paraeq_editor.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{7FBB668B-1CAB-4248-A001-B386600D0175}</ProjectGuid>

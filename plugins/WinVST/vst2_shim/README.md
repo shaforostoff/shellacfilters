@@ -36,9 +36,18 @@ JUCE, Ardour and LMMS all arrived at the same place and did the same thing.
 | `audioeffectx.cpp` | the opcode dispatcher and the five C thunks in `AEffect`. |
 | `vstplugmain.cpp` | `VSTPluginMain`, the single exported symbol, and the `main` alias for hosts that predate the rename. |
 
-No editor, no MIDI, no offline processing, no speaker arrangements, no
-parameter properties. Those opcodes are answered "not supported", which is what
-the stock Airwindows plug-ins answered anyway by not overriding them.
+No MIDI, no offline processing, no speaker arrangements, no parameter
+properties. Those opcodes are answered "not supported", which is what the stock
+Airwindows plug-ins answered anyway by not overriding them.
+
+There is an editor, added for ParaEQ. `AEffEditor` in `audioeffectx.h` is the
+SDK's class cut down to the four opcodes a host actually sends — `effEditGetRect`,
+`effEditOpen`, `effEditClose`, `effEditIdle` — with no VSTGUI and no knowledge of
+what is drawn inside; `ERect` in `vst2_abi.h` is the eight-byte struct they are
+answered with, whose field order is `top, left, bottom, right` and not a Win32
+`RECT`'s. A plug-in that calls `setEditor()` gets `effFlagsHasEditor` set for it
+and those four routed. One that does not is byte for byte the plug-in it was
+before, which is what Declick and Dehum assert.
 
 ## The part to be suspicious of
 

@@ -101,6 +101,7 @@ AudioEffect::AudioEffect(audioMasterCallback audioMaster, VstInt32 numPrograms, 
     this->numPrograms = numPrograms;
     this->numParams   = numParams;
     curProgram        = 0;
+    editor            = 0;     //until setEditor(); effFlagsHasEditor stays clear
 
     /*  The host's guess until it says otherwise with effSetSampleRate and
      *  effSetBlockSize. Every plug-in here re-derives its state when the rate
@@ -166,7 +167,38 @@ VstIntPtr AudioEffect::dispatcher(VstInt32 opcode, VstInt32 index, VstIntPtr val
         case effGetChunk: v = getChunk((void **)ptr, index != 0); break;
         case effSetChunk: v = setChunk(ptr, (VstInt32)value, index != 0); break;
 
-        /*  No editor, so the whole eff*Edit* range is silently unsupported. */
+        /*  The editor. A plug-in that never called setEditor() has a null here
+         *  and answers 0 to all four, which is what "no editor" looks like over
+         *  the ABI and is exactly what this shim did before there was one.
+         *
+         *  effEditGetRect arrives before effEditOpen and again afterwards, and
+         *  some hosts send it with no editor open at all to size a window they
+         *  have not created yet - so it must not depend on open() having
+         *  happened. The host reads through the pointer straight away and does
+         *  not free it; the storage is the editor's. */
+        case effEditGetRect:
+            if (editor) {
+                ERect * r = 0;
+                v = (editor->getRect(&r) && r) ? 1 : 0;
+                if (ptr) *(ERect **)ptr = r;
+            }
+            break;
+
+        case effEditOpen:
+            if (editor) v = editor->open(ptr) ? 1 : 0;
+            break;
+
+        /*  Not conditional on isOpen(): a host that sends effEditClose without
+         *  a matching effEditOpen is not rare, and an editor that can only be
+         *  closed once it believes it is open leaks a window when it meets one. */
+        case effEditClose:
+            if (editor) { editor->close(); v = 1; }
+            break;
+
+        case effEditIdle:
+            if (editor) editor->idle();
+            break;
+
         default: break;
     }
     return v;

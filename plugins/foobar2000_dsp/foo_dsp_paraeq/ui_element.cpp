@@ -161,10 +161,23 @@ public:
         m_engaged = true;
     }
 
-    bool editorColor(const GUID & what, COLORREF & out) override {
-        t_ui_color col = 0;
+    //! The editor names the three colours it wants in its own terms, because
+    //! it has a host with no ui_color_* to answer with as well as this one.
+    //! Mapping them onto the SDK's GUIDs is a foobar2000 problem and so lives
+    //! on this side of the interface.
+    bool editorColor(paraeq_editor::Color what, COLORREF & out) override {
         if (!m_callback.is_valid()) return false;
-        if (!m_callback->query_color(what, col)) return false;
+
+        GUID which;
+        switch (what) {
+            case paraeq_editor::kColorBackground: which = ui_color_background; break;
+            case paraeq_editor::kColorText:       which = ui_color_text;       break;
+            case paraeq_editor::kColorSelection:  which = ui_color_selection;  break;
+            default: return false;
+        }
+
+        t_ui_color col = 0;
+        if (!m_callback->query_color(which, col)) return false;
         out = (COLORREF)col;
         return true;
     }
