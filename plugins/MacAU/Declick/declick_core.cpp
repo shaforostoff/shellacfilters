@@ -643,12 +643,6 @@ void Channel::interpolate(int from, int to, int reach) {
         }
         const double limit = 1.5 * dmax(localMax, 1e-9);
 
-        bool ok = true;
-        for (int j = 0; j < m; ++j) {
-            if (!finite(m_rhs[(size_t)j])) { ok = false; break; }
-        }
-        if (!ok) continue;
-
         // Subtractive repair. A click ADDS to the music, so the damaged
         // samples still carry the signal underneath: what to remove is the
         // discrepancy d = x - v, not the sample. Subtracting all of d means
