@@ -424,6 +424,34 @@ void testStreaming() {
             printf("  FAIL  above the subtraction ceiling, which is impossible\n");
             ++g_failures;
         }
+
+        // The same, for clicks that start in the last few samples of a block
+        // and run on into the next one. The clicks above land all over the
+        // block and average this case away; it once came out at 0.8 dB.
+        std::vector<double> edge = clean;
+        std::vector<size_t> edgeAt;
+        for (size_t b = 10; (b + 1) * (size_t)kBlock + 16 < N - 5000; b += 7) {
+            const size_t i = b * (size_t)kBlock + (size_t)kBlock - 4;
+            for (int k = 0; k < 10; ++k) {
+                edge[i + (size_t)k] += 0.6 * ((k & 1) ? -1.0 : 1.0) * (1.0 - k / 10.0);
+            }
+            edgeAt.push_back(i);
+        }
+        const std::vector<double> edgeOut = runChannel(edge, p, sr);
+        double eb = 0.0, ea = 0.0;
+        for (size_t idx = 0; idx < edgeAt.size(); ++idx) {
+            for (int k = -2; k < 14; ++k) {
+                const size_t a = edgeAt[idx] + (size_t)k;
+                eb += (edge[a] - clean[a]) * (edge[a] - clean[a]);
+                ea += (edgeOut[a] - clean[a]) * (edgeOut[a] - clean[a]);
+            }
+        }
+        const double edgeRed = 10.0 * log10((eb + 1e-300) / (ea + 1e-300));
+        printf("  clicks straddling a block edge reduced by %.1f dB\n", edgeRed);
+        if (!(edgeRed > ceiling - 1.0)) {
+            printf("  FAIL  a click across a block edge is only partly repaired\n");
+            ++g_failures;
+        }
     }
 
     // Hostile input: nothing non-finite may escape, and clean audio afterwards

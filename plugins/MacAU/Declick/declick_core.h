@@ -267,7 +267,8 @@ private:
     void growOut();               //!< only reachable by overrunning maxBlock
     void processBlock();          //!< repairs m_win[m_pad .. m_pad+kBlock)
     void detect(int from, int to, int pass);
-    void interpolate(int from, int to);
+    //! Repairs bursts that start in [from, to); a burst may run on to `reach`.
+    void interpolate(int from, int to, int reach);
     void fitModel(int from, int to);
     //! a[0] = 1, rest zero: pass the audio through unmodelled. Keeps m_arev in
     //! step, which is why the degenerate paths in fitModel() all come here.

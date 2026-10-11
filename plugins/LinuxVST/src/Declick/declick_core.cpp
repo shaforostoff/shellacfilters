@@ -556,7 +556,7 @@ void Channel::detect(int from, int to, int pass) {
     }
 }
 
-void Channel::interpolate(int from, int to) {
+void Channel::interpolate(int from, int to, int reach) {
     const int order = m_cfg.order;
     const int ctx = 3 * order;
     const double hi = m_cfg.thresholdHi;
@@ -567,14 +567,17 @@ void Channel::interpolate(int from, int to) {
         if (m_det[i] <= hi || m_flag[i]) { ++i; continue; }
 
         // Hysteresis: walk outwards while the detection function is still
-        // above the low threshold.
+        // above the low threshold. The end may run past `to`, into the margin
+        // processBlock() detected over: a burst that straddles the block edge
+        // has to be repaired whole, or its unrepaired tail is taken as clean
+        // context for the half that is.
         int s = i, e = i;
         while (s - 1 >= from && m_det[s - 1] > lo && !m_flag[s - 1]) --s;
-        while (e + 1 < to && m_det[e + 1] > lo && !m_flag[e + 1]) ++e;
+        while (e + 1 < reach && m_det[e + 1] > lo && !m_flag[e + 1]) ++e;
         // One sample of slack either side; a repair that stops exactly at the
         // damage boundary tends to leave a step.
         if (s > from) --s;
-        if (e < to - 1) ++e;
+        if (e < reach - 1) ++e;
 
         const int m = e - s + 1;
         i = e + 1;
@@ -713,7 +716,7 @@ void Channel::processBlock() {
         // Only commit repairs whose burst STARTS inside this block; anything
         // starting later belongs to the next block, which will see it with
         // full context on both sides.
-        interpolate(m_pad, (m_pad + blk < dTo) ? (m_pad + blk) : dTo);
+        interpolate(m_pad, (m_pad + blk < dTo) ? (m_pad + blk) : dTo, dTo);
     }
 }
 
