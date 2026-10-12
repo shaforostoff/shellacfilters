@@ -251,7 +251,7 @@ Throughput: ~43× realtime at the defaults, ~105× at order 64, measured end to
 end over 60 s of 44.1 kHz mono shellac including file I/O — about 2 % of one
 core on a modern desktop, and an estimated 6× realtime stereo on a 2014
 MacBook Air. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
-Latency ~18 ms, reported to foobar2000 so visualisations stay in sync. Note
+Latency ~24 ms, reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
 must go in before the first block comes out, but the emitted stream is aligned
 with the input. The component reads ahead rather than holding the output back —

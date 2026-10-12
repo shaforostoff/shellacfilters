@@ -580,7 +580,7 @@ void Channel::interpolate(int from, int to, int reach) {
         if (e < reach - 1) ++e;
 
         i = e + 1;
-        if (repairRun(s, e, true) && m_cfg.rerepair > 0 &&
+        if (repairRun(s, e, false) && m_cfg.rerepair > 0 &&
             m_nruns + 2 <= (int)m_runs.size()) {
             m_runs[(size_t)m_nruns++] = s;
             m_runs[(size_t)m_nruns++] = e;
@@ -588,7 +588,7 @@ void Channel::interpolate(int from, int to, int reach) {
     }
 }
 
-bool Channel::repairRun(int s, int e, bool count) {
+bool Channel::repairRun(int s, int e, bool again) {
     const int order = m_cfg.order;
     const int ctx = 3 * order;
     const int m = e - s + 1;
@@ -674,7 +674,9 @@ bool Channel::repairRun(int s, int e, bool count) {
         if (v > limit) v = limit;
         else if (v < -limit) v = -limit;
 
-        const double x = m_win[s + j];
+        // A re-repair subtracts from what was actually there, not from the
+        // earlier repair - which stays put if this one cannot be done.
+        const double x = again ? m_dry[s + j] : m_win[s + j];
         const double dj = x - v;
 
         // The Wiener gain reduces to 1 wherever the discrepancy dwarfs the
@@ -697,18 +699,13 @@ bool Channel::repairRun(int s, int e, bool count) {
         // pass must not come back and attack it again.
         m_flag[s + j] = 1;
     }
-    if (count) m_repaired += (uint64_t)touched;
+    if (!again) m_repaired += (uint64_t)touched;
     return true;
 }
 
 void Channel::rerepairRuns() {
     for (int k = 0; k + 1 < m_nruns; k += 2) {
-        const int s = m_runs[(size_t)k], e = m_runs[(size_t)k + 1];
-        // Back to the damaged samples: the subtractive repair needs what was
-        // actually there, and the run's own samples are unknowns to the
-        // interpolation either way.
-        for (int t = s; t <= e; ++t) m_win[(size_t)t] = m_dry[(size_t)t];
-        repairRun(s, e, false);
+        repairRun(m_runs[(size_t)k], m_runs[(size_t)k + 1], true);
     }
 }
 

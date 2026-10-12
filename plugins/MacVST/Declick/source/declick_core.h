@@ -288,8 +288,10 @@ private:
     //! Repairs bursts that start in [from, to); a burst may run on to `reach`.
     void interpolate(int from, int to, int reach);
     //! Repairs m_win[s..e] with the current model. False if it could not.
-    bool repairRun(int s, int e, bool count);
-    //! Restores every run recorded this block from m_dry and repairs it again.
+    //! `again` for a re-repair: the click is taken from m_dry, and the
+    //! repair is not counted a second time.
+    bool repairRun(int s, int e, bool again);
+    //! Repairs every run recorded this block again, with the current model.
     void rerepairRuns();
     void fitModel(int from, int to);
     //! a[0] = 1, rest zero: pass the audio through unmodelled. Keeps m_arev in
