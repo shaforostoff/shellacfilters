@@ -560,6 +560,14 @@ private:
     void   runOsc(Osc & o, double * y, size_t n);
     template<int K>
     void   runProbes(Line * const * lines, const double * y, size_t n);
+    //! runProbes<4> with the per-sample work in AVX, for where it is available.
+    void   runProbesWide(Line * const * lines, const double * y, size_t n);
+    //! The longest run every probe in a group can take before one of them is
+    //! due a tracker reading or a renormalisation.
+    size_t probeRun(Line * const * lines, int count, size_t n) const;
+    //! The bookkeeping after a run of `m`. True when the rotator is due to be
+    //! renormalised.
+    static bool probeRenormDue(Osc & o, size_t m);
     void   runLines(double * y, size_t n);
     void   runLine(Line & line, double * y, size_t n);
     void   track(Line & line);
@@ -627,6 +635,19 @@ private:
     uint32_t m_confirmations = 0;
     uint32_t m_dropouts = 0;
 };
+
+//! The probe kernel this process runs: "avx" where the CPU and OS support AVX,
+//! chosen when the module loads, otherwise "base". Unlike declick's wide
+//! kernels this one is not FMA - it is the same multiplies and adds four probes
+//! at a time - so the output is bit-identical whichever runs, as long as the
+//! compiler does not fuse the base kernel's own multiply-adds, which no build of
+//! this project lets it do on x86.
+const char * kernelName();
+
+//! For tests and benchmarks: false pins the base kernel even where AVX is
+//! available, true goes back to choosing. Process-wide and not thread-safe -
+//! call it before any processing starts.
+void allowWideKernels(bool allow);
 
 //! Median of `n` values, reordering `buf`. Exposed so the tests can pin it.
 double medianInPlace(double * buf, int n);
