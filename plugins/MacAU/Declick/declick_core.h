@@ -72,8 +72,8 @@ struct Params {
         p.passes      = 2;
         // 128. Model order is the one lever that clearly pays - see kMaxOrder.
         // On the click probes it is worth about 1 dB of removal over 64 and
-        // 1.5 dB less harm, at about 1.9x the CPU - still roughly 9x real time
-        // stereo on a 2014 MacBook Air, estimated. Drop to 64 where that is
+        // 1.5 dB less harm, at about 1.9x the CPU - still 24x real time stereo
+        // on a 2014 Haswell MacBook Pro, measured. Drop to 64 where that is
         // too much; it gives up surprisingly little.
         p.order       = 128;
         p.dryWet      = 1.0f;
@@ -352,6 +352,17 @@ private:
 
     uint64_t m_repaired = 0, m_seen = 0;
 };
+
+//! The inner-product kernels this process runs: "avx2" where the CPU and OS
+//! support AVX2 and FMA, chosen when the module loads; otherwise "sse2", or
+//! "scalar" off x86. The two differ in the last bits, so output is
+//! bit-reproducible per kernel, not across machines.
+const char * kernelName();
+
+//! For tests and benchmarks: false pins the baseline kernels even where AVX2
+//! is available, true goes back to choosing. Process-wide and not
+//! thread-safe - call it before any processing starts.
+void allowWideKernels(bool allow);
 
 //! Levinson-Durbin. `a` receives order+1 coefficients with a[0] == 1.
 //! Returns false if the autocorrelation is degenerate.
