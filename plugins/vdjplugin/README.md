@@ -341,7 +341,7 @@ pin the default positions against `Params::defaults()`.
 | Extent | 0–1 | 0.5 | How far a detection spreads into its own tail |
 | Max repair | 0.2–20 ms | 4.0 ms | Longest single repair. **Structural** — see below |
 | Depth | 0–1 | 0 | 0 subtracts the calibrated fraction of each click, which adds the least error of its own; 1 replaces damaged samples outright |
-| Passes | 1–3 | 2 | A second pass catches clicks the first uncovers; ~50 % more CPU |
+| Passes | 1–3 | 2 | A second pass catches clicks the first uncovers; ~60 % more CPU |
 | Model order | 8–64 in eights | 64 | The one control where CPU clearly buys quality. **Structural** |
 | Dry/Wet | 0–1 | 1 | 0 is a bypass, and an exact one — see *16 bit*, below |
 
@@ -381,10 +381,10 @@ or forward by more than 0.25 s, restarts the pipeline.
 
 **A restart warms up.** It rewinds 0.25 s before the audio that was asked for and
 runs the core over that first, so Declick's noise estimate and Dehum's analysis
-window are settled by the time anyone hears anything. At the measured 105×
+window are settled by the time anyone hears anything. At the measured 130×
 realtime for Declick at this port's default order of 64, that is about 2 ms of
 work in the call that pays for it.
-Wind Model order up to 256 and it is roughly ten times that — the figure to
+Wind Model order up to 256 and it is roughly five times that — the figure to
 revisit if you do.
 
 **`pos` does not come from one consumer, and that one cost real debugging.**
