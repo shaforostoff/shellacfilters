@@ -256,7 +256,7 @@ that `config().latency` is a buffering delay, not a shift: that many samples
 must go in before the first block comes out, but the emitted stream is aligned
 with the input. The component reads ahead rather than holding the output back —
 it feeds every chunk in and emits whatever the pipeline has finished — so what
-those 18 ms describe is how far ahead of the listener the decoder is running,
+those 24 ms describe is how far ahead of the listener the decoder is running,
 which is exactly what `get_latency()` exists to tell the core.
 
 **Nothing is carried from one track to the next.** Every record has its own
@@ -551,7 +551,7 @@ The defaults then were conservative. On the same four transfers (originals at 71
 
 | | events/s | collateral damage | HF change |
 | --- | --- | --- | --- |
-| default (s 0.60, depth 0) | 21 | −46.5 dB | −0.8 dB |
+| then the default (s 0.60, depth 0) | 21 | −46.5 dB | −0.8 dB |
 | s 0.60, depth 0.50 | 16 | −42.4 dB | −1.2 dB |
 | s 0.80, depth 0.50 | 13 | −39.8 dB | −1.7 dB |
 | s 0.80, depth 1.00 | 12 | −37.0 dB | −2.0 dB |
