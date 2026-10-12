@@ -194,7 +194,10 @@ ParaEQ::ParaEQ(audioMasterCallback audioMaster) :
     vst_strncpy (_programName, "Default", kVstMaxProgNameLen); // default program name
 }
 
-ParaEQ::~ParaEQ() {}
+//editorImpl is a member, not a heap object. The shim's AudioEffect never
+//deletes its editor, but Steinberg's does in its destructor - which is what
+//VSTProject.vcxproj builds against - so the pointer is taken back first.
+ParaEQ::~ParaEQ() { setEditor(0); }
 VstInt32 ParaEQ::getVendorVersion () {return kVersion;}
 void ParaEQ::setProgramName(char *name) {vst_strncpy (_programName, name, kVstMaxProgNameLen);}
 void ParaEQ::getProgramName(char *name) {vst_strncpy (name, _programName, kVstMaxProgNameLen);}
