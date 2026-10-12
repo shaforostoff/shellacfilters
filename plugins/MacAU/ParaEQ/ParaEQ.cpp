@@ -408,12 +408,13 @@ ComponentResult		ParaEQ::Reset(AudioUnitScope inScope, AudioUnitElement inElemen
 {
 	//The biquad states describe samples that are not adjacent to whatever comes
 	//next, so they go. The coefficients and where a glide had got to are the
-	//user's settings and stay - which is why this is the core's reset() rather
-	//than a reconfigure: an equaliser that came back flat and glided up to its
-	//own settings after every transport stop would be putting a swell into the
+	//user's settings and stay - which is why this is the core's flush(), as in
+	//the VST's resume() and foo_dsp_paraeq's flush(), rather than a
+	//reconfigure: an equaliser that came back flat and glided up to its own
+	//settings after every transport stop would be putting a swell into the
 	//first 60 ms of every take.
-	chan[0].reset();
-	chan[1].reset();
+	chan[0].flush();
+	chan[1].flush();
 	return noErr;
 }
 
