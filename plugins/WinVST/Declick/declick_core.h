@@ -72,7 +72,7 @@ struct Params {
         p.passes      = 2;
         // 128. Model order is the one lever that clearly pays - see kMaxOrder.
         // On the click probes it is worth about 1 dB of removal over 64 and
-        // 1.5 dB less harm, at about 2.5x the CPU - still roughly 6x real time
+        // 1.5 dB less harm, at about 1.9x the CPU - still roughly 9x real time
         // stereo on a 2014 MacBook Air, estimated. Drop to 64 where that is
         // too much; it gives up surprisingly little.
         p.order       = 128;
@@ -123,8 +123,8 @@ struct Config {
     //! the block again; 0 repairs every run exactly once.
     //!
     //! 1 because on dense crackle it takes the largest events from -6.8 to
-    //! -8.9 dB removed for ~1 dB of harm and 25% more CPU; 2 adds another
-    //! 0.6 dB on those for a further 35%. It needs passes >= 2 to do
+    //! -8.9 dB removed for ~1 dB of harm and 9% more CPU; 2 adds another
+    //! 0.6 dB on those for a further 27%. It needs passes >= 2 to do
     //! anything at all at 1.
     int    rerepair     = 1;
     int    pad          = 272;   //!< context needed either side of a block
@@ -312,6 +312,12 @@ private:
     //! want sum_k a[k]*x[i-k], which walks one array backwards; holding the
     //! coefficients the other way round turns both into plain inner products.
     std::vector<double> m_arev;
+    //! Autocorrelation of m_a, ridged: the first column of every repair's
+    //! normal equations. It depends on the model alone, so it is built by the
+    //! first repair after each fit and shared by the rest - and blocks with
+    //! nothing to repair never build it at all.
+    std::vector<double> m_aa;
+    bool   m_aaValid = false;
     //! Hann window for the model fit, precomputed. It depends only on the fit
     //! length, which is fixed once configured, so computing it per block cost a
     //! cos() per sample - about nine per output sample at high orders.

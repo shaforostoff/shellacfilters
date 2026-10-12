@@ -361,6 +361,7 @@ void Channel::configure(const Config & cfg) {
     m_a.assign(bo + 1, 0.0);
     m_ra.assign(bo + 1, 0.0);
     m_arev.assign(bo + 1, 0.0);
+    m_aa.assign(bo + 1, 0.0);
     m_madRing.assign((size_t)cfg.madWindow, 0.0);
     m_runs.assign(2 * (size_t)kBlock, 0);
 
@@ -414,7 +415,7 @@ void Channel::configure(const Config & cfg) {
 size_t Channel::heapBytes() const {
     return (m_win.capacity() + m_dry.capacity() + m_fwd.capacity()
             + m_bwd.capacity() + m_det.capacity() + m_a.capacity()
-            + m_ra.capacity() + m_pvar.capacity() + m_sinv.capacity()
+            + m_ra.capacity() + m_aa.capacity() + m_pvar.capacity() + m_sinv.capacity()
             + m_madRing.capacity() + m_scratch.capacity() + m_seg.capacity()
             + m_err.capacity() + m_rhs.capacity() + m_solve.capacity()
             + m_out.capacity()) * sizeof(double)
@@ -438,6 +439,7 @@ void Channel::reset() {
     m_madPos = 0;
     m_madFull = false;
     m_nruns = 0;
+    m_aaValid = false;
     m_scale = 1e-6;
     // m_out.size() is the ring's capacity, so this empties it without giving
     // the storage back - clear() would leave a zero-length ring.
@@ -455,6 +457,7 @@ void Channel::setUnitModel() {
     m_a[0] = 1.0;
     for (int i = 1; i <= order; ++i) m_a[(size_t)i] = 0.0;
     for (int i = 0; i <= order; ++i) m_arev[(size_t)i] = m_a[(size_t)(order - i)];
+    m_aaValid = false;
 }
 
 void Channel::fitModel(int from, int to) {
@@ -514,6 +517,7 @@ void Channel::fitModel(int from, int to) {
         }
     }
     for (int i = 0; i <= order; ++i) m_arev[(size_t)i] = m_a[(size_t)(order - i)];
+    m_aaValid = false;
 }
 
 void Channel::detect(int from, int to, int pass) {
@@ -602,14 +606,21 @@ bool Channel::repairRun(int s, int e, bool again) {
     const int rows = L - order;
     if (rows <= m) return false;
 
-    // Prediction error of the segment with the unknown run zeroed.
-    m_seg.assign((size_t)L, 0.0);
-    for (int t = 0; t < L; ++t) {
-        const int idx = lo0 + t;
-        m_seg[(size_t)t] = (idx >= s && idx <= e) ? 0.0 : m_win[idx];
+    // Prediction error of the segment with the unknown run zeroed - but only
+    // on the rows that touch the run. Every other row is a constant in the
+    // least-squares objective and drops out of the normal equations, so of the
+    // m + 5*order rows the window holds, the right hand side below reads
+    // m + order. The other 4*order were the larger part of every repair.
+    const int cs = s - lo0, ce = e - lo0;           // the run's columns
+    const int rLo = (cs - order > 0) ? (cs - order) : 0;
+    const int rHi = (ce < rows - 1) ? ce : (rows - 1);
+    // resize(), not assign(): only [rLo, rHi + order] is written or read.
+    m_seg.resize((size_t)L);
+    for (int t = rLo; t <= rHi + order; ++t) {
+        m_seg[(size_t)t] = (t >= cs && t <= ce) ? 0.0 : m_win[lo0 + t];
     }
-    m_err.assign((size_t)rows, 0.0);
-    for (int r = 0; r < rows; ++r) {
+    m_err.resize((size_t)rows);
+    for (int r = rLo; r <= rHi; ++r) {
         m_err[(size_t)r] = dot(&m_arev[0], &m_seg[(size_t)r], order + 1);
     }
 
@@ -624,15 +635,18 @@ bool Channel::repairRun(int s, int e, bool again) {
             : -dot(&m_a[(size_t)(order - c + r0)], &m_err[(size_t)r0], r1 - r0 + 1);
     }
 
-    // G is symmetric banded Toeplitz with first column ra[0..order],
-    // where ra is the autocorrelation of the AR coefficients. That holds
+    // G is symmetric banded Toeplitz with first column aa[0..order],
+    // where aa is the autocorrelation of the AR coefficients. That holds
     // exactly as long as ctx >= order, which it is.
-    for (int d = 0; d <= order; ++d) {
-        m_ra[(size_t)d] = dot(&m_a[0], &m_a[(size_t)d], order + 1 - d);
+    if (!m_aaValid) {
+        for (int d = 0; d <= order; ++d) {
+            m_aa[(size_t)d] = dot(&m_a[0], &m_a[(size_t)d], order + 1 - d);
+        }
+        m_aa[0] *= 1.0 + 1e-9;
+        m_aaValid = true;
     }
-    m_ra[0] *= 1.0 + 1e-9;
 
-    if (!solveBandedToeplitz(&m_ra[0], order, &m_rhs[0], m, m_solve)) return false;
+    if (!solveBandedToeplitz(&m_aa[0], order, &m_rhs[0], m, m_solve)) return false;
 
     // Optional per-sample confidence. Under the model's Gaussian
     // innovation the posterior covariance of the interpolated run is
@@ -727,7 +741,9 @@ void Channel::processBlock() {
         // music better, which is the whole point of running more than one.
         fitModel(0, m_fill);
         if (pass > 0 && m_cfg.rerepair > 0) rerepairRuns();
-        detect(dFrom, dTo, pass);
+        // The margin below the block only feeds the noise estimate, which
+        // pass 0 alone refreshes; interpolate() never reads below m_pad.
+        detect(pass == 0 ? dFrom : from, dTo, pass);
         // Only commit repairs whose burst STARTS inside this block; anything
         // starting later belongs to the next block, which will see it with
         // full context on both sides.

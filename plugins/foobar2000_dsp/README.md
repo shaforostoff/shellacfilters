@@ -225,8 +225,8 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 | **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.8** (3.2σ), chosen by ear; 0.7 measures marginally gentler. See [Dense crackle](#dense-crackle). |
 | **Extent** | How far a detection spreads into its own tail before the repair stops. Raise it if repairs leave a residual tick behind them. |
 | **Max repair** | Longest single repair. Anything longer is treated as music and left alone. 4 ms suits 78s. |
-| **Passes** | A second pass catches clicks the first one uncovers; the model is refitted in between. Small but real gain, roughly 50% more CPU. |
-| **Model order** | 8–256, default **128**. The one control where spending CPU clearly buys quality: 128 measurably beats 64 and 256 beats that again. 128 costs about 2.5× the CPU of 64, which gives up surprisingly little; the VST2, AU and VirtualDJ ports stop at 64. See [Does more CPU help?](#does-more-cpu-help). |
+| **Passes** | A second pass catches clicks the first one uncovers; the model is refitted in between. Small but real gain, roughly 60% more CPU. |
+| **Model order** | 8–256, default **128**. The one control where spending CPU clearly buys quality: 128 measurably beats 64 and 256 beats that again. 128 costs about 1.9× the CPU of 64, which gives up surprisingly little; the VST2, AU and VirtualDJ ports stop at 64. See [Does more CPU help?](#does-more-cpu-help). |
 | **Repair depth** | How much of each click to subtract. 1, the default, replaces the damaged samples outright; 0 subtracts the 45% fraction that adds the least whole-file error, which caps every repair at −5.2 dB. See [Repair depth](#repair-depth) and [Dense crackle](#dense-crackle). |
 | **Dry/Wet** | 0 bypasses. |
 
@@ -247,9 +247,9 @@ Note how flat the right-hand end is: quadrupling the number of samples touched
 (3.4 % → 14.0 %) only takes 21 events/s down to 18. Past about 0.7, sensitivity
 mostly buys collateral damage. **Repair depth is the more effective lever**.
 
-Throughput: ~43× realtime at the defaults, ~105× at order 64, measured end to
-end over 60 s of 44.1 kHz mono shellac including file I/O — about 2 % of one
-core on a modern desktop, and an estimated 6× realtime stereo on a 2014
+Throughput: ~67× realtime at the defaults, ~130× at order 64, measured end to
+end over 60 s of 44.1 kHz mono shellac including file I/O — about 1.5 % of one
+core on a modern desktop, and an estimated 9× realtime stereo on a 2014
 MacBook Air. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
 Latency ~24 ms, reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
@@ -602,7 +602,19 @@ on its own.
 
 #### The cost
 
-Measured end to end over 60 s of 44.1 kHz mono including file I/O:
+Measured end to end over 60 s of 44.1 kHz mono shellac including file I/O, at
+the defaults apart from the order (sensitivity 0.8, depth 1, two passes,
+re-repair):
+
+| order | x64 | x86 | before the per-click fix, x64 | 2014 MacBook Air, stereo (estimated) |
+| --- | --- | --- | --- | --- |
+| 32 | 195× | 178× | 175× | ~28× |
+| 64 | 130× | 117× | 101× | ~18× |
+| **128** (default) | **67×** | 60× | 44× | ~9× |
+| 256 | 27× | 24× | 15× | ~4× |
+
+The same, at the defaults of the time — sensitivity 0.6, depth 0, no
+re-repair — and before and after the optimisation below:
 
 | order | x64 | x86 | before optimisation | 2014 MacBook Air, stereo (estimated) |
 | --- | --- | --- | --- | --- |
@@ -611,7 +623,7 @@ Measured end to end over 60 s of 44.1 kHz mono including file I/O:
 | 128 | **50×** | 45× | 16× | ~7× |
 | 256 | 18× | 15× | 5× | ~2.5× |
 
-The last column is an estimate, not a measurement: a 1.4 GHz Haswell i5-4260U
+The last columns are estimates, not measurements: a 1.4 GHz Haswell i5-4260U
 is roughly 3–4× slower per core than the machine above, and stereo doubles the
 work. After the optimisation below, **order 128 is viable on that machine** —
 it was not before.
@@ -620,18 +632,25 @@ it was not before.
 point where paying for the one lever that clearly pays was still cheap, with
 128 left as the user's call. It became the default once the target was set as
 the best result real-time playback can afford: on a 2014 MacBook Air, the
-slowest machine this is played on, 128 is still an estimated 6× realtime
+slowest machine this is played on, 128 is still an estimated 9× realtime
 stereo. See [Dense crackle](#dense-crackle).
 Offline nothing has a deadline at all, and 256 is there for it.
 
 #### Where the time goes, and what was done about it
 
-Profiled by the difference between a clean file and a crackly one, the
-per-click interpolation is only **2 % of the run time at order 32 and 7 % at
-order 256**. Almost everything is the model fit and the two prediction-residual
-passes. So an earlier note here, suggesting the per-click residual be shared
-across clicks and patched per gap, was aimed at the wrong 5 % and has been
-dropped.
+At the defaults of the time — sensitivity 0.6, depth 0, no re-repair —
+profiling by the difference between a clean file and a crackly one put the
+per-click interpolation at only **2 % of the run time at order 32 and 7 % at
+order 256**, with almost everything else in the model fit and the two
+prediction-residual passes. So an earlier note here, suggesting the per-click
+residual be shared across clicks and patched per gap, was aimed at the wrong
+5 % and was dropped.
+
+The [dense-crackle](#dense-crackle) defaults changed that. Sensitivity 0.8
+repairs about 4 % of samples, and re-repair solves every first-pass run twice,
+so at order 128 the repairs grew to **44 %** of the run time — measured against
+the same 60 s at sensitivity 0 with re-repair off, which repairs 0.08 %. The
+per-click fix below brings that back down to **16 %**.
 
 What did pay, for **2.2× at order 32 rising to 3.6× at order 256**:
 
@@ -657,6 +676,22 @@ consequence, over 60 s of a real transfer: **99.9965 % of output samples
 bit-identical**, worst deviation **−156.5 dBFS** (an eighth of a 24-bit LSB),
 rms deviation **193 dB below the signal**. Every ground-truth and
 reference-transfer figure in this README is unchanged to the last digit printed.
+
+Later, once the dense-crackle defaults had made the repairs expensive:
+
+* **The per-click residual filtered rows the solve never reads.**
+  `repairRun()` computed the prediction error over the whole repair window,
+  `m + 5·order` rows, but only the `m + order` rows that touch the run enter
+  the normal equations — every other row is a constant in the least-squares
+  objective. At order 128 that was some 80k multiply-adds per run thrown away,
+  twice over under re-repair. It now filters only the rows the right-hand side
+  reads; the coefficient autocorrelation, which depends on the model alone, is
+  built once per fit instead of once per run; and the second pass no longer
+  filters the margin below the block, which only the first pass's noise
+  estimate reads. **1.5× at the defaults** (44× → 67× realtime), 1.3× at
+  order 64 and 1.8× at order 256, and bit-exact: the same products of the same
+  inputs, checked byte for byte on twelve renders across order, depth and
+  re-repair mode.
 
 One idea that is now *less* attractive than it looked: replacing the fit
 autocorrelation with an FFT. Direct is `O(n × order)` against `O(n log n)`, but
@@ -721,8 +756,10 @@ What changed, and why:
   model on the window the first had cleaned, but never revisited what the
   first had repaired with its crackle-contaminated model. Now it restores
   those runs from the dry signal and repairs them again. On the largest
-  crackle events that is −6.8 → −8.9 dB for ~1 dB of harm and 25 % more CPU;
-  mode 2, a further refit after the last pass, adds 0.6 dB for 35 % more.
+  crackle events that is −6.8 → −8.9 dB for ~1 dB of harm and 9 % more CPU
+  (25 % until the per-click residual was narrowed — see
+  [Where the time goes](#where-the-time-goes-and-what-was-done-about-it));
+  mode 2, a further refit after the last pass, adds 0.6 dB for a further 27 %.
 * **Sensitivity 0.8, order 128.** By the numbers 0.7 is marginally ahead — it
   gives up 0.5 dB of dense crackle removal for ~1 dB less harm — but 0.8 won
   a listening comparison on three full shellac transfers, with no music
