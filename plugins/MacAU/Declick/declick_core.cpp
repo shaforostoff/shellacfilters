@@ -362,6 +362,7 @@ void Channel::configure(const Config & cfg) {
     m_ra.assign(bo + 1, 0.0);
     m_arev.assign(bo + 1, 0.0);
     m_madRing.assign((size_t)cfg.madWindow, 0.0);
+    m_runs.assign(2 * (size_t)kBlock, 0);
 
     // The fit always spans the whole sliding window, so the Hann taper is the
     // same every block. Build it once here - sized to the envelope like
@@ -417,7 +418,7 @@ size_t Channel::heapBytes() const {
             + m_madRing.capacity() + m_scratch.capacity() + m_seg.capacity()
             + m_err.capacity() + m_rhs.capacity() + m_solve.capacity()
             + m_out.capacity()) * sizeof(double)
-           + m_flag.capacity();
+           + m_flag.capacity() + m_runs.capacity() * sizeof(int);
 }
 
 bool Channel::retune(const Config & cfg) {
@@ -436,6 +437,7 @@ void Channel::reset() {
     std::fill(m_madRing.begin(), m_madRing.end(), 0.0);
     m_madPos = 0;
     m_madFull = false;
+    m_nruns = 0;
     m_scale = 1e-6;
     // m_out.size() is the ring's capacity, so this empties it without giving
     // the storage back - clear() would leave a zero-length ring.
@@ -557,8 +559,6 @@ void Channel::detect(int from, int to, int pass) {
 }
 
 void Channel::interpolate(int from, int to, int reach) {
-    const int order = m_cfg.order;
-    const int ctx = 3 * order;
     const double hi = m_cfg.thresholdHi;
     const double lo = m_cfg.thresholdLo;
 
@@ -579,114 +579,136 @@ void Channel::interpolate(int from, int to, int reach) {
         if (s > from) --s;
         if (e < reach - 1) ++e;
 
-        const int m = e - s + 1;
         i = e + 1;
-        if (m <= 0 || m > m_cfg.maxRun) continue;      // too long: that is music
-
-        const int lo0 = s - ctx;
-        const int hi0 = e + ctx;
-        if (lo0 < 0 || hi0 >= m_fill) continue;
-
-        const int L = hi0 - lo0 + 1;
-        const int rows = L - order;
-        if (rows <= m) continue;
-
-        // Prediction error of the segment with the unknown run zeroed.
-        m_seg.assign((size_t)L, 0.0);
-        for (int t = 0; t < L; ++t) {
-            const int idx = lo0 + t;
-            m_seg[(size_t)t] = (idx >= s && idx <= e) ? 0.0 : m_win[idx];
+        if (repairRun(s, e, true) && m_cfg.rerepair > 0 &&
+            m_nruns + 2 <= (int)m_runs.size()) {
+            m_runs[(size_t)m_nruns++] = s;
+            m_runs[(size_t)m_nruns++] = e;
         }
-        m_err.assign((size_t)rows, 0.0);
-        for (int r = 0; r < rows; ++r) {
-            m_err[(size_t)r] = dot(&m_arev[0], &m_seg[(size_t)r], order + 1);
+    }
+}
+
+bool Channel::repairRun(int s, int e, bool count) {
+    const int order = m_cfg.order;
+    const int ctx = 3 * order;
+    const int m = e - s + 1;
+    if (m <= 0 || m > m_cfg.maxRun) return false;      // too long: that is music
+
+    const int lo0 = s - ctx;
+    const int hi0 = e + ctx;
+    if (lo0 < 0 || hi0 >= m_fill) return false;
+
+    const int L = hi0 - lo0 + 1;
+    const int rows = L - order;
+    if (rows <= m) return false;
+
+    // Prediction error of the segment with the unknown run zeroed.
+    m_seg.assign((size_t)L, 0.0);
+    for (int t = 0; t < L; ++t) {
+        const int idx = lo0 + t;
+        m_seg[(size_t)t] = (idx >= s && idx <= e) ? 0.0 : m_win[idx];
+    }
+    m_err.assign((size_t)rows, 0.0);
+    for (int r = 0; r < rows; ++r) {
+        m_err[(size_t)r] = dot(&m_arev[0], &m_seg[(size_t)r], order + 1);
+    }
+
+    // rhs[j] = -sum over the rows touching column c of a[order-(c-i)]*err[i]
+    m_rhs.assign((size_t)m, 0.0);
+    for (int j = 0; j < m; ++j) {
+        const int c = (s - lo0) + j;
+        const int r0 = (c - order > 0) ? (c - order) : 0;
+        const int r1 = (c < rows - 1) ? c : (rows - 1);
+        // a[order-(c-r)] for r = r0..r1 is a contiguous forward run.
+        m_rhs[(size_t)j] = (r1 < r0) ? 0.0
+            : -dot(&m_a[(size_t)(order - c + r0)], &m_err[(size_t)r0], r1 - r0 + 1);
+    }
+
+    // G is symmetric banded Toeplitz with first column ra[0..order],
+    // where ra is the autocorrelation of the AR coefficients. That holds
+    // exactly as long as ctx >= order, which it is.
+    for (int d = 0; d <= order; ++d) {
+        m_ra[(size_t)d] = dot(&m_a[0], &m_a[(size_t)d], order + 1 - d);
+    }
+    m_ra[0] *= 1.0 + 1e-9;
+
+    if (!solveBandedToeplitz(&m_ra[0], order, &m_rhs[0], m, m_solve)) return false;
+
+    // Optional per-sample confidence. Under the model's Gaussian
+    // innovation the posterior covariance of the interpolated run is
+    // sigma^2 * G^-1, and the solve already produced the factor of G, so
+    // the diagonal costs one more banded recursion. Off by default; see
+    // Config::wienerAlpha for why.
+    // The && matters: with wienerAlpha at 0 the two Wiener buffers are not
+    // even allocated, and nothing to the right of it is evaluated.
+    const bool haveVar =
+        m_cfg.wienerAlpha > 0.0 && !m_pvar.empty() &&
+        bandedInverseDiagonal(m_solve, order, m, m_sinv, &m_pvar[0]);
+
+    // Never let a repair leave the local dynamic range.
+    double localMax = 0.0;
+    for (int t = lo0; t <= hi0; ++t) {
+        if (t >= s && t <= e) continue;
+        const double v = fabs(m_win[t]);
+        if (v > localMax) localMax = v;
+    }
+    const double limit = 1.5 * dmax(localMax, 1e-9);
+
+    // Subtractive repair. A click ADDS to the music, so the damaged
+    // samples still carry the signal underneath: what to remove is the
+    // discrepancy d = x - v, not the sample. Subtracting all of d means
+    // trusting the estimate completely, and over a hole of any size the
+    // estimate is not that good - 78 rpm material interpolates at about
+    // 30 dB SNR over 3 samples, 22 dB over 6 and 8 dB over 16, while the
+    // click itself sits only ~18 dB below the music. Removing a fixed
+    // fraction keeps most of the click while leaving the underlying signal
+    // where the estimate would have done more harm than good.
+    const double sigma2 = m_scale * m_scale;
+    const double depth = m_cfg.depth;
+    const double alpha = m_cfg.wienerAlpha;
+    const double wcap = m_cfg.wienerMax;
+    int touched = 0;
+
+    for (int j = 0; j < m; ++j) {
+        double v = m_rhs[(size_t)j];
+        if (v > limit) v = limit;
+        else if (v < -limit) v = -limit;
+
+        const double x = m_win[s + j];
+        const double dj = x - v;
+
+        // The Wiener gain reduces to 1 wherever the discrepancy dwarfs the
+        // estimate's own uncertainty, which on this material is almost
+        // everywhere - hence the flat default.
+        double w = 1.0;
+        if (haveVar) {
+            const double P = alpha * sigma2 * m_pvar[(size_t)j];
+            const double d2 = dj * dj;
+            w = (d2 > P) ? (1.0 - P / d2) : 0.0;
         }
+        if (w > wcap) w = wcap;
+        w += depth * (1.0 - w);   // at depth 1 this is outright replacement
 
-        // rhs[j] = -sum over the rows touching column c of a[order-(c-i)]*err[i]
-        m_rhs.assign((size_t)m, 0.0);
-        for (int j = 0; j < m; ++j) {
-            const int c = (s - lo0) + j;
-            const int r0 = (c - order > 0) ? (c - order) : 0;
-            const int r1 = (c < rows - 1) ? c : (rows - 1);
-            // a[order-(c-r)] for r = r0..r1 is a contiguous forward run.
-            m_rhs[(size_t)j] = (r1 < r0) ? 0.0
-                : -dot(&m_a[(size_t)(order - c + r0)], &m_err[(size_t)r0], r1 - r0 + 1);
+        if (w > 0.0) {
+            m_win[s + j] = x - w * dj;
+            ++touched;
         }
+        // Flagged either way: the run has been dealt with, and a later
+        // pass must not come back and attack it again.
+        m_flag[s + j] = 1;
+    }
+    if (count) m_repaired += (uint64_t)touched;
+    return true;
+}
 
-        // G is symmetric banded Toeplitz with first column ra[0..order],
-        // where ra is the autocorrelation of the AR coefficients. That holds
-        // exactly as long as ctx >= order, which it is.
-        for (int d = 0; d <= order; ++d) {
-            m_ra[(size_t)d] = dot(&m_a[0], &m_a[(size_t)d], order + 1 - d);
-        }
-        m_ra[0] *= 1.0 + 1e-9;
-
-        if (!solveBandedToeplitz(&m_ra[0], order, &m_rhs[0], m, m_solve)) continue;
-
-        // Optional per-sample confidence. Under the model's Gaussian
-        // innovation the posterior covariance of the interpolated run is
-        // sigma^2 * G^-1, and the solve already produced the factor of G, so
-        // the diagonal costs one more banded recursion. Off by default; see
-        // Config::wienerAlpha for why.
-        // The && matters: with wienerAlpha at 0 the two Wiener buffers are not
-        // even allocated, and nothing to the right of it is evaluated.
-        const bool haveVar =
-            m_cfg.wienerAlpha > 0.0 && !m_pvar.empty() &&
-            bandedInverseDiagonal(m_solve, order, m, m_sinv, &m_pvar[0]);
-
-        // Never let a repair leave the local dynamic range.
-        double localMax = 0.0;
-        for (int t = lo0; t <= hi0; ++t) {
-            if (t >= s && t <= e) continue;
-            const double v = fabs(m_win[t]);
-            if (v > localMax) localMax = v;
-        }
-        const double limit = 1.5 * dmax(localMax, 1e-9);
-
-        // Subtractive repair. A click ADDS to the music, so the damaged
-        // samples still carry the signal underneath: what to remove is the
-        // discrepancy d = x - v, not the sample. Subtracting all of d means
-        // trusting the estimate completely, and over a hole of any size the
-        // estimate is not that good - 78 rpm material interpolates at about
-        // 30 dB SNR over 3 samples, 22 dB over 6 and 8 dB over 16, while the
-        // click itself sits only ~18 dB below the music. Removing a fixed
-        // fraction keeps most of the click while leaving the underlying signal
-        // where the estimate would have done more harm than good.
-        const double sigma2 = m_scale * m_scale;
-        const double depth = m_cfg.depth;
-        const double alpha = m_cfg.wienerAlpha;
-        const double wcap = m_cfg.wienerMax;
-        int touched = 0;
-
-        for (int j = 0; j < m; ++j) {
-            double v = m_rhs[(size_t)j];
-            if (v > limit) v = limit;
-            else if (v < -limit) v = -limit;
-
-            const double x = m_win[s + j];
-            const double dj = x - v;
-
-            // The Wiener gain reduces to 1 wherever the discrepancy dwarfs the
-            // estimate's own uncertainty, which on this material is almost
-            // everywhere - hence the flat default.
-            double w = 1.0;
-            if (haveVar) {
-                const double P = alpha * sigma2 * m_pvar[(size_t)j];
-                const double d2 = dj * dj;
-                w = (d2 > P) ? (1.0 - P / d2) : 0.0;
-            }
-            if (w > wcap) w = wcap;
-            w += depth * (1.0 - w);   // at depth 1 this is outright replacement
-
-            if (w > 0.0) {
-                m_win[s + j] = x - w * dj;
-                ++touched;
-            }
-            // Flagged either way: the run has been dealt with, and a later
-            // pass must not come back and attack it again.
-            m_flag[s + j] = 1;
-        }
-        m_repaired += (uint64_t)touched;
+void Channel::rerepairRuns() {
+    for (int k = 0; k + 1 < m_nruns; k += 2) {
+        const int s = m_runs[(size_t)k], e = m_runs[(size_t)k + 1];
+        // Back to the damaged samples: the subtractive repair needs what was
+        // actually there, and the run's own samples are unknowns to the
+        // interpolation either way.
+        for (int t = s; t <= e; ++t) m_win[(size_t)t] = m_dry[(size_t)t];
+        repairRun(s, e, false);
     }
 }
 
@@ -701,16 +723,22 @@ void Channel::processBlock() {
     const int dFrom = (from - order > 0) ? (from - order) : order;
     const int dTo = (to < m_fill - order) ? to : (m_fill - order);
 
+    m_nruns = 0;
     for (int pass = 0; pass < m_cfg.passes; ++pass) {
         if (dTo <= dFrom) break;
         // Refit each pass: once the worst clicks are gone the model fits the
         // music better, which is the whole point of running more than one.
         fitModel(0, m_fill);
+        if (pass > 0 && m_cfg.rerepair > 0) rerepairRuns();
         detect(dFrom, dTo, pass);
         // Only commit repairs whose burst STARTS inside this block; anything
         // starting later belongs to the next block, which will see it with
         // full context on both sides.
         interpolate(m_pad, (m_pad + blk < dTo) ? (m_pad + blk) : dTo, dTo);
+    }
+    if (m_cfg.rerepair > 1 && m_nruns > 0) {
+        fitModel(0, m_fill);
+        rerepairRuns();
     }
 }
 

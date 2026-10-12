@@ -222,22 +222,23 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 
 | | |
 | --- | --- |
-| **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. |
+| **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.8** (3.2σ), chosen by ear; 0.7 measures marginally gentler. See [Dense crackle](#dense-crackle). |
 | **Extent** | How far a detection spreads into its own tail before the repair stops. Raise it if repairs leave a residual tick behind them. |
 | **Max repair** | Longest single repair. Anything longer is treated as music and left alone. 4 ms suits 78s. |
 | **Passes** | A second pass catches clicks the first one uncovers; the model is refitted in between. Small but real gain, roughly 50% more CPU. |
-| **Model order** | 8–256, default **64**. The one control where spending CPU clearly buys quality: 128 measurably beats 64 and 256 beats that again. Neither is the default because they cost roughly 3.6× and 10× the CPU of order 32, where 64 costs about a third more — but at 50× realtime, order 128 is affordable on far weaker hardware than it used to be. See [Does more CPU help?](#does-more-cpu-help). |
-| **Repair depth** | How much of each click to subtract. 0 removes the calibrated fraction that adds the least error of its own; 1 replaces the damaged samples outright. See [Repair depth](#repair-depth). |
+| **Model order** | 8–256, default **128**. The one control where spending CPU clearly buys quality: 128 measurably beats 64 and 256 beats that again. 128 costs about 2.5× the CPU of 64, which gives up surprisingly little; the VST2, AU and VirtualDJ ports stop at 64. See [Does more CPU help?](#does-more-cpu-help). |
+| **Repair depth** | How much of each click to subtract. 1, the default, replaces the damaged samples outright; 0 subtracts the 45% fraction that adds the least whole-file error, which caps every repair at −5.2 dB. See [Repair depth](#repair-depth) and [Dense crackle](#dense-crackle). |
 | **Dry/Wet** | 0 bypasses. |
 
-Measured over 20 s excerpts of four 78 rpm transfers, at the default repair
-depth of 0. The unprocessed originals sit at **71** impulsive events/s.
+Measured over 20 s excerpts of four 78 rpm transfers, at the repair depth of 0
+and order 32 that were the defaults then. The unprocessed originals sit at
+**71** impulsive events/s.
 
 | Sensitivity | samples repaired | events/s | collateral damage | HF change | precision |
 | --- | --- | --- | --- | --- | --- |
 | 0.00 | 0.7 % | 39 | −60.8 dB | −0.3 dB | 0.91 |
 | 0.30 | 1.5 % | 26 | −50.2 dB | −0.5 dB | 0.85 |
-| **0.60** (default) | 3.4 % | 21 | −46.5 dB | −0.8 dB | 0.72 |
+| **0.60** (then the default) | 3.4 % | 21 | −46.5 dB | −0.8 dB | 0.72 |
 | 0.70 | 4.6 % | 20 | −45.4 dB | −1.0 dB | 0.66 |
 | 0.85 | 7.6 % | 19 | −43.2 dB | −1.3 dB | 0.55 |
 | 1.00 | 14.0 % | 18 | −41.8 dB | −1.7 dB | 0.43 |
@@ -246,9 +247,10 @@ Note how flat the right-hand end is: quadrupling the number of samples touched
 (3.4 % → 14.0 %) only takes 21 events/s down to 18. Past about 0.7, sensitivity
 mostly buys collateral damage. **Repair depth is the more effective lever**.
 
-Throughput: ~180× realtime at the default, measured end to end over 60 s of
-44.1 kHz mono including file I/O — well under 1 % of one core on a modern
-desktop. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
+Throughput: ~43× realtime at the defaults, ~105× at order 64, measured end to
+end over 60 s of 44.1 kHz mono shellac including file I/O — about 2 % of one
+core on a modern desktop, and an estimated 6× realtime stereo on a 2014
+MacBook Air. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
 Latency ~18 ms, reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
 must go in before the first block comes out, but the emitted stream is aligned
@@ -422,12 +424,12 @@ So the repair is **subtractive**: what gets removed is the discrepancy
 | 24+ | **−10.0 dB** | ~0 dB |
 
 With perfect detection, full replacement scored **−6.9 dB** — actively harmful.
-Subtracting a fixed **0.45** of the discrepancy is what ships. The **Repair
+Subtracting a fixed **0.45** of the discrepancy is what depth 0 does. The **Repair
 depth** control scales from there towards outright replacement:
 
 | depth | click reduction | collateral harm | whole-file error | events/s left |
 | --- | --- | --- | --- | --- |
-| **0.00** (default) | 1.79 dB | −42.4 dB | **+0.60 dB** | 28 |
+| **0.00** (then the default) | 1.79 dB | −42.4 dB | **+0.60 dB** | 28 |
 | 0.25 | 2.00 dB | −40.1 dB | +0.07 dB | 21 |
 | 0.50 | 1.98 dB | −38.2 dB | −0.70 dB | 17 |
 | 1.00 (full replacement) | 1.29 dB | −35.4 dB | −2.52 dB | 15 |
@@ -437,9 +439,11 @@ partial subtraction is (1.29 dB against 2.00 dB) — its own interpolation error
 partly undoes the repair. And the clean master itself measures 27 impulsive
 events per second; the default lands at 28, essentially back at that natural
 level, while higher depths drive it *below* the master, which means they are
-removing real musical transients. Hence the conservative default. Raise it if
-you would rather trade some added error for less audible crackle — the numbers
-above say 0.25–0.5 is the sensible range to explore.
+removing real musical transients. Hence what was, until the dense-crackle
+measurements below, the conservative default. It is now 1: whole-file error
+turned out to be the wrong yardstick for what a listener hears — see
+[Dense crackle](#dense-crackle). Lower it if you
+would rather leave more crackle in exchange for less added error.
 
 #### What did not work: per-sample Wiener weighting
 
@@ -473,7 +477,7 @@ up entirely past 28 samples and was too timid between 7 and 23.
 | | click reduction | collateral harm | whole-file error | events/s |
 | --- | --- | --- | --- | --- |
 | old length-indexed curve | 1.37 dB | −41.5 dB | +0.07 dB | 31 |
-| **flat 0.45** (ships) | **1.79 dB** | **−42.4 dB** | **+0.60 dB** | **28** |
+| **flat 0.45** (depth 0) | **1.79 dB** | **−42.4 dB** | **+0.60 dB** | **28** |
 
 The machinery is still in the tree, off by default (`Config::wienerAlpha = 0`,
 so the recursion is not even run) and sweepable from `declick_cli --alpha`.
@@ -543,7 +547,7 @@ surrounding samples carry about a hole, not by the accuracy of the model
 describing them. That is also why more model order and more context bought so
 little.
 
-The defaults are conservative. On the same four transfers (originals at 71 events/s):
+The defaults then were conservative. On the same four transfers (originals at 71 events/s):
 
 | | events/s | collateral damage | HF change |
 | --- | --- | --- | --- |
@@ -581,7 +585,7 @@ model changed:
 | | repair dB | harm dB | net dB | events/s |
 | --- | --- | --- | --- | --- |
 | order 32, w 0.45 | 1.79 | −42.4 | +0.60 | 28 |
-| order 64 (ships), w 0.45 | 2.47 | −41.2 | +0.76 | 28 |
+| order 64 (then shipped), w 0.45 | 2.47 | −41.2 | +0.76 | 28 |
 | order 128, w 0.45 | 2.87 | −42.1 | +1.31 | 29 |
 | **order 256, w 0.60** | **4.34** | **−42.8** | **+2.55** | **25** |
 
@@ -602,7 +606,7 @@ Measured end to end over 60 s of 44.1 kHz mono including file I/O:
 
 | order | x64 | x86 | before optimisation | 2014 MacBook Air, stereo (estimated) |
 | --- | --- | --- | --- | --- |
-| **32** (default) | **181×** | 156× | 84× | ~25× |
+| **32** (then the default) | **181×** | 156× | 84× | ~25× |
 | 64 | 110× | 99× | 39× | ~15× |
 | 128 | **50×** | 45× | 16× | ~7× |
 | 256 | 18× | 15× | 5× | ~2.5× |
@@ -612,11 +616,13 @@ is roughly 3–4× slower per core than the machine above, and stereo doubles th
 work. After the optimisation below, **order 128 is viable on that machine** —
 it was not before.
 
-`kMaxOrder` is 256 and **the default is 64** — where paying for the one lever
-that clearly pays is still cheap, at about a third more CPU than 32, which
-leaves plenty of headroom under a real-time deadline. Going further is the
-user's call rather than a silent change; if you have the headroom, order 128 is
-the setting to reach for, and offline nothing has a deadline at all.
+`kMaxOrder` is 256 and **the default is 128**. It used to be 64, chosen as the
+point where paying for the one lever that clearly pays was still cheap, with
+128 left as the user's call. It became the default once the target was set as
+the best result real-time playback can afford: on a 2014 MacBook Air, the
+slowest machine this is played on, 128 is still an estimated 6× realtime
+stereo. See [Dense crackle](#dense-crackle).
+Offline nothing has a deadline at all, and 256 is there for it.
 
 #### Where the time goes, and what was done about it
 
@@ -673,6 +679,74 @@ it.
   case for it is weaker than it looks: runs longer than 20 samples are 6.4 % of
   runs but **46.4 %** of the damage energy, so the long tail does matter — but
   order 256 already buys **+7.55 dB** there for far less engineering.
+
+### Dense crackle
+
+Everything above was measured against clicks this detector had itself
+harvested, and scored by whole-file error. Both choices turned out to hide the
+same thing: **dense, low-level crackle**, and how much of each click a repair
+leaves behind.
+
+**What it looks like.** Shellac crackle is a carpet of small impulses at
+250–300 per second — often one per cycle of the music — plus some top-octave
+hiss. The old defaults touched ~2 % of samples and left most of it in place.
+
+**Ground truth.** Real crackle of that kind, gated around its impulsive peaks,
+was injected into three 78-era excerpts — the Malvon master and two shellac
+transfers — so the crackle is real but its positions are known. Modern
+recordings were tried as the clean base and rejected: a peak-limited modern
+master is *spikier* in the AR residual than the crackle is. Scored in the
+whitened domain, by event size, alongside click probes of three shapes at
+−66…−24 dBFS on a tone and on the Malvon master.
+
+| | dense crackle removed, all / largest | harm | clicks in music, imp / tick / thump | change to clean music |
+| --- | --- | --- | --- | --- |
+| old defaults (s 0.6, depth 0, order 64) | −2.5 / −3.2 dB | −18.4 | −4.5 / −4.6 / −3.0 dB | −43.0 dB |
+| **new defaults** (s 0.8, depth 1, order 128, re-repair) | **−6.1 / −8.9 dB** | −13.9 | **−9.7 / −9.8 / −4.3 dB** | −34.9 dB |
+| new, order 64 (the VST2/AU/VirtualDJ default) | −6.3 / −9.6 dB | −13.4 | −10.0 / −9.2 / −4.2 dB | −33.5 dB |
+| new at s 0.7 | −5.6 / −8.7 dB | −15.0 | −11.0 / −10.8 / −4.8 dB | −35.6 dB |
+
+Lower is better everywhere; the last column is how much each changes music
+with no clicks injected at all, and that excerpt has a little crackle of its
+own.
+
+What changed, and why:
+
+* **Repair depth 1.** The 45 % subtraction was the right answer to the
+  question it was asked — least whole-file error — but whole-file error weighs
+  a smooth interpolation error the same as an impulsive residual, and the ear
+  does not. It also capped every repair at −5.2 dB however good the estimate:
+  a −24 dBFS click on a pure tone came out 5 dB quieter.
+* **Re-repair** (`Config::rerepair`, 1). The second pass already refitted the
+  model on the window the first had cleaned, but never revisited what the
+  first had repaired with its crackle-contaminated model. Now it restores
+  those runs from the dry signal and repairs them again. On the largest
+  crackle events that is −6.8 → −8.9 dB for ~1 dB of harm and 25 % more CPU;
+  mode 2, a further refit after the last pass, adds 0.6 dB for 35 % more.
+* **Sensitivity 0.8, order 128.** By the numbers 0.7 is marginally ahead — it
+  gives up 0.5 dB of dense crackle removal for ~1 dB less harm — but 0.8 won
+  a listening comparison on three full shellac transfers, with no music
+  audible in what it removes, and the ear is the measure the numbers are
+  standing in for. 128 over 64 is worth ~1 dB on the probes and ~1.5 dB less
+  harm.
+
+Tried and dropped:
+
+* **Sparse deconvolution** (L1 on the residual, FISTA) — the textbook
+  decrackler. Same crackle removal as the existing detector at 4.5 dB more
+  harm.
+* **Uncapped Wiener weighting.** With the cap lifted the model's own variance
+  gates in the wrong places: −3.7 dB of crackle at α = 1, less than depth 1.
+* **A long-history fit** — the autocorrelation of already-repaired output,
+  exponentially forgotten over 4–16k samples. Catastrophic: whole-file SNR fell
+  from 22.8 to 4–11 dB. A model of the last 0.4 s describes the previous notes,
+  so detection flags the new ones. The fit has to stay local.
+* **A coarse (order 4–16) model for large events.** Big-event removal rose to
+  −12 dB on dense crackle — and fell from −15 to −1 dB on a loud click on a
+  pure tone, which a low order cannot carry across a gap.
+* **More Extent** for thumps. A thump's tail is a decaying resonance, which is
+  exactly what an AR model predicts well, so the residual detector cannot see
+  it whatever the hysteresis. Thumps need a mechanism of their own.
 
 ---
 

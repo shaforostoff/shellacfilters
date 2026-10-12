@@ -70,10 +70,10 @@
 //these are the calibrated defaults foo_dsp_declick ships, expressed as slider
 //positions: see paramsFromControls() for the mappings, and the foobar2000_dsp
 //README for how each number was arrived at.
-static const float kDefaultValue_ParamA = 0.6;  //Sensitv, 0.6 puts the trigger at 3.9 sigma
+static const float kDefaultValue_ParamA = 0.8f;  //Sensitv, 0.8 puts the trigger at 3.2 sigma
 static const float kDefaultValue_ParamB = 0.5;  //Extent
 static const float kDefaultValue_ParamC = 0.2;  //MaxLen, 4.0 ms
-static const float kDefaultValue_ParamD = 0.0;  //Depth, the fraction that adds the least error of its own
+static const float kDefaultValue_ParamD = 1.0f;  //Depth, outright replacement
 static const float kDefaultValue_ParamE = 0.5;  //Passes, 2
 static const float kDefaultValue_ParamF = 1.0;  //Order, 64 - the top of this slider, which stops
                                                 //where the real-time budget does; the core itself

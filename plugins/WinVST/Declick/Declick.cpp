@@ -15,10 +15,10 @@ Declick::Declick(audioMasterCallback audioMaster) :
 	//these are the calibrated defaults foo_dsp_declick ships, expressed as
 	//slider positions: see paramsFromControls() for the mappings, and the
 	//foobar2000_dsp README for how each number was arrived at.
-	A = 0.6;  //Sensitv, 0.6 puts the trigger at 3.9 sigma
+	A = 0.8;  //Sensitv, 0.8 puts the trigger at 3.2 sigma
 	B = 0.5;  //Extent
 	C = 0.2;  //MaxLen, 4.0 ms
-	D = 0.0;  //Depth, the fraction that adds the least error of its own
+	D = 1.0;  //Depth, outright replacement
 	E = 0.5;  //Passes, 2
 	F = 1.0;  //Order, 64 - the top of this slider, which stops where the
 	          //real-time budget does; the core itself goes to kMaxOrder

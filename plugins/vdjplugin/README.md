@@ -378,8 +378,9 @@ or forward by more than 0.25 s, restarts the pipeline.
 
 **A restart warms up.** It rewinds 0.25 s before the audio that was asked for and
 runs the core over that first, so Declick's noise estimate and Dehum's analysis
-window are settled by the time anyone hears anything. At the measured 180×
-realtime for Declick, that is about 1.5 ms of work in the call that pays for it.
+window are settled by the time anyone hears anything. At the measured 105×
+realtime for Declick at this port's default order of 64, that is about 2 ms of
+work in the call that pays for it.
 Wind Model order up to 256 and it is roughly ten times that — the figure to
 revisit if you do.
 

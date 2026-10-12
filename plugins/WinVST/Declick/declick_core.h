@@ -37,7 +37,7 @@ enum {
     //! that clearly pays: measured against injected-click ground truth, order
     //! 128 takes whole-file error from +0.60 to +1.31 dB and order 256 to
     //! +2.55 dB, with less collateral damage and less residual crackle at the
-    //! same time. It costs real CPU, so the default sits at 64 rather than at
+    //! same time. It costs real CPU, so the default sits at 128 rather than at
     //! the top of the range - see the README for the throughput figures.
     kMaxOrder = 256,
     kBlock    = 512      //!< analysis hop; also sets most of the latency
@@ -55,24 +55,27 @@ struct Params {
 
     static Params defaults() {
         Params p;
-        // 0.6 puts the trigger at 3.9 sigma. On 78 rpm tango transfers,
-        // that takes impulsive events from ~71/s to ~14/s.
-        // Raise it towards 0.8 for more aggressiveness.
-        p.sensitivity = 0.6f;
+        // 0.8 puts the trigger at 3.2 sigma. By the numbers 0.7 is marginally
+        // ahead - against real crackle injected at known positions and click
+        // probes on a tone and a master transfer, it gives up only 0.5 dB of
+        // dense crackle removal for ~1 dB less harm - but 0.8 won the
+        // listening comparison on three full shellac transfers, with no music
+        // audible in what it removes. See the README.
+        p.sensitivity = 0.8f;
         p.extent      = 0.5f;
         p.maxLengthMs = 4.0f;
-        // 0 subtracts the fraction of each click calibrated against a clean
-        // master transfer with real clicks injected at known positions - the
-        // setting that adds the least error of its own. Raising it removes
-        // more of each click but substitutes more guesswork; see the README.
-        p.depth       = 0.0f;
+        // 1 replaces the damaged samples outright. The old default of 0, a
+        // 45% subtraction, was chosen for least whole-file error, and that
+        // capped every repair at -5.2 dB however good the estimate was: a
+        // -24 dBFS click on a pure tone came out only 5 dB quieter.
+        p.depth       = 1.0f;
         p.passes      = 2;
-        // 64. Model order is the one lever that clearly pays - see kMaxOrder -
-        // and 64 is where paying for it is still cheap: measured stereo at
-        // 44.1 kHz it costs about a third more CPU than 32, which leaves plenty
-        // of headroom under a real-time deadline. Go higher offline, where
-        // nothing has one.
-        p.order       = 64;
+        // 128. Model order is the one lever that clearly pays - see kMaxOrder.
+        // On the click probes it is worth about 1 dB of removal over 64 and
+        // 1.5 dB less harm, at about 2.5x the CPU - still roughly 6x real time
+        // stereo on a 2014 MacBook Air, estimated. Drop to 64 where that is
+        // too much; it gives up surprisingly little.
+        p.order       = 128;
         p.dryWet      = 1.0f;
         return p;
     }
@@ -95,10 +98,11 @@ struct Config {
     //! Subtractive repair. Calibration constants, not derived from params and
     //! not user-facing.
     //!
-    //! `wienerMax` is the fraction of the click estimate that gets subtracted.
-    //! 0.45 was measured against injected-click ground truth and against four
-    //! reference transfers; it beats the length-indexed curve it replaced on
-    //! every axis of both.
+    //! `wienerMax` is the fraction of the click estimate that gets subtracted
+    //! at depth 0; depth scales it towards 1, so at the default depth of 1 it
+    //! plays no part. 0.45 was measured against injected-click ground truth
+    //! and against four reference transfers; it beats the length-indexed
+    //! curve it replaced on every axis of both.
     //!
     //! `wienerAlpha` scales the model's own per-sample estimate variance,
     //! turning the flat fraction into a true Wiener gain. It is 0 - i.e. off -
@@ -109,6 +113,20 @@ struct Config {
     //! behave differently; declick_cli can sweep it. See the README.
     double wienerAlpha  = 0.0;
     double wienerMax    = 0.45;
+
+    //! Re-repair. Not user-facing; declick_cli can sweep it.
+    //! Each pass refits the model on the window the previous one cleaned, but
+    //! the runs that pass repaired were repaired with the model it had, which
+    //! was fitted on the crackle as well as the music. 1 repairs them again
+    //! with the refitted model at the start of every later pass; 2 also
+    //! refits once more after the last pass and repairs everything found in
+    //! the block again; 0 repairs every run exactly once.
+    //!
+    //! 1 because on dense crackle it takes the largest events from -6.8 to
+    //! -8.9 dB removed for ~1 dB of harm and 25% more CPU; 2 adds another
+    //! 0.6 dB on those for a further 35%. It needs passes >= 2 to do
+    //! anything at all at 1.
+    int    rerepair     = 1;
     int    pad          = 272;   //!< context needed either side of a block
     int    latency      = 784;
 
@@ -269,6 +287,10 @@ private:
     void detect(int from, int to, int pass);
     //! Repairs bursts that start in [from, to); a burst may run on to `reach`.
     void interpolate(int from, int to, int reach);
+    //! Repairs m_win[s..e] with the current model. False if it could not.
+    bool repairRun(int s, int e, bool count);
+    //! Restores every run recorded this block from m_dry and repairs it again.
+    void rerepairRuns();
     void fitModel(int from, int to);
     //! a[0] = 1, rest zero: pass the audio through unmodelled. Keeps m_arev in
     //! step, which is why the degenerate paths in fitModel() all come here.
@@ -300,6 +322,11 @@ private:
     std::vector<double> m_solve;     //!< Cholesky factor
     std::vector<double> m_sinv;      //!< banded slice of G^-1
     std::vector<double> m_pvar;      //!< diag(G^-1), per damaged sample
+    //! Runs repaired in the current block, as (start, end) pairs, for
+    //! Config::rerepair. Runs are disjoint and start inside the block, so
+    //! there can be no more than kBlock of them.
+    std::vector<int> m_runs;
+    int    m_nruns = 0;
 
     std::vector<double> m_madRing; //!< |forward residual| history
     int    m_madPos = 0;

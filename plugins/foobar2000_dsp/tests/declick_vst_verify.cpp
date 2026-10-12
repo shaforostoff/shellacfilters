@@ -51,6 +51,15 @@
 
 namespace {
 
+//! What the plug-in opens on. The core's default order is 128, but this
+//! slider stops at 64 - where a DAW's real-time budget does - so the plug-in's
+//! defaults are the core's with the order capped there.
+declick::Params wrapperDefaults() {
+    declick::Params p = declick::Params::defaults();
+    if (p.order > 64) p.order = 64;
+    return p;
+}
+
 int g_failures = 0;
 int g_ioChanged = 0;
 
@@ -288,7 +297,7 @@ void testParameterMoves(const std::vector<double> & inL, const std::vector<doubl
     // prove nothing about renegotiation.
     fx.setParameter(kParamF, 0.5f);             // Model order: rebuild
     runBlocks(fx, inL, inR, aL, aR, bs);
-    declick::Params p32 = declick::Params::defaults();
+    declick::Params p32 = wrapperDefaults();
     p32.sensitivity = 0.85f;
     p32.order = 32;
     declick::Config c32; c32.compute(p32, (double)kRate);
@@ -307,7 +316,7 @@ void testRobustness(const std::vector<double> & inL, const std::vector<double> &
         fx.setSampleRate(96000.0f);
         std::vector<double> aL, aR;
         runBlocks(fx, inL, inR, aL, aR, oneBlockSize(256));
-        declick::Config c96; c96.compute(declick::Params::defaults(), 96000.0);
+        declick::Config c96; c96.compute(wrapperDefaults(), 96000.0);
         check(fx.getAeffect()->initialDelay == c96.latency, "a sample rate change re-derives the latency");
         bool finite = true;
         for (size_t i = 0; i < aL.size(); ++i) {
@@ -472,7 +481,7 @@ int main() {
     makeSignal(inL, inR, clickAt, kFrames, true);
 
     declick::Config cfg;
-    cfg.compute(declick::Params::defaults(), (double)kRate);
+    cfg.compute(wrapperDefaults(), (double)kRate);
     printf("declick_vst_verify: order %d, maxRun %d, madWindow %d, pad %d, "
            "latency %d, passes %d\n\n",
            cfg.order, cfg.maxRun, cfg.madWindow, cfg.pad, cfg.latency, cfg.passes);

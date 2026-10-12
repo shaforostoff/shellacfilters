@@ -36,10 +36,9 @@ struct slider_def {
 
 const slider_def k_sliders[] = {
     { IDC_SLIDER_SENSITIVITY, IDC_LABEL_SENSITIVITY, IDC_VALUE_SENSITIVITY, 1000,  0.0,  1.0, 3, L"",
-      L"How readily a sample is called a click. The default puts the trigger at 3.9 sigma above "
-      L"the local noise estimate; on 78rpm tango transfers that takes impulsive events from "
-      L"roughly 71 per second down to 14. Raise it towards 0.8 to catch more, at the cost of "
-      L"flagging music as damage." },
+      L"How readily a sample is called a click. The default puts the trigger at 3.2 sigma above "
+      L"the local noise estimate. Past it, music starts being flagged as damage faster than "
+      L"crackle is found; 0.7 is slightly gentler." },
 
     { IDC_SLIDER_EXTENT,      IDC_LABEL_EXTENT,      IDC_VALUE_EXTENT,      1000,  0.0,  1.0, 3, L"",
       L"How far each detection spreads outwards into the tail of the click. Higher repairs more "
@@ -57,12 +56,12 @@ const slider_def k_sliders[] = {
       L"Taps in the autoregressive model that predicts what the waveform should have been. The "
       L"lever that pays most: against injected-click ground truth, 128 takes whole-file error "
       L"from +0.60 to +1.31 dB and 256 to +2.55 dB. It also costs real CPU and adds latency, "
-      L"which is why the default stops at 64." },
+      L"which is why the default stops at 128; 64 gives up little and costs 2.5x less." },
 
     { IDC_SLIDER_DEPTH,       IDC_LABEL_DEPTH,       IDC_VALUE_DEPTH,       1000,  0.0,  1.0, 3, L"",
-      L"How much of the estimated click is subtracted. 0 is the setting measured to add the "
-      L"least error of its own, against real clicks injected into a clean master at known "
-      L"positions. Raising it removes more of each click but substitutes more guesswork." },
+      L"How much of the estimated click is subtracted. 1, the default, replaces the damaged "
+      L"samples outright. 0 subtracts 45% of each click - the least added error by whole-file "
+      L"measure, but it leaves every click no more than 5 dB quieter." },
 
     { IDC_SLIDER_DRYWET,      IDC_LABEL_DRYWET,      IDC_VALUE_DRYWET,      1000,  0.0,  1.0, 3, L"",
       L"Blend of the repaired signal against the original. 0 passes the input through "

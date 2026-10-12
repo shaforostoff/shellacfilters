@@ -48,6 +48,15 @@
 
 namespace {
 
+//! What the plug-in opens on. The core's default order is 128, but this
+//! slider stops at 64 - where a DAW's real-time budget does - so the plug-in's
+//! defaults are the core's with the order capped there.
+declick::Params wrapperDefaults() {
+    declick::Params p = declick::Params::defaults();
+    if (p.order > 64) p.order = 64;
+    return p;
+}
+
 int g_failures = 0;
 bool g_silenceCleared = true;
 
@@ -354,7 +363,7 @@ void testParameterMoves(const std::vector<float> & inL, const std::vector<float>
     // there, so moving to 1.0 would be moving to where it already is.
     fx.SetParameter(kParam_F, 0.5f);             // Model order: rebuild
     runBlocks(fx, inL, inR, aL, aR, bs);
-    declick::Params p32 = declick::Params::defaults();
+    declick::Params p32 = wrapperDefaults();
     p32.sensitivity = 0.85f;
     p32.order = 32;
     declick::Config c32; c32.compute(p32, (double)kRate);
@@ -395,7 +404,7 @@ void testRobustness(const std::vector<float> & inL, const std::vector<float> & i
         start(fx, 96000.0);
         std::vector<float> aL, aR;
         runBlocks(fx, inL, inR, aL, aR, oneBlockSize(256));
-        declick::Config c96; c96.compute(declick::Params::defaults(), 96000.0);
+        declick::Config c96; c96.compute(wrapperDefaults(), 96000.0);
         const double declared = fx.GetLatency() * 96000.0;
         char d[64]; snprintf(d, sizeof d, "%d -> %.1f samples", c96.latency, declared);
         check(fabs(declared - (double)c96.latency) < 1e-6,
@@ -498,7 +507,7 @@ int main() {
     makeSignal(inL, inR, clickAt, kFrames, true);
 
     declick::Config cfg;
-    cfg.compute(declick::Params::defaults(), (double)kRate);
+    cfg.compute(wrapperDefaults(), (double)kRate);
     printf("declick_au_verify: order %d, maxRun %d, madWindow %d, pad %d, "
            "latency %d, passes %d\n\n",
            cfg.order, cfg.maxRun, cfg.madWindow, cfg.pad, cfg.latency, cfg.passes);

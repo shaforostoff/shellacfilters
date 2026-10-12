@@ -26,19 +26,20 @@ void usage() {
         "\n"
         "  declick_cli <in.wav> <out.wav> [options]\n"
         "\n"
-        "  -s <0..1>    Sensitivity (default 0.6, higher catches more)\n"
+        "  -s <0..1>    Sensitivity (default 0.8, higher catches more)\n"
         "  -e <0..1>    Extent, how far a detection spreads (default 0.5)\n"
         "  -l <ms>      Longest single repair, ms (default 4)\n"
         "  -p <1..3>    Passes (default 2)\n"
-        "  -o <8..64>   AR model order (default 32)\n"
-        "  -d <0..1>    Repair depth: 0 = least added error, 1 = full replacement\n"
+        "  -o <8..256>  AR model order (default 128)\n"
+        "  -d <0..1>    Repair depth: 0 = 45%% subtraction, 1 = full replacement (default)\n"
         "  -w <0..1>    Dry/wet (default 1)\n"
         "  --delta      Write what was removed instead of the repaired audio\n"
         "  --quiet\n"
         "\n"
         "  Calibration only, not exposed in the component:\n"
         "  --alpha <x>  Over-subtraction on the estimate variance\n"
-        "  --wmax <x>   Ceiling on the subtracted fraction\n");
+        "  --wmax <x>   Ceiling on the subtracted fraction\n"
+        "  --rerepair <0..2>  Repair runs again once the model is refitted (default 1)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -59,6 +60,7 @@ int main(int argc, char ** argv) {
     declick::Params params = declick::Params::defaults();
     bool delta = false, quiet = false;
     float alpha = -1.0f, wmax = -1.0f;   // negative: leave the calibrated value
+    float rerepair = -1.0f;
 
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
@@ -74,6 +76,7 @@ int main(int argc, char ** argv) {
         ++i;
         if      (a == "--alpha") alpha = v;
         else if (a == "--wmax") wmax = v;
+        else if (a == "--rerepair") rerepair = v;
         else if (a == "-s") params.sensitivity = v;
         else if (a == "-e") params.extent = v;
         else if (a == "-l") params.maxLengthMs = v;
@@ -99,6 +102,7 @@ int main(int argc, char ** argv) {
     cfg.compute(params, (double)audio.sampleRate);
     if (alpha >= 0.0f) cfg.wienerAlpha = alpha;
     if (wmax >= 0.0f) cfg.wienerMax = wmax;
+    if (rerepair >= 0.0f) cfg.rerepair = (int)rerepair;
 
     std::vector<std::unique_ptr<declick::Channel> > chans;
     for (unsigned c = 0; c < channels; ++c) {

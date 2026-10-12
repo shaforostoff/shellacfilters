@@ -390,31 +390,48 @@ void testStreaming() {
             at.push_back(i);
         }
 
-        const std::vector<double> out = runChannel(dirty, p, sr);
-        double before = 0.0, after = 0.0;
-        for (size_t idx = 0; idx < at.size(); ++idx) {
-            const size_t i = at[idx];
-            if (i + 16 >= N) continue;
-            for (int k = -2; k < 14; ++k) {
-                const size_t a = i + (size_t)k;
-                const double b0 = dirty[a] - clean[a];
-                const double a0 = out[a] - clean[a];
-                before += b0 * b0;
-                after += a0 * a0;
+        // Click energy left in the -2..14 sample neighbourhood of each one.
+        auto reduction = [&](const std::vector<double> & out) {
+            double before = 0.0, after = 0.0;
+            for (size_t idx = 0; idx < at.size(); ++idx) {
+                const size_t i = at[idx];
+                if (i + 16 >= N) continue;
+                for (int k = -2; k < 14; ++k) {
+                    const size_t a = i + (size_t)k;
+                    const double b0 = dirty[a] - clean[a];
+                    const double a0 = out[a] - clean[a];
+                    before += b0 * b0;
+                    after += a0 * a0;
+                }
             }
-        }
-        const double red = 10.0 * log10((before + 1e-300) / (after + 1e-300));
+            return 10.0 * log10((before + 1e-300) / (after + 1e-300));
+        };
 
-        // The repair subtracts Config::wienerMax of the discrepancy, so with a
-        // perfect estimate the click can only shrink by -20*log10(1 - wienerMax)
-        // - about 5.2 dB at the calibrated 0.45. Checking against that ceiling
-        // rather than against a loose floor is what makes this test mean
-        // something: it says the interpolation is accurate enough that the
-        // deliberate subtraction fraction is the only thing holding it back.
+        // The default replaces the damaged samples outright, so on a tone the
+        // only thing left of a click is the interpolation error - which is
+        // small. It measures 29 dB; a floor well short of that still catches
+        // a repair that has gone partial or stopped being applied.
+        const double full = reduction(runChannel(dirty, p, sr));
+        printf("  injected click energy reduced by %.1f dB at the defaults\n", full);
+        if (!(full > 20.0)) {
+            printf("  FAIL  the default repair leaves too much of each click\n");
+            ++g_failures;
+        }
+
+        // At depth 0 the repair subtracts Config::wienerMax of the
+        // discrepancy, so with a perfect estimate the click can only shrink by
+        // -20*log10(1 - wienerMax) - about 5.2 dB at the calibrated 0.45.
+        // Checking against that ceiling rather than against a loose floor is
+        // what makes this test mean something: it says the interpolation is
+        // accurate enough that the subtraction fraction is the only thing
+        // holding it back.
+        Params p0 = p;
+        p0.depth = 0.0f;
+        const double red = reduction(runChannel(dirty, p0, sr));
         Config probe2;
-        probe2.compute(p, sr);
+        probe2.compute(p0, sr);
         const double ceiling = -20.0 * log10(1.0 - probe2.wienerMax);
-        printf("  injected click energy reduced by %.1f dB (ceiling for a"
+        printf("  at depth 0, reduced by %.1f dB (ceiling for a"
                " %.2f subtraction is %.1f dB)\n", red, probe2.wienerMax, ceiling);
         if (!(red > ceiling - 1.0)) {
             printf("  FAIL  well short of the subtraction ceiling\n");
@@ -448,7 +465,7 @@ void testStreaming() {
         }
         const double edgeRed = 10.0 * log10((eb + 1e-300) / (ea + 1e-300));
         printf("  clicks straddling a block edge reduced by %.1f dB\n", edgeRed);
-        if (!(edgeRed > ceiling - 1.0)) {
+        if (!(edgeRed > 20.0)) {             // measures 33 at the defaults
             printf("  FAIL  a click across a block edge is only partly repaired\n");
             ++g_failures;
         }
@@ -565,9 +582,8 @@ void testOrderSweep() {
         const double red = 10.0 * log10((before + 1e-300) / (after + 1e-300));
         if (red < worstRed) { worstRed = red; worstOrder = order; }
         ++checked;
-        if (!(red < 5.5)) {      // see the ceiling argument in testStreaming
-            printf("  FAIL  order %d reduced clicks by %.1f dB, above the"
-                   " subtraction ceiling\n", order, red);
+        if (!(red > 6.0)) {      // full replacement; the worst order measures 10
+            printf("  FAIL  order %d reduced clicks by only %.1f dB\n", order, red);
             ++g_failures;
         }
     }
@@ -575,10 +591,6 @@ void testOrderSweep() {
            checked, worstRed, worstOrder);
     if (!(checked > 100)) {
         printf("  FAIL  expected to sweep far more orders than %d\n", checked);
-        ++g_failures;
-    }
-    if (!(worstRed > 3.0)) {
-        printf("  FAIL  some order fails to remove clicks\n");
         ++g_failures;
     }
 }
