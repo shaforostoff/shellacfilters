@@ -1000,6 +1000,17 @@ void testChunk() {
     snprintf(d, sizeof(d), "LF Gain came out %.3f dB", (double)p.lfGain);
     check(p.lfGain >= -paraeq::kGainMaxDb && p.lfGain <= paraeq::kGainMaxDb,
           "a NaN in the chunk does not reach the coefficients", d);
+
+    /*  A chunk shorter than sixteen floats - an empty preset, a truncated file -
+     *  is refused whole rather than read past its end, and so is none at all.
+     *  The two floats it does hold must not land either: half a preset is not
+     *  a preset. */
+    float shortChunk[2] = { 1.0f, 1.0f };
+    ParaEQ fifth(hostCallback);
+    const float before = fifth.getParameter(kParamA);
+    fifth.setChunk(shortChunk, (VstInt32)sizeof(shortChunk), true);
+    fifth.setChunk(NULL, 0, true);
+    check(fifth.getParameter(kParamA) == before, "a short or missing chunk is ignored");
 }
 
 } // anonymous namespace
