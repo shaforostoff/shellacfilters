@@ -35,7 +35,8 @@ void usage() {
         "  -w <0..1>    Dry/wet (default 1)\n"
         "  --delta      Write what was removed instead of the repaired audio\n"
         "  --quiet\n"
-        "  --no-avx2    Use the baseline SSE2 kernels even where AVX2 is available\n"
+        "  --no-avx2    Use the baseline kernels even where AVX2 or NEON is available\n"
+        "  --no-neon    The same\n"
         "\n"
         "  Calibration only, not exposed in the component:\n"
         "  --alpha <x>  Over-subtraction on the estimate variance\n"
@@ -67,7 +68,7 @@ int main(int argc, char ** argv) {
         const std::string a = argv[i];
         if (a == "--delta") { delta = true; continue; }
         if (a == "--quiet") { quiet = true; continue; }
-        if (a == "--no-avx2") { declick::allowWideKernels(false); continue; }
+        if (a == "--no-avx2" || a == "--no-neon") { declick::allowWideKernels(false); continue; }
         if (a == "-h" || a == "--help") { usage(); return 0; }
         if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); return 2; }
         float v = 0.0f;

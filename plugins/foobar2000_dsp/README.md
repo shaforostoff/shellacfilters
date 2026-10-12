@@ -253,7 +253,7 @@ Throughput: ~120× realtime at the defaults on a CPU with AVX2 and FMA, ~67×
 without; ~205× and ~130× at order 64. Measured end to end over 60 s of
 44.1 kHz mono shellac including file I/O — under 1 % of one core on a modern
 desktop, and 24× realtime stereo on a 2014 MacBook Pro, whose Haswell has
-both. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
+both. An M1 runs it at 88× mono with NEON. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
 Latency ~24 ms, reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
 must go in before the first block comes out, but the emitted stream is aligned
@@ -738,6 +738,34 @@ Later, once the dense-crackle defaults had made the repairs expensive:
   changed. `declick_verify` holds the two kernels within 1e-9 of each other
   at every order, and `declick_cli --no-avx2` runs the baseline for
   comparisons.
+* **NEON on AArch64.** The same filter, two doubles per register instead of
+  four. There is nothing to detect: NEON with double lanes and FMA is part of
+  AArch64, so every Apple silicon Mac and every ARM64 Linux machine runs it.
+  The baseline there was scalar `dot()`, one multiply-add per instruction.
+  AArch64 has 32 vector registers, so the kernel keeps sixteen accumulators
+  side by side, as many as an Apple core's four FMA pipes at four cycles'
+  latency need. The taps come in two at a time and are used from their lanes
+  by `fmla`-by-element, so one load of `h` feeds thirty-two multiply-adds,
+  each with its one load of `x`, and nothing is spilled. **2.4× at the
+  defaults on an M1** (36× → 88× realtime), and the gain grows with the order,
+  as there is more filtering to do:
+
+  | order | M1 Mac mini, NEON | M1, scalar baseline | gain |
+  | --- | --- | --- | --- |
+  | 32 | 280× | 159× | 1.8× |
+  | 64 | 178× | 87× | 2.0× |
+  | **128** (default) | **88×** | 36× | 2.4× |
+  | 256 | 33× | 12× | 2.6× |
+
+  Mono, best of seven runs, on the same 60 s of shellac as the 2014 MacBook Pro
+  column above, not the clip of the x64 columns. The scalar baseline was the
+  weakest of all the machines here: about half the Zen 4's SSE2 at the
+  defaults, allowing for the different clip.
+  Like AVX2, NEON differs from the baseline in the last bits only: at the
+  defaults 99.992 % of samples are identical, the worst deviation is
+  −144.5 dBFS and the rms deviation 185 dB below the signal, and as many
+  samples are repaired at orders 64, 128 and 256. `declick_verify` holds
+  the two within 1e-9 on the M1, and `declick_cli --no-neon` runs the baseline.
 
 One idea that is now *less* attractive than it looked: replacing the fit
 autocorrelation with an FFT. Direct is `O(n × order)` against `O(n log n)`, but

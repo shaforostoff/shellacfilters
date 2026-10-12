@@ -34,11 +34,18 @@
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
+// NEON with double lanes and FMA is part of AArch64 itself, so unlike AVX2
+// there is nothing to detect: every AArch64 CPU runs these kernels.
+#include <arm_neon.h>
+#define DECLICK_NEON 1
 #else
 #define DECLICK_SSE2 0
 #endif
 #ifndef DECLICK_AVX2
 #define DECLICK_AVX2 0
+#endif
+#ifndef DECLICK_NEON
+#define DECLICK_NEON 0
 #endif
 
 namespace declick {
@@ -157,14 +164,15 @@ const double kAbsurd = 1.0e30;
 inline bool finite(double v) { return v > -kAbsurd && v < kAbsurd; }
 
 // ---------------------------------------------------------------------------
-// The hot loops, as two kernels with a baseline and an AVX2 + FMA version.
+// The hot loops, as two kernels with a baseline and a wide version: AVX2 + FMA
+// on x86, NEON on AArch64.
 //
 // filter:   out[i] = sum_k h[k] * x[i+k], for i < count and k < taps. The
 //           forward and backward prediction residuals and the per-click
 //           interpolation residual are all this shape.
 // autocorr: r[d] = sum_i x[i] * x[i+d], for d <= maxLag. x must be followed by
-//           maxLag zeros; the baseline does not read them, the AVX2 version
-//           does, which turns it into a filter of x against itself.
+//           maxLag zeros; the baseline does not read them, the wide versions
+//           do, which turns it into a filter of x against itself.
 //
 // The baseline is exactly the dot() loops these replaced, so a CPU without
 // AVX2 produces what it always did, bit for bit.
@@ -338,9 +346,145 @@ bool cpuHasAvx2Fma() {
 
 #endif // DECLICK_AVX2
 
+#if DECLICK_NEON
+
+// The same filter as filterAvx2(), two doubles per register instead of four.
+// AArch64 has 32 vector registers, so there is room for sixteen accumulators,
+// which is what an Apple core needs: four FMA pipes at four cycles' latency.
+// Each multiply-add needs one load of x. The taps come in two at a time and
+// each is used from its lane with fmla-by-element, so one load of h serves
+// thirty-two multiply-adds. There is no AVX-SSE style transition penalty
+// here, so the leftovers are ordinary code.
+
+//! dot() with FMA, two lanes per register.
+inline double dotNeon(const double * x, const double * y, int n) {
+    float64x2_t s0 = vdupq_n_f64(0.0), s1 = vdupq_n_f64(0.0);
+    float64x2_t s2 = vdupq_n_f64(0.0), s3 = vdupq_n_f64(0.0);
+    int i = 0;
+    for (; i + 8 <= n; i += 8) {
+        s0 = vfmaq_f64(s0, vld1q_f64(x + i),     vld1q_f64(y + i));
+        s1 = vfmaq_f64(s1, vld1q_f64(x + i + 2), vld1q_f64(y + i + 2));
+        s2 = vfmaq_f64(s2, vld1q_f64(x + i + 4), vld1q_f64(y + i + 4));
+        s3 = vfmaq_f64(s3, vld1q_f64(x + i + 6), vld1q_f64(y + i + 6));
+    }
+    for (; i + 2 <= n; i += 2) {
+        s0 = vfmaq_f64(s0, vld1q_f64(x + i), vld1q_f64(y + i));
+    }
+    double acc = vaddvq_f64(vaddq_f64(vaddq_f64(s0, s1), vaddq_f64(s2, s3)));
+    if (i < n) acc += x[i] * y[i];
+    return acc;
+}
+
+//! acc += lane LANE of hp times the two x at p. One tap of the filter for one
+//! accumulator; LANE has to be a constant, hence a macro.
+#define DECLICK_NEON_TAP(acc, p, hp, LANE) \
+    acc = vfmaq_laneq_f64(acc, vld1q_f64(p), hp, LANE)
+
+void filterNeon(const double * h, const double * x, double * out,
+                int count, int taps) {
+    int i = 0;
+    for (; i + 32 <= count; i += 32) {
+        // Spelled out rather than an array, which a compiler may leave in
+        // memory.
+        const double * xi = x + i;
+        float64x2_t a0 = vdupq_n_f64(0.0), a1 = vdupq_n_f64(0.0);
+        float64x2_t a2 = vdupq_n_f64(0.0), a3 = vdupq_n_f64(0.0);
+        float64x2_t a4 = vdupq_n_f64(0.0), a5 = vdupq_n_f64(0.0);
+        float64x2_t a6 = vdupq_n_f64(0.0), a7 = vdupq_n_f64(0.0);
+        float64x2_t a8 = vdupq_n_f64(0.0), a9 = vdupq_n_f64(0.0);
+        float64x2_t aa = vdupq_n_f64(0.0), ab = vdupq_n_f64(0.0);
+        float64x2_t ac = vdupq_n_f64(0.0), ad = vdupq_n_f64(0.0);
+        float64x2_t ae = vdupq_n_f64(0.0), af = vdupq_n_f64(0.0);
+#define DECLICK_NEON_TAP16(xk, hp, LANE)              \
+        DECLICK_NEON_TAP(a0, (xk),      hp, LANE);    \
+        DECLICK_NEON_TAP(a1, (xk) + 2,  hp, LANE);    \
+        DECLICK_NEON_TAP(a2, (xk) + 4,  hp, LANE);    \
+        DECLICK_NEON_TAP(a3, (xk) + 6,  hp, LANE);    \
+        DECLICK_NEON_TAP(a4, (xk) + 8,  hp, LANE);    \
+        DECLICK_NEON_TAP(a5, (xk) + 10, hp, LANE);    \
+        DECLICK_NEON_TAP(a6, (xk) + 12, hp, LANE);    \
+        DECLICK_NEON_TAP(a7, (xk) + 14, hp, LANE);    \
+        DECLICK_NEON_TAP(a8, (xk) + 16, hp, LANE);    \
+        DECLICK_NEON_TAP(a9, (xk) + 18, hp, LANE);    \
+        DECLICK_NEON_TAP(aa, (xk) + 20, hp, LANE);    \
+        DECLICK_NEON_TAP(ab, (xk) + 22, hp, LANE);    \
+        DECLICK_NEON_TAP(ac, (xk) + 24, hp, LANE);    \
+        DECLICK_NEON_TAP(ad, (xk) + 26, hp, LANE);    \
+        DECLICK_NEON_TAP(ae, (xk) + 28, hp, LANE);    \
+        DECLICK_NEON_TAP(af, (xk) + 30, hp, LANE)
+        int k = 0;
+        for (; k + 2 <= taps; k += 2) {
+            const float64x2_t hp = vld1q_f64(h + k);
+            DECLICK_NEON_TAP16(xi + k,     hp, 0);
+            DECLICK_NEON_TAP16(xi + k + 1, hp, 1);
+        }
+        if (k < taps) {
+            const float64x2_t hp = vdupq_n_f64(h[k]);
+            DECLICK_NEON_TAP16(xi + k, hp, 0);
+        }
+#undef DECLICK_NEON_TAP16
+        vst1q_f64(out + i,      a0);
+        vst1q_f64(out + i + 2,  a1);
+        vst1q_f64(out + i + 4,  a2);
+        vst1q_f64(out + i + 6,  a3);
+        vst1q_f64(out + i + 8,  a4);
+        vst1q_f64(out + i + 10, a5);
+        vst1q_f64(out + i + 12, a6);
+        vst1q_f64(out + i + 14, a7);
+        vst1q_f64(out + i + 16, a8);
+        vst1q_f64(out + i + 18, a9);
+        vst1q_f64(out + i + 20, aa);
+        vst1q_f64(out + i + 22, ab);
+        vst1q_f64(out + i + 24, ac);
+        vst1q_f64(out + i + 26, ad);
+        vst1q_f64(out + i + 28, ae);
+        vst1q_f64(out + i + 30, af);
+    }
+    for (; i + 8 <= count; i += 8) {
+        const double * xi = x + i;
+        float64x2_t a0 = vdupq_n_f64(0.0), a1 = vdupq_n_f64(0.0);
+        float64x2_t a2 = vdupq_n_f64(0.0), a3 = vdupq_n_f64(0.0);
+#define DECLICK_NEON_TAP4(xk, hp, LANE)               \
+        DECLICK_NEON_TAP(a0, (xk),     hp, LANE);     \
+        DECLICK_NEON_TAP(a1, (xk) + 2, hp, LANE);     \
+        DECLICK_NEON_TAP(a2, (xk) + 4, hp, LANE);     \
+        DECLICK_NEON_TAP(a3, (xk) + 6, hp, LANE)
+        int k = 0;
+        for (; k + 2 <= taps; k += 2) {
+            const float64x2_t hp = vld1q_f64(h + k);
+            DECLICK_NEON_TAP4(xi + k,     hp, 0);
+            DECLICK_NEON_TAP4(xi + k + 1, hp, 1);
+        }
+        if (k < taps) {
+            const float64x2_t hp = vdupq_n_f64(h[k]);
+            DECLICK_NEON_TAP4(xi + k, hp, 0);
+        }
+#undef DECLICK_NEON_TAP4
+        vst1q_f64(out + i,     a0);
+        vst1q_f64(out + i + 2, a1);
+        vst1q_f64(out + i + 4, a2);
+        vst1q_f64(out + i + 6, a3);
+    }
+    for (; i < count; ++i) out[i] = dotNeon(h, x + i, taps);
+}
+
+#undef DECLICK_NEON_TAP
+
+void autocorrNeon(const double * x, int n, double * r, int maxLag) {
+    // With maxLag zeros after x, r[d] = sum over all n of x[k] * x[k+d].
+    filterNeon(x, x, r, maxLag + 1, n);
+}
+
+const Kernels kNeonKernels = { filterNeon, autocorrNeon, "neon" };
+
+#endif // DECLICK_NEON
+
 const Kernels * pickKernels(bool allowWide) {
 #if DECLICK_AVX2
     if (allowWide && cpuHasAvx2Fma()) return &kAvx2Kernels;
+#endif
+#if DECLICK_NEON
+    if (allowWide) return &kNeonKernels;
 #endif
     (void)allowWide;
     return &kBaseKernels;
@@ -609,7 +753,7 @@ void Channel::configure(const Config & cfg) {
     // exact length needed each time, which is what zeroes them; reserving here
     // is what stops that from ever reallocating.
     const size_t ctx = 3 * bo;
-    // need + bo: the fit window, and the bufOrder zeros the AVX2
+    // need + bo: the fit window, and the bufOrder zeros the wide
     // autocorrelation reads past its end.
     m_scratch.reserve(need + bo > (size_t)cfg.madWindow ? need + bo
                                                         : (size_t)cfg.madWindow);
@@ -693,7 +837,7 @@ void Channel::fitModel(int from, int to) {
     // injected-click ground truth at contamination from 0.7% to 5.2%.
     // Crackle is dense but tiny, and a sum over a thousand lag products
     // barely notices it. See the README.
-    // `order` zeros past the end: the AVX2 autocorrelation reads them.
+    // `order` zeros past the end: the wide autocorrelation reads them.
     m_scratch.resize((size_t)n + (size_t)order);
     for (int i = n; i < n + order; ++i) m_scratch[(size_t)i] = 0.0;
     double acc = 0.0;
