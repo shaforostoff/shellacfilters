@@ -17,6 +17,8 @@
 // kernels are meant to give the same bits.
 #include <immintrin.h>
 #define DEHUM_AVX 1
+// SSE2 is the floor for every x86 configuration this project builds.
+#define DEHUM_SSE2 1
 #if defined(__GNUC__) || defined(__clang__)
 #define DEHUM_AVX_FN __attribute__((target("avx")))
 #include <cpuid.h>
@@ -32,6 +34,9 @@
 #endif
 #ifndef DEHUM_AVX
 #define DEHUM_AVX 0
+#endif
+#ifndef DEHUM_SSE2
+#define DEHUM_SSE2 0
 #endif
 
 namespace dehum {
@@ -1070,22 +1075,71 @@ void Channel::designRumble() {
     m_hpOn = true;
 }
 
+namespace {
+
+//! One sample through one section, transposed direct form II.
+inline double rumbleStep(const double * b, const double * a, double * z, double x) {
+    const double y = b[0] * x + z[0];
+    z[0] = b[1] * x - a[0] * y + z[1];
+    z[1] = b[2] * x - a[1] * y;
+    return y;
+}
+
+} // anonymous namespace
+
+//! The two sections over `n` samples of `io`, in place.
+//!
+//! On x86 the sections share one SSE2 register, the second a sample behind the
+//! first: lane 0 takes sample i through section 0 while lane 1 takes what
+//! section 0 made of sample i - 1 through section 1. Each lane then waits only
+//! on its own section's recursion. Left to itself clang pairs the sections up
+//! sample for sample instead, which makes each one's state wait on the other's
+//! output - 24 cycles a sample on a Haswell where the recursion needs 14. One
+//! scalar step at each end fills and drains the pipeline. Every lane does the
+//! scalar step's multiplies and adds in its order, so the result is bit-
+//! identical; on AArch64 the scalar step's are fused, which separate lanes
+//! would not reproduce, so there it stays scalar.
 void Channel::runRumble(double * io, size_t n) {
-    double b[2][3], a[2][2], z[2][2];
-    memcpy(b, m_hpB, sizeof(b));
-    memcpy(a, m_hpA, sizeof(a));
+    double z[2][2];
     memcpy(z, m_hpZ, sizeof(z));
-    for (size_t i = 0; i < n; ++i) {
-        double x = io[i];
-        for (int s = 0; s < 2; ++s) {
-            // transposed direct form II
-            const double y = b[s][0] * x + z[s][0];
-            z[s][0] = b[s][1] * x - a[s][0] * y + z[s][1];
-            z[s][1] = b[s][2] * x - a[s][1] * y;
-            x = y;
+
+#if DEHUM_SSE2
+    if (n == 0) return;
+
+    double last = rumbleStep(m_hpB[0], m_hpA[0], z[0], io[0]);
+
+    if (n > 1) {
+        const __m128d b0 = _mm_set_pd(m_hpB[1][0], m_hpB[0][0]);
+        const __m128d b1 = _mm_set_pd(m_hpB[1][1], m_hpB[0][1]);
+        const __m128d b2 = _mm_set_pd(m_hpB[1][2], m_hpB[0][2]);
+        const __m128d a1 = _mm_set_pd(m_hpA[1][0], m_hpA[0][0]);
+        const __m128d a2 = _mm_set_pd(m_hpA[1][1], m_hpA[0][1]);
+        __m128d z0 = _mm_set_pd(z[1][0], z[0][0]);
+        __m128d z1 = _mm_set_pd(z[1][1], z[0][1]);
+        __m128d y  = _mm_set_sd(last);
+
+        for (size_t i = 1; i < n; ++i) {
+            // Lane 0 the next input, lane 1 what section 0 just made.
+            const __m128d x = _mm_unpacklo_pd(_mm_load_sd(io + i), y);
+            y  = _mm_add_pd(_mm_mul_pd(b0, x), z0);
+            z0 = _mm_add_pd(_mm_sub_pd(_mm_mul_pd(b1, x), _mm_mul_pd(a1, y)), z1);
+            z1 = _mm_sub_pd(_mm_mul_pd(b2, x), _mm_mul_pd(a2, y));
+            _mm_storeh_pd(io + i - 1, y);
         }
-        io[i] = x;
+
+        last = _mm_cvtsd_f64(y);
+        _mm_storel_pd(&z[0][0], z0); _mm_storeh_pd(&z[1][0], z0);
+        _mm_storel_pd(&z[0][1], z1); _mm_storeh_pd(&z[1][1], z1);
     }
+
+    io[n - 1] = rumbleStep(m_hpB[1], m_hpA[1], z[1], last);
+#else
+    for (size_t i = 0; i < n; ++i) {
+        io[i] = rumbleStep(m_hpB[1], m_hpA[1], z[1],
+                           rumbleStep(m_hpB[0], m_hpA[0], z[0], io[i]));
+    }
+#endif
+
     memcpy(m_hpZ, z, sizeof(z));
 }
 
