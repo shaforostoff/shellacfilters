@@ -45,6 +45,8 @@ enum { kMaxSliceFrames = 4096 };
  *  wants a vtable:
  *
  *      static const char * pluginName();      //!< "Declick"
+ *      static const char * pluginVersion();   //!< "1.1.0", this plug-in's own
+ *                                             //!< and the same as its AU and VST
  *      static const char * pluginDescription();
  *
  *      //! OnLoad. Register the sliders against the host's DeclareParameter*.

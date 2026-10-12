@@ -32,6 +32,7 @@ public:
     // -- identity ------------------------------------------------------------
 
     static const char * pluginName() { return "Declick"; }
+    static const char * pluginVersion() { return "1.1.0"; }
     static const char * pluginDescription() {
         return "Autoregressive detect-and-interpolate declicker for shellac and "
                "vinyl transfers. Reads the song ahead of the play head, so the "
