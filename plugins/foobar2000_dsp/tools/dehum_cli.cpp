@@ -41,6 +41,8 @@ void usage() {
         "               spectrum as phase shift while the output's magnitude\n"
         "               above the corner is untouched. See the README.\n"
         "  --quiet\n"
+        "  --no-avx     Use the base probe kernel even where AVX is available.\n"
+        "               Same output either way; for timing.\n"
         "\n"
         "  Calibration only, not exposed in the component:\n"
         "  --notrack        Freeze the frequency tracker\n"
@@ -72,6 +74,7 @@ int main(int argc, char ** argv) {
         if (a == "--delta") { delta = true; continue; }
         if (a == "--quiet") { quiet = true; continue; }
         if (a == "--notrack") { trackGain = 0.0f; continue; }
+        if (a == "--no-avx") { dehum::allowWideKernels(false); continue; }
         if (a == "-h" || a == "--help") { usage(); return 0; }
         if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); return 2; }
         float v = 0.0f;
@@ -144,8 +147,9 @@ int main(int argc, char ** argv) {
                cfg.halfWidth, cfg.harmonics, cfg.harmonics == 1 ? "" : "s");
         if (cfg.manualFreq > 0.0) printf(", pinned at %.2f Hz", cfg.manualFreq);
         if (cfg.rumbleHz > 0.0) printf(", rumble high-pass %.0f Hz", cfg.rumbleHz);
-        printf("\n  dry/wet %.3f, %zu kB per channel\n",
-               cfg.wet, chans.empty() ? 0 : chans[0]->heapBytes() / 1024);
+        printf("\n  dry/wet %.3f, %zu kB per channel, %s probe kernel\n",
+               cfg.wet, chans.empty() ? 0 : chans[0]->heapBytes() / 1024,
+               dehum::kernelName());
 
         for (unsigned c = 0; c < channels; ++c) {
             dehum::LineReport rep[dehum::kMaxLines];

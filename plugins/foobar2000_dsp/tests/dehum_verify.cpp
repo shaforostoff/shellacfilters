@@ -676,6 +676,44 @@ void testDelta() {
     check(ch.retune(makeConfig(q, sr)), "switching delta on retunes");
 }
 
+//! The wide probe kernel is the base one four lanes at a time, with no fused
+//! multiply-adds, so the two have to agree to the bit. Material that keeps
+//! several unconfirmed lines alive at once, which is what goes to the kernel,
+//! and long enough for trackers and renormalisations to land mid-run.
+void testWideKernelsMatch() {
+    printf("\nwide probe kernel (%s here)\n", dehum::kernelName());
+    const double sr = 44100.0;
+    std::vector<double> in((size_t)(sr * 30.0), 0.0);
+    Rng rng;
+    double rumble = 0.0;
+    for (size_t i = 0; i < in.size(); ++i) {
+        const double t = (double)i / sr;
+        rumble = 0.9995 * rumble + 0.002 * rng.next();
+        in[i] = 0.01 * sin(2.0 * kPi * 41.3 * t) + 0.004 * sin(2.0 * kPi * 57.0 * t)
+              + 0.05 * sin(2.0 * kPi * (110.0 + 30.0 * floor(t / 0.35)) * t)
+              + rumble + 0.003 * rng.next();
+    }
+    std::vector<double> out[2];
+    int probes = 0;
+    for (int wide = 0; wide < 2; ++wide) {
+        dehum::allowWideKernels(wide != 0);
+        dehum::Params p = dehum::Params::defaults();
+        p.harmonics = 3;
+        dehum::Channel ch;
+        ch.configure(makeConfig(p, sr));
+        out[wide] = in;
+        runChannel(ch, out[wide], 1000);
+        probes = ch.lineCount();
+    }
+    dehum::allowWideKernels(true);
+    size_t differ = 0;
+    for (size_t i = 0; i < in.size(); ++i) if (out[0][i] != out[1][i]) ++differ;
+    char msg[160];
+    snprintf(msg, sizeof(msg), "bit-identical to the base kernel (%zu differ, %d line%s)",
+             differ, probes, probes == 1 ? "" : "s");
+    check(differ == 0, msg);
+}
+
 void testFootprint() {
     printf("\nfootprint\n");
     const double rates[3] = { 44100.0, 96000.0, 192000.0 };
@@ -709,6 +747,7 @@ int main() {
     testRumble();
     testRetuneKeepsState();
     testDelta();
+    testWideKernelsMatch();
     testFootprint();
 
     printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "passed",

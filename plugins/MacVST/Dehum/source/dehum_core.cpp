@@ -10,11 +10,28 @@
 #if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
 #include <xmmintrin.h>
 #define DEHUM_HAVE_MXCSR 1
+// AVX for the probes, chosen at run time from CPUID - see pickWide(). MSVC
+// compiles AVX intrinsics without /arch:AVX; GCC and clang need the target
+// attribute on every function that uses them. Plain AVX, not FMA: a fused
+// multiply-add rounds once where the base build rounds twice, and these
+// kernels are meant to give the same bits.
+#include <immintrin.h>
+#define DEHUM_AVX 1
+#if defined(__GNUC__) || defined(__clang__)
+#define DEHUM_AVX_FN __attribute__((target("avx")))
+#include <cpuid.h>
+#else
+#define DEHUM_AVX_FN
+#include <intrin.h>
+#endif
 #elif defined(_M_ARM64) || defined(__aarch64__)
 #define DEHUM_HAVE_FPCR 1
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
+#endif
+#ifndef DEHUM_AVX
+#define DEHUM_AVX 0
 #endif
 
 namespace dehum {
@@ -39,6 +56,7 @@ const int kSegment = 256;
 //! A Haswell is held back by its one floating-point adder rather than by
 //! latency, and barely notices either way.
 const int kProbeGroup = 4;
+static_assert(kProbeGroup == 4, "runProbesWide() takes the probes a register at a time");
 
 //! Pull a recursive rotator back onto the unit circle.
 inline void renormalise(double & c, double & s) {
@@ -62,6 +80,115 @@ inline int livedAfter(int lived, size_t m) {
     return (lived < (1 << 30) - (int)m) ? lived + (int)m : (1 << 30);
 }
 
+//! Four probes' state, one array per quantity, so each is one AVX register.
+struct ProbeLanes {
+    double cosInc[4], sinInc[4], cosPh[4], sinPh[4];
+    double wRe[4], wIm[4], cnRe[4], cnIm[4], cwRe[4], cwIm[4], sumN[4], sumW[4];
+};
+
+#if DEHUM_AVX
+
+// Every floating-point operation in here is an intrinsic, and that is
+// load-bearing. Without /arch:AVX, MSVC encodes the intrinsics as AVX but any
+// plain double arithmetic as legacy SSE2, and on Haswell each switch between
+// the two with the upper halves of the registers dirty costs about 70 cycles.
+// Hence the broadcast load of x and the negation by sign bit, and the explicit
+// _mm256_zeroupper() before returning to SSE2 code.
+//
+//! runProbes<4>'s per-sample loop, a lane per probe. The same operations in
+//! the same order as the scalar loop, each rounded on its own, so every lane
+//! comes out bit for bit what the base build computes for that probe.
+DEHUM_AVX_FN void probesAvx(ProbeLanes & p, const double * y, size_t m,
+                            const double * lams) {
+    const __m256d lam  = _mm256_broadcast_sd(lams + 0);
+    const __m256d lamN = _mm256_broadcast_sd(lams + 1);
+    const __m256d lamW = _mm256_broadcast_sd(lams + 2);
+    const __m256d sign = _mm256_set1_pd(-0.0);
+    const __m256d cosInc = _mm256_loadu_pd(p.cosInc);
+    const __m256d sinInc = _mm256_loadu_pd(p.sinInc);
+
+    __m256d cosPh = _mm256_loadu_pd(p.cosPh), sinPh = _mm256_loadu_pd(p.sinPh);
+    __m256d wRe  = _mm256_loadu_pd(p.wRe),  wIm  = _mm256_loadu_pd(p.wIm);
+    __m256d cnRe = _mm256_loadu_pd(p.cnRe), cnIm = _mm256_loadu_pd(p.cnIm);
+    __m256d cwRe = _mm256_loadu_pd(p.cwRe), cwIm = _mm256_loadu_pd(p.cwIm);
+    __m256d sumN = _mm256_loadu_pd(p.sumN), sumW = _mm256_loadu_pd(p.sumW);
+
+    for (size_t i = 0; i < m; ++i) {
+        const __m256d x  = _mm256_broadcast_sd(y + i);
+        const __m256d zr = _mm256_mul_pd(x, cosPh);
+        const __m256d zi = _mm256_mul_pd(_mm256_xor_pd(x, sign), sinPh);
+        wRe  = _mm256_add_pd(wRe,  _mm256_mul_pd(lam,  _mm256_sub_pd(zr, wRe)));
+        wIm  = _mm256_add_pd(wIm,  _mm256_mul_pd(lam,  _mm256_sub_pd(zi, wIm)));
+        cnRe = _mm256_add_pd(cnRe, _mm256_mul_pd(lamN, _mm256_sub_pd(zr, cnRe)));
+        cnIm = _mm256_add_pd(cnIm, _mm256_mul_pd(lamN, _mm256_sub_pd(zi, cnIm)));
+        cwRe = _mm256_add_pd(cwRe, _mm256_mul_pd(lamW, _mm256_sub_pd(zr, cwRe)));
+        cwIm = _mm256_add_pd(cwIm, _mm256_mul_pd(lamW, _mm256_sub_pd(zi, cwIm)));
+        sumN = _mm256_add_pd(sumN, _mm256_add_pd(_mm256_mul_pd(cnRe, cnRe),
+                                                 _mm256_mul_pd(cnIm, cnIm)));
+        sumW = _mm256_add_pd(sumW, _mm256_add_pd(_mm256_mul_pd(cwRe, cwRe),
+                                                 _mm256_mul_pd(cwIm, cwIm)));
+        const __m256d c = _mm256_sub_pd(_mm256_mul_pd(cosPh, cosInc),
+                                        _mm256_mul_pd(sinPh, sinInc));
+        const __m256d s = _mm256_add_pd(_mm256_mul_pd(sinPh, cosInc),
+                                        _mm256_mul_pd(cosPh, sinInc));
+        cosPh = c;
+        sinPh = s;
+    }
+
+    _mm256_storeu_pd(p.cosPh, cosPh); _mm256_storeu_pd(p.sinPh, sinPh);
+    _mm256_storeu_pd(p.wRe, wRe);     _mm256_storeu_pd(p.wIm, wIm);
+    _mm256_storeu_pd(p.cnRe, cnRe);   _mm256_storeu_pd(p.cnIm, cnIm);
+    _mm256_storeu_pd(p.cwRe, cwRe);   _mm256_storeu_pd(p.cwIm, cwIm);
+    _mm256_storeu_pd(p.sumN, sumN);   _mm256_storeu_pd(p.sumW, sumW);
+    _mm256_zeroupper();
+}
+
+//! AVX in the CPU, and YMM state saved by the OS.
+bool cpuHasAvx() {
+    unsigned ecx1;
+#if defined(__GNUC__) || defined(__clang__)
+    unsigned a, b, c, d;
+    if (__get_cpuid_max(0, 0) < 1) return false;
+    __cpuid(1, a, b, c, d);
+    ecx1 = c;
+#else
+    int r[4];
+    __cpuid(r, 0);
+    if (r[0] < 1) return false;
+    __cpuid(r, 1);
+    ecx1 = (unsigned)r[2];
+#endif
+    // AVX is 1.ECX[28]. OSXSAVE, 1.ECX[27], has to be checked as well before
+    // XGETBV, which faults without it.
+    const unsigned need1 = (1u << 27) | (1u << 28);
+    if ((ecx1 & need1) != need1) return false;
+
+    // XCR0 bits 1 and 2: the OS saves the SSE and the upper YMM state on a
+    // context switch. Without that the CPU has AVX but cannot use it.
+#if defined(__GNUC__) || defined(__clang__)
+    unsigned lo, hi;
+    __asm__ __volatile__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    const unsigned long long xcr0 = ((unsigned long long)hi << 32) | lo;
+#else
+    const unsigned long long xcr0 = _xgetbv(0);
+#endif
+    return (xcr0 & 6u) == 6u;
+}
+
+#endif // DEHUM_AVX
+
+bool pickWide(bool allow) {
+#if DEHUM_AVX
+    return allow && cpuHasAvx();
+#else
+    (void)allow;
+    return false;
+#endif
+}
+
+//! Chosen once, when the module loads.
+bool g_wide = pickWide(true);
+
 inline double clampd(double v, double lo, double hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -78,6 +205,10 @@ inline bool sane(double v) {
 }
 
 } // anonymous namespace
+
+const char * kernelName() { return g_wide ? "avx" : "base"; }
+
+void allowWideKernels(bool allow) { g_wide = pickWide(allow); }
 
 // ---------------------------------------------------------------------------
 // Flush-to-zero
@@ -657,14 +788,7 @@ void Channel::runProbes(Line * const * lines, const double * y, size_t n) {
     }
 
     while (n > 0) {
-        // Up to the first tracker reading or renormalisation of any of them.
-        size_t m = n;
-        for (int k = 0; k < K; ++k) {
-            const int toTrack = m_cfg.trackSamples - o[k]->trackAcc;
-            const size_t until = toTrack > 1 ? (size_t)toTrack : 1;
-            if (until < m) m = until;
-            m = untilRenorm(o[k]->renorm, m);
-        }
+        const size_t m = probeRun(lines, K, n);
 
         for (size_t i = 0; i < m; ++i) {
             const double x = y[i];
@@ -688,12 +812,7 @@ void Channel::runProbes(Line * const * lines, const double * y, size_t n) {
 
         for (int k = 0; k < K; ++k) {
             Osc & f = *o[k];
-            f.lived = livedAfter(f.lived, m);
-            f.renorm += (int)m;
-            if (f.renorm >= kRenormInterval) {
-                f.renorm = 0;
-                renormalise(cosPh[k], sinPh[k]);
-            }
+            if (probeRenormDue(f, m)) renormalise(cosPh[k], sinPh[k]);
             f.trackAcc += (int)m;
             if (f.trackAcc >= m_cfg.trackSamples) {
                 // The tracker reads the weight and may move the frequency.
@@ -717,6 +836,78 @@ void Channel::runProbes(Line * const * lines, const double * y, size_t n) {
     }
 }
 
+size_t Channel::probeRun(Line * const * lines, int count, size_t n) const {
+    // Up to the first tracker reading or renormalisation of any of them.
+    size_t m = n;
+    for (int k = 0; k < count; ++k) {
+        const Osc & f = lines[k]->osc[0];
+        const int toTrack = m_cfg.trackSamples - f.trackAcc;
+        const size_t until = toTrack > 1 ? (size_t)toTrack : 1;
+        if (until < m) m = until;
+        m = untilRenorm(f.renorm, m);
+    }
+    return m;
+}
+
+bool Channel::probeRenormDue(Osc & f, size_t m) {
+    f.lived = livedAfter(f.lived, m);
+    f.renorm += (int)m;
+    if (f.renorm < kRenormInterval) return false;
+    f.renorm = 0;
+    return true;
+}
+
+//! runProbes<4>, with the per-sample loop in probesAvx(). The lanes live in
+//! memory between runs rather than in registers, which costs a load and a store
+//! per quantity per run - nothing, against runs a few hundred samples long.
+void Channel::runProbesWide(Line * const * lines, const double * y, size_t n) {
+#if DEHUM_AVX
+    const double lams[3] = { m_cfg.lamNotch, m_cfg.lamCohNarrow, m_cfg.lamCohWide };
+
+    ProbeLanes p;
+    for (int k = 0; k < 4; ++k) {
+        const Osc & f = lines[k]->osc[0];
+        p.cosInc[k] = f.cosInc; p.sinInc[k] = f.sinInc;
+        p.cosPh[k]  = f.cosPh;  p.sinPh[k]  = f.sinPh;
+        p.wRe[k]  = f.wRe;  p.wIm[k]  = f.wIm;
+        p.cnRe[k] = f.cnRe; p.cnIm[k] = f.cnIm;
+        p.cwRe[k] = f.cwRe; p.cwIm[k] = f.cwIm;
+        p.sumN[k] = f.sumN; p.sumW[k] = f.sumW;
+    }
+
+    while (n > 0) {
+        const size_t m = probeRun(lines, 4, n);
+        probesAvx(p, y, m, lams);
+
+        for (int k = 0; k < 4; ++k) {
+            Osc & f = lines[k]->osc[0];
+            if (probeRenormDue(f, m)) renormalise(p.cosPh[k], p.sinPh[k]);
+            f.trackAcc += (int)m;
+            if (f.trackAcc >= m_cfg.trackSamples) {
+                // The tracker reads the weight and may move the frequency.
+                f.wRe = p.wRe[k]; f.wIm = p.wIm[k];
+                track(*lines[k]);
+                p.cosInc[k] = f.cosInc; p.sinInc[k] = f.sinInc;
+            }
+        }
+
+        y += m;
+        n -= m;
+    }
+
+    for (int k = 0; k < 4; ++k) {
+        Osc & f = lines[k]->osc[0];
+        f.cosPh = p.cosPh[k]; f.sinPh = p.sinPh[k];
+        f.wRe  = p.wRe[k];  f.wIm  = p.wIm[k];
+        f.cnRe = p.cnRe[k]; f.cnIm = p.cnIm[k];
+        f.cwRe = p.cwRe[k]; f.cwIm = p.cwIm[k];
+        f.sumN = p.sumN[k]; f.sumW = p.sumW[k];
+    }
+#else
+    runProbes<4>(lines, y, n);
+#endif
+}
+
 //! Every line over `n` samples of `y`, in place, in order. Runs of unconfirmed
 //! lines go through runProbes() in groups; a confirmed line writes to y, so the
 //! line after it has to wait for it and goes on its own.
@@ -733,7 +924,8 @@ void Channel::runLines(double * y, size_t n) {
         // Not three: an odd lane count vectorises badly on x86, and on a
         // Haswell four, two and one beat four and three by a fifth.
         if (k == kProbeGroup) {
-            runProbes<kProbeGroup>(group, y, n);
+            if (g_wide) runProbesWide(group, y, n);
+            else        runProbes<kProbeGroup>(group, y, n);
         } else if (k >= 2) {
             runProbes<2>(group, y, n);
             k = 2;
