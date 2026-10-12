@@ -595,15 +595,15 @@ void testOrderSweep() {
     }
 }
 
-//! The AVX2 kernels sum in a different order and fuse the multiply-adds, so
-//! they may differ from the baseline in the last bits and nowhere else. Every
-//! order, because each changes the tap count and with it which remainder
-//! paths of the blocked filter run. Where the CPU has no AVX2 this compares
-//! the baseline with itself, and says so.
+//! The wide kernels - AVX2 or NEON - sum in a different order and fuse the
+//! multiply-adds, so they may differ from the baseline in the last bits and
+//! nowhere else. Every order, because each changes the tap count and with it
+//! which remainder paths of the blocked filter run. Where the CPU has no AVX2
+//! this compares the baseline with itself, and says so.
 void testKernels() {
     allowWideKernels(true);
     const char * wide = kernelName();
-    printf("AVX2 kernels against the baseline (%s here)\n", wide);
+    printf("Wide kernels against the baseline (%s here)\n", wide);
     const double sr = 44100.0;
     const size_t N = 16384;
 

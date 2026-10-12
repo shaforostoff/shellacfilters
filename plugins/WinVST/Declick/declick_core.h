@@ -354,13 +354,14 @@ private:
 };
 
 //! The inner-product kernels this process runs: "avx2" where the CPU and OS
-//! support AVX2 and FMA, chosen when the module loads; otherwise "sse2", or
-//! "scalar" off x86. The two differ in the last bits, so output is
-//! bit-reproducible per kernel, not across machines.
+//! support AVX2 and FMA, chosen when the module loads, otherwise "sse2";
+//! "neon" on every AArch64 CPU; "scalar" anywhere else. Wide and baseline
+//! differ in the last bits, so output is bit-reproducible per kernel, not
+//! across machines.
 const char * kernelName();
 
 //! For tests and benchmarks: false pins the baseline kernels even where AVX2
-//! is available, true goes back to choosing. Process-wide and not
+//! or NEON is available, true goes back to choosing. Process-wide and not
 //! thread-safe - call it before any processing starts.
 void allowWideKernels(bool allow);
 
