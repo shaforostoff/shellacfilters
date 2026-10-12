@@ -323,7 +323,7 @@ void ParaEQ::setParameter(VstInt32 index, float value) {
         case kParamN: N = value; break;
         case kParamO: O = value; break;
         case kParamP: P = value; break;
-        default: throw; // unknown parameter, shouldn't happen!
+        default: break; // unknown parameter: ignored, as getParameter() does
     }
 	//no work here: updateConfig() picks the change up on the audio thread, where
 	//it can tell a rate change from a control move
