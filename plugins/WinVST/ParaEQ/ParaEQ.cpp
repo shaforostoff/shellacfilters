@@ -279,6 +279,9 @@ VstInt32 ParaEQ::getChunk (void** data, bool isPreset)
 
 VstInt32 ParaEQ::setChunk (void* data, VstInt32 byteSize, bool isPreset)
 {
+	//A chunk too short to hold every parameter is not ours - an empty preset, a
+	//truncated file - and reading sixteen floats out of it would read past it.
+	if (!data || byteSize < (VstInt32)(kNumParameters * sizeof(float))) return 0;
 	float *chunkData = (float *)data;
 	A = pinParameter(chunkData[0]);
 	B = pinParameter(chunkData[1]);
@@ -296,7 +299,6 @@ VstInt32 ParaEQ::setChunk (void* data, VstInt32 byteSize, bool isPreset)
 	N = pinParameter(chunkData[13]);
 	O = pinParameter(chunkData[14]);
 	P = pinParameter(chunkData[15]);
-	/* We're ignoring byteSize as we found it to be a filthy liar */
 
 	/* calculate any other fields you need here - you could copy in
 	 code from setParameter() here. */
