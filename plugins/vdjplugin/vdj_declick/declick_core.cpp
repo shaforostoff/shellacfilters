@@ -517,7 +517,7 @@ void Params::sanitize() {
 bool Params::operator==(const Params & o) const {
     return sensitivity == o.sensitivity && extent == o.extent
         && maxLengthMs == o.maxLengthMs && depth == o.depth && passes == o.passes
-        && order == o.order && dryWet == o.dryWet;
+        && order == o.order && dryWet == o.dryWet && delta == o.delta;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +532,7 @@ void Config::compute(const Params & pIn, double sampleRate) {
     order  = p.order;
     passes = p.passes;
     wet    = p.dryWet;
+    delta  = p.delta;
     depth  = p.depth;
 
     // Sensitivity 0..1 maps onto the trigger threshold, in robust sigmas.
@@ -785,7 +786,7 @@ bool Channel::retune(const Config & cfg) {
     if (!m_cfg.structurallyEquals(cfg)) return false;
     // Everything left is read fresh per block, so there is nothing to rebuild:
     // thresholds and depth are picked up by the next detect()/interpolate(),
-    // wet by the next emit, passes by the next processBlock().
+    // wet and delta by the next emit, passes by the next processBlock().
     m_cfg = cfg;
     return true;
 }
@@ -1129,10 +1130,19 @@ void Channel::pushOne(double v) {
 
     const double wet = m_cfg.wet;
     const double dry = 1.0 - wet;
-    for (int i = 0; i < blk; ++i) {
-        const double y = m_win[(size_t)(m_pad + i)];
-        const double d = m_dry[(size_t)(m_pad + i)];
-        outPush(wet * y + dry * d);
+    if (m_cfg.delta) {
+        // d - (wet * y + dry * d): what the mix below takes out.
+        for (int i = 0; i < blk; ++i) {
+            const double y = m_win[(size_t)(m_pad + i)];
+            const double d = m_dry[(size_t)(m_pad + i)];
+            outPush(wet * (d - y));
+        }
+    } else {
+        for (int i = 0; i < blk; ++i) {
+            const double y = m_win[(size_t)(m_pad + i)];
+            const double d = m_dry[(size_t)(m_pad + i)];
+            outPush(wet * y + dry * d);
+        }
     }
 
     // Slide along by one block, keeping the repairs that reached past its end.

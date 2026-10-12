@@ -167,7 +167,8 @@ bool Params::operator==(const Params & o) const {
         && harmonics   == o.harmonics
         && frequency   == o.frequency
         && rumbleHz    == o.rumbleHz
-        && dryWet      == o.dryWet;
+        && dryWet      == o.dryWet
+        && delta       == o.delta;
 }
 
 void Config::compute(const Params & pIn, double rate) {
@@ -245,6 +246,7 @@ void Config::compute(const Params & pIn, double rate) {
     manualFreq = (double)p.frequency;
     rumbleHz   = (double)p.rumbleHz;
     wet        = (double)p.dryWet;
+    delta      = p.delta;
 
     scoreActivate = kScoreActivate;
 
@@ -1520,11 +1522,21 @@ void Channel::process(Sample * io, size_t frames, size_t stride) {
             m_hopAcc += (int)n;
         }
 
-        if (m_hpOn) runRumble(y, n);
+        if (m_cfg.delta) {
+            // What the notches took out, before the rumble filter sees it. The
+            // filter still runs, on a result nobody hears, so that its state is
+            // current when delta is switched off again.
+            for (size_t i = 0; i < n; ++i) {
+                p[i * stride] = (Sample)(wet * (x[i] - y[i]));
+            }
+            if (m_hpOn) runRumble(y, n);
+        } else {
+            if (m_hpOn) runRumble(y, n);
 
-        // wet == 0 returns x untouched, bit for bit.
-        for (size_t i = 0; i < n; ++i) {
-            p[i * stride] = (Sample)(x[i] + wet * (y[i] - x[i]));
+            // wet == 0 returns x untouched, bit for bit.
+            for (size_t i = 0; i < n; ++i) {
+                p[i * stride] = (Sample)(x[i] + wet * (y[i] - x[i]));
+            }
         }
 
         done += n;

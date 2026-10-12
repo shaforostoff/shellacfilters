@@ -52,6 +52,10 @@ struct Params {
     int   passes;       //!< 1..3; a second pass catches clicks the first uncovers
     int   order;        //!< AR model order
     float dryWet;       //!< 0 = bypass, 1 = full repair
+    //! Output what the repair takes out - input minus output - instead of the
+    //! repaired audio. For listening to what is being removed: it should be
+    //! crackle and nothing else, and any music heard in it is collateral.
+    bool  delta;
 
     static Params defaults() {
         Params p;
@@ -77,6 +81,7 @@ struct Params {
         // too much; it gives up surprisingly little.
         p.order       = 128;
         p.dryWet      = 1.0f;
+        p.delta       = false;
         return p;
     }
     void sanitize();
@@ -94,6 +99,7 @@ struct Config {
     double thresholdLo  = 1.6;   //!< hysteresis extension
     double depth        = 0.0;   //!< pushes the weighting towards replacement
     double wet          = 1.0;
+    bool   delta        = false;   //!< see Params::delta
 
     //! Subtractive repair. Calibration constants, not derived from params and
     //! not user-facing.
@@ -161,8 +167,8 @@ struct Config {
     //! configure(), which reallocates and therefore resets.
     //!
     //! Only `order`, `maxRun` and `madWindow` size anything (`pad` and
-    //! `latency` are derived from the first two); thresholds, depth, wet and
-    //! passes are read per block and can change under a live stream.
+    //! `latency` are derived from the first two); thresholds, depth, wet,
+    //! delta and passes are read per block and can change under a live stream.
     bool structurallyEquals(const Config & o) const {
         return order == o.order && maxRun == o.maxRun && madWindow == o.madWindow;
     }

@@ -15,8 +15,9 @@ namespace declick_preset {
 GUID guid();
 
 //! 1 = pre-depth layout (still read, depth falls back to its default).
-//! 2 = current layout, with `depth` between maxLengthMs and dryWet.
-enum { version = 2 };
+//! 2 = adds `depth` between maxLengthMs and dryWet (still read, delta off).
+//! 3 = current layout, with `delta` appended after order.
+enum { version = 3 };
 
 void make(const declick::Params & params, dsp_preset & out);
 

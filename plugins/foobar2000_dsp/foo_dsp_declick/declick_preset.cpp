@@ -24,6 +24,7 @@ void make(const Params & params, dsp_preset & out) {
     builder << (t_uint32)version;
     builder << p.sensitivity << p.extent << p.maxLengthMs << p.depth << p.dryWet;
     builder << (t_uint32)p.passes << (t_uint32)p.order;
+    builder << (t_uint32)(p.delta ? 1 : 0);
     builder.finish(guid(), out);
 }
 
@@ -34,14 +35,16 @@ Params parse(const dsp_preset & in) {
             dsp_preset_parser parser(in);
             t_uint32 ver = 0;
             parser >> ver;
-            if (ver == 1u || ver == 2u) {
+            if (ver >= 1u && ver <= 3u) {
                 Params tmp = Params::defaults();
-                t_uint32 passes = 0, order = 0;
+                t_uint32 passes = 0, order = 0, delta = 0;
                 parser >> tmp.sensitivity >> tmp.extent >> tmp.maxLengthMs;
                 if (ver >= 2u) parser >> tmp.depth;   // absent in version 1
                 parser >> tmp.dryWet >> passes >> order;
+                if (ver >= 3u) parser >> delta;       // absent before version 3
                 tmp.passes = (int)passes;
                 tmp.order = (int)order;
+                tmp.delta = (delta != 0);
                 p = tmp;
             }
         } catch (...) {

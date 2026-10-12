@@ -273,6 +273,12 @@ struct Params {
     float frequency;    //!< 0 = detect automatically, otherwise pin here (Hz)
     float rumbleHz;     //!< 0 = off, otherwise high-pass corner (Hz)
     float dryWet;       //!< 0 = bypass, 1 = full removal
+    //! Output what the notches take out - input minus output - instead of the
+    //! cleaned audio. For listening to what is being removed: it should be the
+    //! hum and nothing else. The rumble high-pass is left out of it, because
+    //! what a minimum-phase high-pass removes is 1-H, which carries the whole
+    //! spectrum as phase shift and would sound like the music - see the README.
+    bool  delta;
 
     static Params defaults() {
         Params p;
@@ -318,6 +324,7 @@ struct Params {
         // keeping.
         p.rumbleHz    = 67.0f;
         p.dryWet      = 1.0f;
+        p.delta       = false;
         return p;
     }
     void sanitize();
@@ -358,6 +365,7 @@ struct Config {
     double manualFreq  = 0.0;    //!< 0 = automatic
     double rumbleHz    = 0.0;    //!< 0 = off
     double wet         = 1.0;
+    bool   delta       = false;  //!< see Params::delta
 
     //! Score a candidate must reach before it is cancelled - see kScoreActivate.
     //! On the reference transfer the score climbs about 1.3 per hop, so the line

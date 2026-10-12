@@ -70,6 +70,11 @@ const slider_def k_sliders[] = {
 
 const size_t k_count = sizeof(k_sliders) / sizeof(k_sliders[0]);
 
+const wchar_t * const k_delta_help =
+    L"Outputs what the repair takes out - the input minus the output - instead of the "
+    L"repaired audio. For testing: it should be crackle and clicks and nothing else, and "
+    L"any music heard in it is being damaged. Saved with the preset; untick it when done.";
+
 double get_param(const Params & p, size_t i) {
     switch (i) {
     case 0: return p.sensitivity;
@@ -131,6 +136,7 @@ void load_controls(HWND dlg, dialog_state * st) {
                            (LPARAM)value_to_pos(k_sliders[i], v));
         refresh_label(dlg, k_sliders[i], v);
     }
+    CheckDlgButton(dlg, IDC_DELTA, st->params.delta ? BST_CHECKED : BST_UNCHECKED);
 }
 
 //! One tooltip control owned by the dialog, with the label, the slider and the
@@ -138,6 +144,20 @@ void load_controls(HWND dlg, dialog_state * st) {
 //! up wherever on the row the pointer lands. TTF_SUBCLASS has the tooltip pick
 //! the mouse messages up itself: a modal DialogBoxParam loop has nowhere to
 //! hang a TTM_RELAYEVENT forwarder.
+void add_tooltip(HWND tips, HWND dlg, int id, const wchar_t * text) {
+    const HWND control = GetDlgItem(dlg, id);
+    if (control == NULL) return;
+
+    TTTOOLINFOW ti;
+    memset(&ti, 0, sizeof(ti));
+    ti.cbSize   = TTTOOLINFOW_V2_SIZE;  // accepted by both comctl32 v5 and v6
+    ti.uFlags   = TTF_IDISHWND | TTF_SUBCLASS;
+    ti.hwnd     = dlg;
+    ti.uId      = (UINT_PTR)control;
+    ti.lpszText = (LPWSTR)text;
+    SendMessage(tips, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+}
+
 void create_tooltips(HWND dlg) {
     const HWND tips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL,
                                       WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
@@ -156,20 +176,9 @@ void create_tooltips(HWND dlg) {
         const int row[3] = { k_sliders[i].labelId,
                              k_sliders[i].sliderId,
                              k_sliders[i].valueId };
-        for (int k = 0; k < 3; ++k) {
-            const HWND control = GetDlgItem(dlg, row[k]);
-            if (control == NULL) continue;
-
-            TTTOOLINFOW ti;
-            memset(&ti, 0, sizeof(ti));
-            ti.cbSize   = TTTOOLINFOW_V2_SIZE;  // accepted by both comctl32 v5 and v6
-            ti.uFlags   = TTF_IDISHWND | TTF_SUBCLASS;
-            ti.hwnd     = dlg;
-            ti.uId      = (UINT_PTR)control;
-            ti.lpszText = (LPWSTR)k_sliders[i].help;
-            SendMessage(tips, TTM_ADDTOOLW, 0, (LPARAM)&ti);
-        }
+        for (int k = 0; k < 3; ++k) add_tooltip(tips, dlg, row[k], k_sliders[i].help);
     }
+    add_tooltip(tips, dlg, IDC_DELTA, k_delta_help);
 }
 
 INT_PTR CALLBACK dialog_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
@@ -212,6 +221,13 @@ INT_PTR CALLBACK dialog_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         if (st == NULL) break;
         switch (LOWORD(wp)) {
+        case IDC_DELTA:
+            if (HIWORD(wp) == BN_CLICKED) {
+                st->params.delta = (IsDlgButtonChecked(dlg, IDC_DELTA) == BST_CHECKED);
+                push_preset(st);
+                return TRUE;
+            }
+            break;
         case IDC_DEFAULTS:
             if (HIWORD(wp) == BN_CLICKED) {
                 st->params = Params::defaults();

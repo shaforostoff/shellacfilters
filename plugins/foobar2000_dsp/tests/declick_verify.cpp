@@ -651,6 +651,65 @@ void testKernels() {
     }
 }
 
+//! Delta mode must output exactly what normal mode takes out, so that what is
+//! heard through it is what the repair removes and nothing else.
+void testDelta() {
+    printf("delta output\n");
+    const double sr = 44100.0;
+    const size_t N = 32768;
+
+    std::vector<double> dirty(N);
+    Rng rng(91u);
+    for (size_t i = 0; i < N; ++i) {
+        const double t = (double)i / sr;
+        dirty[i] = 0.30 * sin(6.283185307 * 330.0 * t) + 0.01 * rng.centred();
+    }
+    for (size_t i = 2000; i + 16 < N; i += 211 + (rng.next() % 97)) {
+        dirty[i] += 0.3 * rng.centred();
+    }
+
+    const float wets[2] = { 1.0f, 0.6f };
+    for (int k = 0; k < 2; ++k) {
+        Params p = Params::defaults();
+        p.dryWet = wets[k];
+        const std::vector<double> out = runChannel(dirty, p, sr);
+        p.delta = true;
+        const std::vector<double> del = runChannel(dirty, p, sr);
+
+        double worst = 0.0, removed = 0.0;
+        for (size_t i = 0; i < N; ++i) {
+            const double d = fabs(del[i] - (dirty[i] - out[i]));
+            if (d > worst) worst = d;
+            removed += del[i] * del[i];
+        }
+        printf("  wet %.1f: worst difference from input - output %.3g\n",
+               (double)wets[k], worst);
+        // At wet 1 the normal mix is y + 0*d, so the two are the same sum;
+        // below it they differ by rounding only.
+        if (!(k == 0 ? worst == 0.0 : worst < 1e-12)) {
+            printf("  FAIL  delta is not what the repair removes\n");
+            ++g_failures;
+        }
+        if (!(removed > 0.0)) {
+            printf("  FAIL  delta is silent; nothing was repaired\n");
+            ++g_failures;
+        }
+    }
+
+    // A live toggle must not reset the pipeline.
+    Config a, b;
+    Params p = Params::defaults();
+    a.compute(p, sr);
+    p.delta = true;
+    b.compute(p, sr);
+    Channel ch;
+    ch.configure(a);
+    if (!ch.retune(b)) {
+        printf("  FAIL  switching delta on needs a reconfigure\n");
+        ++g_failures;
+    }
+}
+
 } // anonymous namespace
 
 int main() {
@@ -660,6 +719,7 @@ int main() {
     testStreaming();
     testOrderSweep();
     testKernels();
+    testDelta();
 
     if (g_failures == 0) { printf("\nOK\n"); return 0; }
     printf("\n%d failure(s)\n", g_failures);
