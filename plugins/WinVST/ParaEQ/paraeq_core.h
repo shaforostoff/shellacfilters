@@ -28,8 +28,18 @@
  *     stage. Gain, frequency and Q obviously do; so do the two shelf/bell
  *     switches and the high-pass slope, because a stage that is off is a unity
  *     biquad rather than a stage that is skipped. One glide mechanism therefore
- *     covers every control, including the discrete ones, and the count of
- *     biquads actually run never changes.
+ *     covers every control, including the discrete ones, and while anything is
+ *     gliding every biquad runs.
+ *
+ *     Once settled, a stage that passes its input straight through - switched
+ *     off, or a shelf or bell at exactly 0 dB, which the cookbook designs with
+ *     a numerator equal to its denominator - is left out of the loop while its
+ *     state is zero. Such a stage computes x + 0 and leaves a zero state at
+ *     zero, so on x86 this is what running it did, bar the sign of a zero in
+ *     one corner; where the compiler fuses multiply-adds it was adding rounding
+ *     noise 300 dB down, and now does not - see passesThrough(). A flat
+ *     equaliser costs next to nothing, and one with two bands in use costs two
+ *     biquads.
  *
  *     That glide is on the coefficients, not on the controls, and it runs per
  *     sample. Per sub-block was the first attempt and it is audible: a jump in
@@ -87,7 +97,8 @@ enum {
     //! Biquads per channel, in cascade order: two for the high-pass, then the
     //! low shelf, the two peaking bands and the high shelf. The high-pass is
     //! two stages because 24 dB/oct needs two; at 12 dB/oct and at off the
-    //! spare one is unity. The count never varies - see the header note.
+    //! spare one is unity. The count never varies - see the header note -
+    //! though a settled equaliser leaves out the ones doing nothing.
     kStages = 6,
 
     kStageHighPass1 = 0,
@@ -317,9 +328,8 @@ public:
 
 private:
     void   snap();
-    void   glideStep();
+    double glideFraction() const;
     void   checkSettled();
-    double runStage(int index, double x);
 
     template<typename Sample>
     void   runBlock(Sample * io, size_t frames, size_t stride, bool gliding);

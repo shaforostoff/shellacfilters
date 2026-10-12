@@ -395,27 +395,16 @@ void Channel::snap()
 }
 
 
-void Channel::glideStep()
+//! The fraction of the remaining distance one sample covers. The step itself is
+//! in runBlock(): straight-line interpolation of the coefficients, which is safe
+//! rather than merely convenient - the stable region |a2| < 1, |a1| < 1 + a2 is
+//! a triangle, so no point between two stable settings is outside it. See the
+//! header.
+double Channel::glideFraction() const
 {
     double g = clampd(m_cfg.glide, 0.0, 1.0);
     if (!(g > 0.0)) g = 1.0;
-
-    // Straight-line interpolation of the coefficients, which is safe rather
-    // than merely convenient: the stable region |a2| < 1, |a1| < 1 + a2 is a
-    // triangle, so no point between two stable settings is outside it. See the
-    // header.
-    for (int i = 0; i < kStages; i++) {
-        Biquad       & a = m_active[i];
-        const Biquad & t = m_cfg.stage[i];
-
-        a.b0 += (t.b0 - a.b0) * g;
-        a.b1 += (t.b1 - a.b1) * g;
-        a.b2 += (t.b2 - a.b2) * g;
-        a.a1 += (t.a1 - a.a1) * g;
-        a.a2 += (t.a2 - a.a2) * g;
-    }
-
-    m_gain += (m_cfg.outputGain - m_gain) * g;
+    return g;
 }
 
 
@@ -443,47 +432,207 @@ void Channel::checkSettled()
 }
 
 
-double Channel::runStage(int index, double x)
+namespace {
+
+//! +0.0 and nothing else; -0.0 compares equal to it and does not behave like it.
+inline bool isPlusZero(double v)
 {
-    const Biquad & b = m_active[index];
-    double       * z = m_z[index];
-
-    // Transposed direct form II: two state words per stage, and the state is
-    // the filter's memory of the input rather than of the output, which is what
-    // keeps it well behaved while the coefficients are moving.
-    double y = b.b0 * x + z[0];
-
-    z[0] = b.b1 * x - b.a1 * y + z[1];
-    z[1] = b.b2 * x - b.a2 * y;
-
-    return y;
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    return bits == 0;
 }
+
+//! True if a stage, as it stands, passes its input through untouched: unity in
+//! front, and a numerator that is the denominator. That is not only a stage
+//! switched off - the cookbook shelf and bell come out exactly like this at
+//! 0 dB, because A is then exactly 1. With its state at zero such a stage
+//! computes y = x + 0 and leaves the state at zero, so it can be left out of the
+//! loop altogether, as long as the + 0 is kept: it turns -0 into +0, and that is
+//! all the stage does.
+//!
+//! All but exact where b1 * x - a1 * y is two rounded products, which is every
+//! x86 build: the one difference is that a run of negative zeros into a band
+//! above a quarter of the sample rate could bring a zero out with the other
+//! sign. Where the compiler fuses the products - clang on AArch64 - the stage
+//! was adding the rounding error of b1 * x to its state, about 1e-16 of the
+//! signal, and a skipped one no longer does.
+inline bool passesThrough(const Biquad & b, const double * z)
+{
+    return b.b0 == 1.0 && b.b1 == b.a1 && b.b2 == b.a2
+        && isPlusZero(z[0]) && isPlusZero(z[1]);
+}
+
+//! A settled block through the N stages that do something. `pre[k]` is added in
+//! front of the k-th of them, and pre[N] after the last: +0.0 where stages were
+//! left out in that place, which is exactly what they would have done, and -0.0
+//! elsewhere, which does nothing at all to any value.
+//!
+//! The states are copies for the length of the block, so that no compiler has
+//! to wonder whether a write to `io` changes them - with double samples none can
+//! rule it out, and MSVC never tries - and keep them in memory, with a
+//! store-to-load forward on every stage's recursion.
+template<int N, typename Sample>
+void runSettled(Sample * p, size_t frames, size_t stride, const Biquad * stage,
+                double (*state)[2], const double * pre, double gain)
+{
+    Biquad b[N > 0 ? N : 1];
+    double z[N > 0 ? N : 1][2];
+    double add[N + 1];
+    for (int s = 0; s < N; s++) {
+        b[s]    = stage[s];
+        z[s][0] = state[s][0];
+        z[s][1] = state[s][1];
+    }
+    for (int s = 0; s <= N; s++) add[s] = pre[s];
+
+    size_t i = 0;
+    while (i < frames) {
+        for (; i < frames; i++) {
+            double x = (double)*p;
+
+            for (int s = 0; s < N; s++) {
+                // With every stage in, there is nothing to add.
+                if (N < kStages) x = x + add[s];
+                // Transposed direct form II, as in the gliding loop.
+                const double y = b[s].b0 * x + z[s][0];
+                z[s][0] = b[s].b1 * x - b[s].a1 * y + z[s][1];
+                z[s][1] = b[s].b2 * x - b[s].a2 * y;
+                x = y;
+            }
+            if (N < kStages) x = x + add[N];
+
+            if (!sane(x)) break;
+
+            *p = (Sample)(x * gain);
+            p += stride;
+        }
+
+        if (i < frames) {
+            // A non-finite sample would live in the states for the rest of the
+            // stream, so it stops here rather than being passed on. Out of the
+            // loop rather than in it: inside, clang on AArch64 makes the reset
+            // a select on every state every sample, and every stage's recursion
+            // then waits for the end of the cascade.
+            memset(z, 0, sizeof(z));
+            *p = (Sample)(0.0 * gain);
+            p += stride;
+            i++;
+        }
+    }
+
+    for (int s = 0; s < N; s++) {
+        state[s][0] = z[s][0];
+        state[s][1] = z[s][1];
+    }
+}
+
+} // anonymous namespace
 
 
 template<typename Sample>
 void Channel::runBlock(Sample * io, size_t frames, size_t stride, bool gliding)
 {
+    if (!gliding) {
+        // Gather the stages that do something, and note where the ones that do
+        // not were - see passesThrough().
+        Biquad stage[kStages];
+        double state[kStages][2];
+        int    from[kStages];
+        double pre[kStages + 1];
+        int n = 0;
+        pre[0] = -0.0;
+        for (int s = 0; s < kStages; s++) {
+            if (passesThrough(m_active[s], m_z[s])) {
+                pre[n] = 0.0;
+                continue;
+            }
+            stage[n]    = m_active[s];
+            state[n][0] = m_z[s][0];
+            state[n][1] = m_z[s][1];
+            from[n]     = s;
+            pre[++n]    = -0.0;
+        }
+
+        switch (n) {
+        case 0: runSettled<0>(io, frames, stride, stage, state, pre, m_gain); break;
+        case 1: runSettled<1>(io, frames, stride, stage, state, pre, m_gain); break;
+        case 2: runSettled<2>(io, frames, stride, stage, state, pre, m_gain); break;
+        case 3: runSettled<3>(io, frames, stride, stage, state, pre, m_gain); break;
+        case 4: runSettled<4>(io, frames, stride, stage, state, pre, m_gain); break;
+        case 5: runSettled<5>(io, frames, stride, stage, state, pre, m_gain); break;
+        default: runSettled<6>(io, frames, stride, stage, state, pre, m_gain); break;
+        }
+
+        // A stage left out had a zero state and still has, blow-up or not.
+        for (int k = 0; k < n; k++) {
+            m_z[from[k]][0] = state[k][0];
+            m_z[from[k]][1] = state[k][1];
+        }
+        return;
+    }
+
+    // Gliding: every stage, every sample, the coefficients a step nearer their
+    // targets each time. The same copies as above, for the same reason.
+    Biquad b[kStages];
+    double z[kStages][2];
+    for (int s = 0; s < kStages; s++) {
+        b[s]    = m_active[s];
+        z[s][0] = m_z[s][0];
+        z[s][1] = m_z[s][1];
+    }
+    double gain = m_gain;
+
+    const double g = glideFraction();
+
     Sample *p = io;
 
-    for (size_t i = 0; i < frames; i++) {
-        if (gliding) glideStep();
+    size_t i = 0;
+    while (i < frames) {
+        for (; i < frames; i++) {
+            for (int s = 0; s < kStages; s++) {
+                const Biquad & t = m_cfg.stage[s];
+                b[s].b0 += (t.b0 - b[s].b0) * g;
+                b[s].b1 += (t.b1 - b[s].b1) * g;
+                b[s].b2 += (t.b2 - b[s].b2) * g;
+                b[s].a1 += (t.a1 - b[s].a1) * g;
+                b[s].a2 += (t.a2 - b[s].a2) * g;
+            }
+            gain += (m_cfg.outputGain - gain) * g;
 
-        double x = (double)*p;
+            double x = (double)*p;
 
-        for (int s = 0; s < kStages; s++) {
-            x = runStage(s, x);
+            for (int s = 0; s < kStages; s++) {
+                // Transposed direct form II: two state words per stage, and the
+                // state is the filter's memory of the input rather than of the
+                // output, which is what keeps it well behaved while the
+                // coefficients are moving.
+                const double y = b[s].b0 * x + z[s][0];
+                z[s][0] = b[s].b1 * x - b[s].a1 * y + z[s][1];
+                z[s][1] = b[s].b2 * x - b[s].a2 * y;
+                x = y;
+            }
+
+            if (!sane(x)) break;
+
+            *p = (Sample)(x * gain);
+            p += stride;
         }
 
-        if (!sane(x)) {
-            // A non-finite sample would live in the states for the rest of the
-            // stream, so it stops here rather than being passed on.
-            memset(m_z, 0, sizeof(m_z));
-            x = 0.0;
+        if (i < frames) {
+            // As in runSettled(), and out of the loop for the same reason.
+            memset(z, 0, sizeof(z));
+            *p = (Sample)(0.0 * gain);
+            p += stride;
+            i++;
         }
-
-        *p = (Sample)(x * m_gain);
-        p += stride;
     }
+
+    for (int s = 0; s < kStages; s++) {
+        m_active[s] = b[s];
+        m_z[s][0]   = z[s][0];
+        m_z[s][1]   = z[s][1];
+    }
+    m_gain = gain;
 }
 
 
