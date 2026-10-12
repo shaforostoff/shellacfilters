@@ -189,7 +189,6 @@ public:
 	//nothing wider. Fixed members: paraeq::Channel has heapBytes() == 0, so
 	//there is nothing here for a rate change or a control move to allocate.
 	paraeq::Channel chan[2];
-	paraeq::Config cfg;
 	paraeq::Params active;
 	double activeRate;
 	bool needsReset;
