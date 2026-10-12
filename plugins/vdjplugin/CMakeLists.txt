@@ -30,8 +30,12 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
+# The package's version, not either plug-in's: each engine carries its own in
+# pluginVersion(), matching its AU and VST. This is the highest of them, as the
+# MacAU package does it - a package holding a 1.1.0 Declick that called itself
+# 1.0.1 would be describing its oldest contents rather than itself.
 project(shellacfilters_virtualdj
-        VERSION 1.0.1
+        VERSION 1.1.0
         DESCRIPTION "ShellacFilters DSP plug-ins for VirtualDJ"
         LANGUAGES CXX)
 

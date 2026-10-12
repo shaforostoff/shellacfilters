@@ -207,8 +207,11 @@ Both `package` scripts build and verify first, then wrap. That order is the
 point of them: packaging an unverified DLL into something that looks
 installable is the one mistake worth making impossible, so `--skip-build` /
 `-SkipBuild` exists only for re-wrapping binaries you just built yourself. Both
-take the version from `project()` in `CMakeLists.txt`, so the file name says
-what the binaries say.
+take the version from `project()` in `CMakeLists.txt`. That is the package's
+version, and it is the highest of the plug-ins' own: each engine reports its
+own in `pluginVersion()`, matching its AU and VST — Declick 1.1.0, Dehum 1.0.1 —
+and `vdj_host_verify` checks that what each loaded module tells VirtualDJ is
+that, not the package's.
 
 #### Windows
 

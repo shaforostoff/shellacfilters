@@ -185,7 +185,8 @@ std::vector<short> runBuffer(IVdjPluginBufferDsp8 * plugin, StubCallbacks & cb,
 
 // ---------------------------------------------------------------------------
 
-void reportInfo(IVdjPlugin8 * plugin, const char * expectedName) {
+void reportInfo(IVdjPlugin8 * plugin, const char * expectedName,
+                const char * expectedVersion) {
     TVdjPluginInfo8 info;
     memset(&info, 0, sizeof(info));
     if (plugin->OnGetPluginInfo(&info) != S_OK) {
@@ -196,7 +197,8 @@ void reportInfo(IVdjPlugin8 * plugin, const char * expectedName) {
           "the module reports the name it is meant to");
     check(info.Author != NULL && info.Author[0] != 0, "it has an author");
     check(info.Description != NULL && info.Description[0] != 0, "it has a description");
-    check(info.Version != NULL && info.Version[0] != 0, "it has a version");
+    check(info.Version != NULL && strcmp(info.Version, expectedVersion) == 0,
+          "it reports its own version, not the package's");
     printf("        \"%s\" %s - %.60s...\n",
            info.PluginName ? info.PluginName : "?",
            info.Version ? info.Version : "?",
@@ -219,7 +221,7 @@ void verifyBuffer(const std::string & dir, const char * file, const char * name)
         return;
     }
     checkIdentity(mod, name, true);
-    reportInfo(loaded, name);
+    reportInfo(loaded, name, Engine::pluginVersion());
 
     std::vector<short> song = music((size_t)(6.0 * kRate), kRate, 9090);
     injectClicks(song, kRate, 30.0);

@@ -46,7 +46,7 @@
 #ifdef DEBUG
 	#define kDeclickVersion 0xFFFFFFFF
 #else
-	#define kDeclickVersion 0x00010001
+	#define kDeclickVersion 0x00010100
 #endif
 
 //~~~~~~~~~~~~~~  Change!!! ~~~~~~~~~~~~~~~~~~~~~//
