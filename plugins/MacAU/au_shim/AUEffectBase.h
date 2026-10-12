@@ -11,6 +11,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -147,19 +148,15 @@ public:
     virtual ~AUBase() {}
 
     //! The real one retains the CFString and copies a UTF-8 rendering into
-    //! `name`; with C strings for both, that is a strncpy.
+    //! `name`; with C strings for both, that is a truncating copy. snprintf
+    //! rather than strncpy, which MSVC deprecates.
     static void FillInParameterName(AudioUnitParameterInfo & outInfo,
                                     CFStringRef inName, bool /*inShouldRelease*/)
     {
         outInfo.cfNameString = inName;
         outInfo.unitName = NULL;
         outInfo.clumpID = 0;
-        if (inName) {
-            strncpy(outInfo.name, inName, sizeof(outInfo.name) - 1);
-            outInfo.name[sizeof(outInfo.name) - 1] = '\0';
-        } else {
-            outInfo.name[0] = '\0';
-        }
+        snprintf(outInfo.name, sizeof(outInfo.name), "%s", inName ? inName : "");
         outInfo.flags |= kAudioUnitParameterFlag_HasCFNameString;
     }
 

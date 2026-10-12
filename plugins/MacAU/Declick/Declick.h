@@ -5,7 +5,7 @@
 * 
 *	Created:	8/20/26
 *	
-*	Copyright:  Copyright © 2026 ShellacFilters, MIT license as the rest of the tree
+*	Copyright:  Copyright (c) 2026 ShellacFilters, MIT license as the rest of the tree
 * 
 *	Disclaimer:	IMPORTANT:  This Apple software is supplied to you by Apple Computer, Inc. ("Apple") in 
 *				consideration of your agreement to the following terms, and your use, installation, modification 
@@ -71,14 +71,14 @@
 //positions: see paramsFromControls() for the mappings, and the foobar2000_dsp
 //README for how each number was arrived at.
 static const float kDefaultValue_ParamA = 0.8f;  //Sensitv, 0.8 puts the trigger at 3.2 sigma
-static const float kDefaultValue_ParamB = 0.5;  //Extent
-static const float kDefaultValue_ParamC = 0.2;  //MaxLen, 4.0 ms
+static const float kDefaultValue_ParamB = 0.5f;  //Extent
+static const float kDefaultValue_ParamC = 0.2f;  //MaxLen, 4.0 ms
 static const float kDefaultValue_ParamD = 1.0f;  //Depth, outright replacement
-static const float kDefaultValue_ParamE = 0.5;  //Passes, 2
-static const float kDefaultValue_ParamF = 1.0;  //Order, 64 - the top of this slider, which stops
+static const float kDefaultValue_ParamE = 0.5f;  //Passes, 2
+static const float kDefaultValue_ParamF = 1.0f;  //Order, 64 - the top of this slider, which stops
                                                 //where the real-time budget does; the core itself
                                                 //goes to kMaxOrder
-static const float kDefaultValue_ParamG = 1.0;  //Dry/Wet
+static const float kDefaultValue_ParamG = 1.0f;  //Dry/Wet
 
 static CFStringRef kParameterAName = CFSTR("Sensitv");
 static CFStringRef kParameterBName = CFSTR("Extent");
