@@ -28,6 +28,40 @@ const double kPi = 3.14159265358979323846;
 //! anything audible - while costing four operations per thousand samples.
 const int kRenormInterval = 1024;
 
+//! Samples process() takes through every stage at once. Long enough that each
+//! stage's state is loaded and stored once per run rather than once per sample,
+//! short enough for the two working buffers to sit on the stack in 4 kB.
+const int kSegment = 256;
+
+//! Most probes runLines() takes at once. Measured on an M1 at the defaults, the
+//! whole channel runs 1.4x faster at four than one probe at a time, and slower
+//! again at eight, where there are no longer registers for every lane's state.
+//! A Haswell is held back by its one floating-point adder rather than by
+//! latency, and barely notices either way.
+const int kProbeGroup = 4;
+
+//! Pull a recursive rotator back onto the unit circle.
+inline void renormalise(double & c, double & s) {
+    const double m2 = c * c + s * s;
+    const double k = 1.5 - 0.5 * m2;   // one Newton step for 1/sqrt near 1
+    c *= k;
+    s *= k;
+}
+
+//! A run of `n` samples, cut short at the next renormalisation of a rotator `at`
+//! samples into its interval. Never less than one.
+inline size_t untilRenorm(int at, size_t n) {
+    const int left = kRenormInterval - at;
+    const size_t m = left > 1 ? (size_t)left : 1;
+    return m < n ? m : n;
+}
+
+//! A probe's age after `m` more samples. Saturates at 2^30, as counting one at
+//! a time did.
+inline int livedAfter(int lived, size_t m) {
+    return (lived < (1 << 30) - (int)m) ? lived + (int)m : (1 << 30);
+}
+
 inline double clampd(double v, double lo, double hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -516,85 +550,269 @@ void Channel::syncHarmonics(Line & line) {
     }
 }
 
-double Channel::runOsc(Osc & o, double x, bool probe) {
-    // z = x * conj(e), with e = exp(i*theta)
-    const double zr =  x * o.cosPh;
-    const double zi = -x * o.sinPh;
-    o.wRe += m_cfg.lamNotch * (zr - o.wRe);
-    o.wIm += m_cfg.lamNotch * (zi - o.wIm);
-    // 2*Re{w*e}: the coherent part of x at this frequency
-    const double est = 2.0 * (o.wRe * o.cosPh - o.wIm * o.sinPh);
+//! The oscillator's state is copied into locals for the run and written back at
+//! the end. As members it would go through memory every sample, and the
+//! store-to-load forward would sit on every one of its recursions.
+template<bool kProbe, bool kWrite>
+void Channel::runOsc(Osc & o, double * y, size_t n) {
+    const double lam  = m_cfg.lamNotch;
+    const double lamN = m_cfg.lamCohNarrow;
+    const double lamW = m_cfg.lamCohWide;
+    const double cosInc = o.cosInc, sinInc = o.sinInc;
 
-    if (probe) {
-        // The tonality pair. Same heterodyne, two very different bandwidths.
-        o.cnRe += m_cfg.lamCohNarrow * (zr - o.cnRe);
-        o.cnIm += m_cfg.lamCohNarrow * (zi - o.cnIm);
-        o.cwRe += m_cfg.lamCohWide * (zr - o.cwRe);
-        o.cwIm += m_cfg.lamCohWide * (zi - o.cwIm);
-        o.sumN += o.cnRe * o.cnRe + o.cnIm * o.cnIm;
-        o.sumW += o.cwRe * o.cwRe + o.cwIm * o.cwIm;
-        if (o.lived < (1 << 30)) ++o.lived;
+    double cosPh = o.cosPh, sinPh = o.sinPh;
+    double wRe = o.wRe, wIm = o.wIm;
+    double cnRe = o.cnRe, cnIm = o.cnIm;
+    double cwRe = o.cwRe, cwIm = o.cwIm;
+    double sumN = o.sumN, sumW = o.sumW;
+    int    lived = o.lived;
+    int    renorm = o.renorm;
+
+    while (n > 0) {
+        // Up to the next renormalisation and no further, so the loop below has
+        // no test for it. With one, clang on AArch64 turns the rare branch into
+        // a select and computes the renormalisation on every sample, right on
+        // the rotator's recursion.
+        const size_t m = untilRenorm(renorm, n);
+
+        for (size_t i = 0; i < m; ++i) {
+            const double x = y[i];
+            // z = x * conj(e), with e = exp(i*theta)
+            const double zr =  x * cosPh;
+            const double zi = -x * sinPh;
+            wRe += lam * (zr - wRe);
+            wIm += lam * (zi - wIm);
+
+            if (kWrite) {
+                // 2*Re{w*e}: the coherent part of x at this frequency
+                const double est = 2.0 * (wRe * cosPh - wIm * sinPh);
+                y[i] = x - est;
+            }
+
+            if (kProbe) {
+                // The tonality pair. Same heterodyne, two very different
+                // bandwidths.
+                cnRe += lamN * (zr - cnRe);
+                cnIm += lamN * (zi - cnIm);
+                cwRe += lamW * (zr - cwRe);
+                cwIm += lamW * (zi - cwIm);
+                sumN += cnRe * cnRe + cnIm * cnIm;
+                sumW += cwRe * cwRe + cwIm * cwIm;
+            }
+
+            const double c = cosPh * cosInc - sinPh * sinInc;
+            const double s = sinPh * cosInc + cosPh * sinInc;
+            cosPh = c;
+            sinPh = s;
+        }
+
+        if (kProbe) lived = livedAfter(lived, m);
+
+        renorm += (int)m;
+        if (renorm >= kRenormInterval) {
+            renorm = 0;
+            renormalise(cosPh, sinPh);
+        }
+
+        y += m;
+        n -= m;
     }
 
-    const double c = o.cosPh * o.cosInc - o.sinPh * o.sinInc;
-    const double s = o.sinPh * o.cosInc + o.cosPh * o.sinInc;
-    o.cosPh = c;
-    o.sinPh = s;
-    if (++o.renorm >= kRenormInterval) {
-        o.renorm = 0;
-        const double m2 = o.cosPh * o.cosPh + o.sinPh * o.sinPh;
-        const double k = 1.5 - 0.5 * m2;   // one Newton step for 1/sqrt near 1
-        o.cosPh *= k;
-        o.sinPh *= k;
+    o.cosPh = cosPh; o.sinPh = sinPh;
+    o.wRe = wRe; o.wIm = wIm;
+    if (kProbe) {
+        o.cnRe = cnRe; o.cnIm = cnIm;
+        o.cwRe = cwRe; o.cwIm = cwIm;
+        o.sumN = sumN; o.sumW = sumW;
+        o.lived = lived;
     }
-    return x - est;
+    o.renorm = renorm;
 }
 
-double Channel::runLine(Line & line, double x) {
-    double y = x;
-    // The fundamental always runs - an inactive line is a probe, and a probe has
-    // to be measured before there is anything to decide. Only its output is
-    // withheld until the line is confirmed.
-    if (line.osc[0].live) {
-        const double cleaned = runOsc(line.osc[0], y, true);
-        if (line.active) y = cleaned;
-    }
-    if (line.active) {
-        for (int h = 1; h < (int)kMaxHarmonics; ++h) {
-            if (line.osc[h].live) y = runOsc(line.osc[h], y, false);
-        }
+//! K unconfirmed lines over `n` samples of `y` at once. A probe does not write
+//! to y, so consecutive ones all read the same samples and none of them waits
+//! for another: run side by side, their recursions give an out-of-order core K
+//! independent chains to overlap - and a vectorising compiler K lanes - where
+//! one probe at a time is bound by the latency of its own. Each lane is the same
+//! arithmetic runOsc<true, false> does, so the result is bit-identical.
+template<int K>
+void Channel::runProbes(Line * const * lines, const double * y, size_t n) {
+    const double lam  = m_cfg.lamNotch;
+    const double lamN = m_cfg.lamCohNarrow;
+    const double lamW = m_cfg.lamCohWide;
+
+    Osc * o[K];
+    double cosInc[K], sinInc[K], cosPh[K], sinPh[K];
+    double wRe[K], wIm[K], cnRe[K], cnIm[K], cwRe[K], cwIm[K], sumN[K], sumW[K];
+    for (int k = 0; k < K; ++k) {
+        o[k] = &lines[k]->osc[0];
+        cosInc[k] = o[k]->cosInc; sinInc[k] = o[k]->sinInc;
+        cosPh[k]  = o[k]->cosPh;  sinPh[k]  = o[k]->sinPh;
+        wRe[k]  = o[k]->wRe;  wIm[k]  = o[k]->wIm;
+        cnRe[k] = o[k]->cnRe; cnIm[k] = o[k]->cnIm;
+        cwRe[k] = o[k]->cwRe; cwIm[k] = o[k]->cwIm;
+        sumN[k] = o[k]->sumN; sumW[k] = o[k]->sumW;
     }
 
-    Osc & f = line.osc[0];
-    if (f.live && ++f.trackAcc >= m_cfg.trackSamples) {
-        const double m2now = f.wRe * f.wRe + f.wIm * f.wIm;
-        const double m2ref = f.refRe * f.refRe + f.refIm * f.refIm;
-        const double mag = sqrt(m2now);
-        f.wPeak = mag > f.wPeak * m_cfg.trackPeakDecay
-                ? mag : f.wPeak * m_cfg.trackPeakDecay;
-        const bool worthReading = mag >= m_cfg.trackFloor * f.wPeak;
-        if (worthReading && m2now > 1e-26 && m2ref > 1e-26) {
-            // angle(w * conj(ref)): how far the estimate has rotated, which is
-            // the frequency error times the interval
-            const double dot = f.wRe * f.refRe + f.wIm * f.refIm;
-            const double crs = f.wIm * f.refRe - f.wRe * f.refIm;
-            const double dpsi = atan2(crs, dot);
-            double err = dpsi * m_cfg.sampleRate
-                       / (2.0 * kPi * (double)f.trackAcc);
-            err = clampd(err, -1.0, 1.0);
-            double nf = f.freq + m_cfg.trackGain * err;
-            nf = clampd(nf, line.detected - m_cfg.trackClampHz,
-                            line.detected + m_cfg.trackClampHz);
-            if (nf != f.freq) {
-                setOscFreq(f, nf);
-                syncHarmonics(line);
+    while (n > 0) {
+        // Up to the first tracker reading or renormalisation of any of them.
+        size_t m = n;
+        for (int k = 0; k < K; ++k) {
+            const int toTrack = m_cfg.trackSamples - o[k]->trackAcc;
+            const size_t until = toTrack > 1 ? (size_t)toTrack : 1;
+            if (until < m) m = until;
+            m = untilRenorm(o[k]->renorm, m);
+        }
+
+        for (size_t i = 0; i < m; ++i) {
+            const double x = y[i];
+            for (int k = 0; k < K; ++k) {
+                const double zr =  x * cosPh[k];
+                const double zi = -x * sinPh[k];
+                wRe[k] += lam * (zr - wRe[k]);
+                wIm[k] += lam * (zi - wIm[k]);
+                cnRe[k] += lamN * (zr - cnRe[k]);
+                cnIm[k] += lamN * (zi - cnIm[k]);
+                cwRe[k] += lamW * (zr - cwRe[k]);
+                cwIm[k] += lamW * (zi - cwIm[k]);
+                sumN[k] += cnRe[k] * cnRe[k] + cnIm[k] * cnIm[k];
+                sumW[k] += cwRe[k] * cwRe[k] + cwIm[k] * cwIm[k];
+                const double c = cosPh[k] * cosInc[k] - sinPh[k] * sinInc[k];
+                const double s = sinPh[k] * cosInc[k] + cosPh[k] * sinInc[k];
+                cosPh[k] = c;
+                sinPh[k] = s;
             }
         }
-        f.refRe = f.wRe;
-        f.refIm = f.wIm;
-        f.trackAcc = 0;
+
+        for (int k = 0; k < K; ++k) {
+            Osc & f = *o[k];
+            f.lived = livedAfter(f.lived, m);
+            f.renorm += (int)m;
+            if (f.renorm >= kRenormInterval) {
+                f.renorm = 0;
+                renormalise(cosPh[k], sinPh[k]);
+            }
+            f.trackAcc += (int)m;
+            if (f.trackAcc >= m_cfg.trackSamples) {
+                // The tracker reads the weight and may move the frequency.
+                f.wRe = wRe[k]; f.wIm = wIm[k];
+                track(*lines[k]);
+                cosInc[k] = f.cosInc; sinInc[k] = f.sinInc;
+            }
+        }
+
+        y += m;
+        n -= m;
     }
-    return y;
+
+    for (int k = 0; k < K; ++k) {
+        Osc & f = *o[k];
+        f.cosPh = cosPh[k]; f.sinPh = sinPh[k];
+        f.wRe  = wRe[k];  f.wIm  = wIm[k];
+        f.cnRe = cnRe[k]; f.cnIm = cnIm[k];
+        f.cwRe = cwRe[k]; f.cwIm = cwIm[k];
+        f.sumN = sumN[k]; f.sumW = sumW[k];
+    }
+}
+
+//! Every line over `n` samples of `y`, in place, in order. Runs of unconfirmed
+//! lines go through runProbes() in groups; a confirmed line writes to y, so the
+//! line after it has to wait for it and goes on its own.
+void Channel::runLines(double * y, size_t n) {
+    int L = 0;
+    while (L < m_lines) {
+        Line * group[kProbeGroup];
+        int k = 0;
+        while (k < (int)kProbeGroup && L + k < m_lines
+               && !m_line[L + k].active && m_line[L + k].osc[0].live) {
+            group[k] = &m_line[L + k];
+            ++k;
+        }
+        // Not three: an odd lane count vectorises badly on x86, and on a
+        // Haswell four, two and one beat four and three by a fifth.
+        if (k == kProbeGroup) {
+            runProbes<kProbeGroup>(group, y, n);
+        } else if (k >= 2) {
+            runProbes<2>(group, y, n);
+            k = 2;
+        } else {
+            runLine(m_line[L], y, n);
+            k = 1;
+        }
+        L += k;
+    }
+}
+
+//! One line over `n` samples of `y`, in place.
+//!
+//! Each oscillator takes the whole run before the next one starts, rather than
+//! all of them taking a sample in turn. Every oscillator still sees exactly the
+//! sequence it would have, so the result is bit-identical - but its state can
+//! stay in registers for the run, and its only cross-sample dependency is its
+//! own recursions instead of the chain through every line ahead of it.
+void Channel::runLine(Line & line, double * y, size_t n) {
+    Osc & f = line.osc[0];
+    size_t i = 0;
+    while (i < n) {
+        // The tracker reads the fundamental after a fixed number of samples and
+        // may retune the whole line, so a run stops where it fires.
+        size_t m = n - i;
+        if (f.live) {
+            const int left = m_cfg.trackSamples - f.trackAcc;
+            const size_t until = left > 1 ? (size_t)left : 1;
+            if (until < m) m = until;
+        }
+
+        // The fundamental always runs - an inactive line is a probe, and a probe
+        // has to be measured before there is anything to decide. Only its output
+        // is withheld until the line is confirmed.
+        if (line.active) {
+            if (f.live) runOsc<true, true>(f, y + i, m);
+            for (int h = 1; h < (int)kMaxHarmonics; ++h) {
+                if (line.osc[h].live) runOsc<false, true>(line.osc[h], y + i, m);
+            }
+        } else if (f.live) {
+            runOsc<true, false>(f, y + i, m);
+        }
+
+        i += m;
+        if (f.live) {
+            f.trackAcc += (int)m;
+            if (f.trackAcc >= m_cfg.trackSamples) track(line);
+        }
+    }
+}
+
+//! Read the rotation of the fundamental's weight since the last reading and pull
+//! the line towards where it says the tone really is.
+void Channel::track(Line & line) {
+    Osc & f = line.osc[0];
+    const double m2now = f.wRe * f.wRe + f.wIm * f.wIm;
+    const double m2ref = f.refRe * f.refRe + f.refIm * f.refIm;
+    const double mag = sqrt(m2now);
+    f.wPeak = mag > f.wPeak * m_cfg.trackPeakDecay
+            ? mag : f.wPeak * m_cfg.trackPeakDecay;
+    const bool worthReading = mag >= m_cfg.trackFloor * f.wPeak;
+    if (worthReading && m2now > 1e-26 && m2ref > 1e-26) {
+        // angle(w * conj(ref)): how far the estimate has rotated, which is
+        // the frequency error times the interval
+        const double dot = f.wRe * f.refRe + f.wIm * f.refIm;
+        const double crs = f.wIm * f.refRe - f.wRe * f.refIm;
+        const double dpsi = atan2(crs, dot);
+        double err = dpsi * m_cfg.sampleRate
+                   / (2.0 * kPi * (double)f.trackAcc);
+        err = clampd(err, -1.0, 1.0);
+        double nf = f.freq + m_cfg.trackGain * err;
+        nf = clampd(nf, line.detected - m_cfg.trackClampHz,
+                        line.detected + m_cfg.trackClampHz);
+        if (nf != f.freq) {
+            setOscFreq(f, nf);
+            syncHarmonics(line);
+        }
+    }
+    f.refRe = f.wRe;
+    f.refIm = f.wIm;
+    f.trackAcc = 0;
 }
 
 //! Read each probe's tonality once a hop and turn it into evidence.
@@ -658,15 +876,23 @@ void Channel::designRumble() {
     m_hpOn = true;
 }
 
-double Channel::runRumble(double x) {
-    for (int s = 0; s < 2; ++s) {
-        // transposed direct form II
-        const double y = m_hpB[s][0] * x + m_hpZ[s][0];
-        m_hpZ[s][0] = m_hpB[s][1] * x - m_hpA[s][0] * y + m_hpZ[s][1];
-        m_hpZ[s][1] = m_hpB[s][2] * x - m_hpA[s][1] * y;
-        x = y;
+void Channel::runRumble(double * io, size_t n) {
+    double b[2][3], a[2][2], z[2][2];
+    memcpy(b, m_hpB, sizeof(b));
+    memcpy(a, m_hpA, sizeof(a));
+    memcpy(z, m_hpZ, sizeof(z));
+    for (size_t i = 0; i < n; ++i) {
+        double x = io[i];
+        for (int s = 0; s < 2; ++s) {
+            // transposed direct form II
+            const double y = b[s][0] * x + z[s][0];
+            z[s][0] = b[s][1] * x - a[s][0] * y + z[s][1];
+            z[s][1] = b[s][2] * x - a[s][1] * y;
+            x = y;
+        }
+        io[i] = x;
     }
-    return x;
+    memcpy(m_hpZ, z, sizeof(z));
 }
 
 // ---------------------------------------------------------------------------
@@ -710,7 +936,6 @@ void Channel::designDecimator() {
     m_hbTap.clear();
     m_hbZ.clear();
     for (int i = 0; i <= (int)kDecimMaxStages; ++i) { m_hbFirst[i] = 0; m_hbZAt[i] = 0; }
-    for (int i = 0; i < (int)kDecimMaxStages; ++i) m_hbZMask[i] = 0;
     if (stages <= 0) { clearDecimator(); return; }
 
     const double beta = 0.1102 * (kDecimStopDb - 8.7);
@@ -757,11 +982,9 @@ void Channel::designDecimator() {
             m_hbTap.push_back(j);
         }
 
-        int zlen = 1;
-        while (zlen < len) zlen <<= 1;
-        m_hbZAt[st]   = zTotal;
-        m_hbZMask[st] = zlen - 1;
-        zTotal += zlen;
+        // The oldest tap reads len - 1 samples back.
+        m_hbZAt[st] = zTotal;
+        zTotal += len - 1;
     }
     m_hbFirst[stages] = (int)m_hbCoef.size();
     m_hbZAt[stages]   = zTotal;
@@ -771,36 +994,79 @@ void Channel::designDecimator() {
 
 void Channel::clearDecimator() {
     if (!m_hbZ.empty()) memset(&m_hbZ[0], 0, m_hbZ.size() * sizeof(double));
-    for (int i = 0; i < (int)kDecimMaxStages; ++i) { m_hbPos[i] = 0; m_hbPhase[i] = 0; }
+    for (int i = 0; i < (int)kDecimMaxStages; ++i) m_hbPhase[i] = 0;
 }
 
-//! One full rate sample in. True when the cascade produced one, which is once
-//! every m_cfg.decim calls.
-bool Channel::decimate(double x, double * out) {
+//! `n` full rate samples through the cascade, and whatever comes out of the
+//! bottom of it into the analysis window. One in every m_cfg.decim does.
+//!
+//! A stage at a time over the whole run rather than a sample at a time down the
+//! cascade, each stage reading its history and the run as one straight buffer.
+//! Every output is still the same sum taken in the same order, so the result is
+//! bit-identical to a ring buffer stepped per sample. What changes is that four
+//! outputs are summed side by side: one output's sum is a chain of dependent
+//! multiply-adds, and four independent chains keep the core busy where one
+//! leaves it waiting on the last.
+void Channel::decimate(const double * x, size_t n) {
     const int stages = m_cfg.decimStages;
-    double v = x;
+    const int N = m_cfg.winSize;
+
+    double work[kDecimMaxTaps - 1 + kSegment];
+    double out[kSegment];
+    const double * in = x;
+    size_t count = n;
+
     for (int st = 0; st < stages; ++st) {
-        const int mask = m_hbZMask[st];
-        const int base = m_hbZAt[st];
-        const int p = (m_hbPos[st] + 1) & mask;
-        m_hbPos[st] = p;
-        m_hbZ[(size_t)(base + p)] = v;
+        double * const hist = &m_hbZ[(size_t)m_hbZAt[st]];
+        const int H = m_hbZAt[st + 1] - m_hbZAt[st];
+        const double * const coef = &m_hbCoef[(size_t)m_hbFirst[st]];
+        const int    * const tap  = &m_hbTap[(size_t)m_hbFirst[st]];
+        const int taps = m_hbFirst[st + 1] - m_hbFirst[st];
 
-        // Half the inputs only fill the line; there is no output to compute for
-        // them, and not computing it is the whole point of decimating in stages.
-        m_hbPhase[st] ^= 1;
-        if (m_hbPhase[st] != 0) return false;
+        memcpy(work, hist, (size_t)H * sizeof(double));
+        memcpy(work + H, in, count * sizeof(double));
 
-        double acc = 0.0;
-        const int lo = m_hbFirst[st], hi = m_hbFirst[st + 1];
-        for (int t = lo; t < hi; ++t) {
-            const int k = (p - m_hbTap[(size_t)t] + mask + 1) & mask;
-            acc += m_hbCoef[(size_t)t] * m_hbZ[(size_t)(base + k)];
+        // Input i lands at work[H + i], and tap t of the output it completes
+        // reads tap[t] samples before that. Half the inputs only fill the line
+        // - the phase says which - and not computing an output for them is the
+        // whole point of decimating in stages.
+        const double * const at = work + H;
+        size_t i = (m_hbPhase[st] != 0) ? 0 : 1;
+        size_t made = 0;
+        for (; i + 6 < count; i += 8) {
+            double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+            for (int t = 0; t < taps; ++t) {
+                const double c = coef[t];
+                const double * const z = at + i - tap[t];
+                a0 += c * z[0];
+                a1 += c * z[2];
+                a2 += c * z[4];
+                a3 += c * z[6];
+            }
+            out[made++] = a0;
+            out[made++] = a1;
+            out[made++] = a2;
+            out[made++] = a3;
         }
-        v = acc;
+        for (; i < count; i += 2) {
+            double acc = 0.0;
+            for (int t = 0; t < taps; ++t) acc += coef[t] * at[(ptrdiff_t)i - tap[t]];
+            out[made++] = acc;
+        }
+
+        m_hbPhase[st] ^= (int)(count & 1);
+        memcpy(hist, work + count, (size_t)H * sizeof(double));
+
+        in = out;
+        count = made;
+        if (count == 0) return;
     }
-    *out = v;
-    return true;
+
+    for (size_t i = 0; i < count; ++i) {
+        m_win[(size_t)m_winPos] = in[i];
+        if (++m_winPos >= N) m_winPos = 0;
+        if (m_filled < N) ++m_filled;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1194,42 +1460,74 @@ void Channel::detectPeaks(int bins) {
 // Processing
 // ---------------------------------------------------------------------------
 
+//! Runs of up to kSegment samples, each cut short where a hop falls so that the
+//! detector - which may add, drop or confirm lines - runs between samples
+//! exactly where it did when this was a loop over single samples. Within a run
+//! every stage takes the whole of it before the next starts. Each stage still
+//! sees the sequence of values it always did, so the output is bit-identical to
+//! that loop; what changes is that a stage's state stays in registers for the
+//! run instead of going through memory every sample.
 template<typename Sample>
 void Channel::process(Sample * io, size_t frames, size_t stride) {
     const int N = m_cfg.winSize;
     const double wet = m_cfg.wet;
 
-    for (size_t i = 0; i < frames; ++i) {
-        double x = (double)io[i * stride];
-        if (!sane(x)) x = 0.0;
+    double x[kSegment];
+    double y[kSegment];
+
+    size_t done = 0;
+    while (done < frames) {
+        size_t n = frames - done;
+        if (n > (size_t)kSegment) n = (size_t)kSegment;
+
+        // Still counted at full rate: hop is a multiple of decim, so a hop
+        // boundary is always a decimated sample boundary too, and cohSmooth was
+        // derived from hop in full rate samples. The hop falls on the last
+        // sample of the run if it falls in it at all.
+        const int toHop = m_cfg.hop - m_hopAcc;
+        const size_t untilHop = toHop > 1 ? (size_t)toHop : 1;
+        const bool hop = (untilHop <= n);
+        if (hop) n = untilHop;
+
+        Sample * const p = io + done * stride;
+        for (size_t i = 0; i < n; ++i) {
+            double v = (double)p[i * stride];
+            if (!sane(v)) v = 0.0;
+            x[i] = v;
+            y[i] = v;
+        }
 
         // The detector reads the input, never the output. Feeding it the cleaned
         // signal would be a loop: the line would vanish, its prominence would
         // fall below threshold, the notch would be dropped and the hum would
         // come back.
-        double dec;
-        if (decimate(x, &dec)) {
-            m_win[(size_t)m_winPos] = dec;
-            if (++m_winPos >= N) m_winPos = 0;
-            if (m_filled < N) ++m_filled;
-        }
-        // Still counted at full rate: hop is a multiple of decim, so a hop
-        // boundary is always a decimated sample boundary too, and cohSmooth was
-        // derived from hop in full rate samples.
-        if (++m_hopAcc >= m_cfg.hop) {
+        decimate(x, n);
+
+        // On a hop, the detector runs after the hop sample has reached the
+        // window and before the lines see that sample.
+        const size_t before = hop ? n - 1 : n;
+
+        // Every line runs, active or not: an inactive one is a probe being
+        // measured, and it must see the same signal a confirmed line would.
+        runLines(y, before);
+
+        if (hop) {
             m_hopAcc = 0;
             updateCoherence();                 // probes are read every hop
             if (m_filled >= N) runDetector();  // nomination needs a full window
+            runLines(y + before, 1);
+        } else {
+            m_hopAcc += (int)n;
         }
 
-        double y = x;
-        // Every line runs, active or not: an inactive one is a probe being
-        // measured, and it must see the same signal a confirmed line would.
-        for (int L = 0; L < m_lines; ++L) y = runLine(m_line[L], y);
-        if (m_hpOn) y = runRumble(y);
+        if (m_hpOn) runRumble(y, n);
 
         // wet == 0 returns x untouched, bit for bit.
-        io[i * stride] = (Sample)(x + wet * (y - x));
+        for (size_t i = 0; i < n; ++i) {
+            p[i * stride] = (Sample)(x[i] + wet * (y[i] - x[i]));
+        }
+
+        done += n;
     }
     m_seen += frames;
 }
