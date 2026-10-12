@@ -969,7 +969,6 @@ void testChunk() {
         if (other.getParameter(i) != set[i]) { same = false; break; }
     }
     check(same, "every parameter survives a chunk round trip");
-    free(data);
 
     float wild[kNumParameters];
     for (int i = 0; i < kNumParameters; ++i) wild[i] = (i & 1) ? -5.0f : 5.0f;

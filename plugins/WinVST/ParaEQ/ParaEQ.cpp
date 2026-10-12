@@ -255,7 +255,6 @@ void ParaEQ::resume()
 
 VstInt32 ParaEQ::getChunk (void** data, bool isPreset)
 {
-	float *chunkData = (float *)calloc(kNumParameters, sizeof(float));
 	chunkData[0] = A;
 	chunkData[1] = B;
 	chunkData[2] = C;
@@ -285,23 +284,23 @@ VstInt32 ParaEQ::setChunk (void* data, VstInt32 byteSize, bool isPreset)
 	//A chunk too short to hold every parameter is not ours - an empty preset, a
 	//truncated file - and reading sixteen floats out of it would read past it.
 	if (!data || byteSize < (VstInt32)(kNumParameters * sizeof(float))) return 0;
-	float *chunkData = (float *)data;
-	A = pinParameter(chunkData[0]);
-	B = pinParameter(chunkData[1]);
-	C = pinParameter(chunkData[2]);
-	D = pinParameter(chunkData[3]);
-	E = pinParameter(chunkData[4]);
-	F = pinParameter(chunkData[5]);
-	G = pinParameter(chunkData[6]);
-	H = pinParameter(chunkData[7]);
-	I = pinParameter(chunkData[8]);
-	J = pinParameter(chunkData[9]);
-	K = pinParameter(chunkData[10]);
-	L = pinParameter(chunkData[11]);
-	M = pinParameter(chunkData[12]);
-	N = pinParameter(chunkData[13]);
-	O = pinParameter(chunkData[14]);
-	P = pinParameter(chunkData[15]);
+	const float *in = (const float *)data;
+	A = pinParameter(in[0]);
+	B = pinParameter(in[1]);
+	C = pinParameter(in[2]);
+	D = pinParameter(in[3]);
+	E = pinParameter(in[4]);
+	F = pinParameter(in[5]);
+	G = pinParameter(in[6]);
+	H = pinParameter(in[7]);
+	I = pinParameter(in[8]);
+	J = pinParameter(in[9]);
+	K = pinParameter(in[10]);
+	L = pinParameter(in[11]);
+	M = pinParameter(in[12]);
+	N = pinParameter(in[13]);
+	O = pinParameter(in[14]);
+	P = pinParameter(in[15]);
 
 	/* calculate any other fields you need here - you could copy in
 	 code from setParameter() here. */
