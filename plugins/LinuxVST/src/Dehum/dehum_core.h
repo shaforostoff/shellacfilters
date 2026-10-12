@@ -545,17 +545,24 @@ private:
     void   syncManual();
     void   startOsc(Osc & o, double freq);
     void   setOscFreq(Osc & o, double freq);
-    //! `probe` also runs the coherence pair; only the fundamental needs it.
-    double runOsc(Osc & o, double x, bool probe);
-    double runLine(Line & line, double x);
+    //! One oscillator over `n` samples of `y`, in place. `kProbe` also runs the
+    //! coherence pair, which only the fundamental needs; `kWrite` subtracts the
+    //! estimate, which only a confirmed line does.
+    template<bool kProbe, bool kWrite>
+    void   runOsc(Osc & o, double * y, size_t n);
+    template<int K>
+    void   runProbes(Line * const * lines, const double * y, size_t n);
+    void   runLines(double * y, size_t n);
+    void   runLine(Line & line, double * y, size_t n);
+    void   track(Line & line);
     void   syncHarmonics(Line & line);
     void   designRumble();
-    double runRumble(double x);
+    void   runRumble(double * y, size_t n);
     void   realFftMagnitudes();
     void   designDecimator();
     void   clearDecimator();
-    //! One input sample in; true when a decimated sample comes out.
-    bool   decimate(double x, double * out);
+    //! `n` full rate samples into the analysis window.
+    void   decimate(const double * x, size_t n);
 
     Config m_cfg;
 
@@ -568,11 +575,13 @@ private:
     //! why the cascade is cheap.
     std::vector<double> m_hbCoef;  //!< nonzero taps, stage after stage
     std::vector<int>    m_hbTap;   //!< where each sits in the delay line
-    std::vector<double> m_hbZ;     //!< delay lines, stage after stage
+    //! What each stage has to remember between runs: its last `length - 1`
+    //! inputs, oldest first, stage after stage. A run is laid out after them in
+    //! one straight buffer, so every tap of every output reads at a fixed offset
+    //! and there is no ring to wrap.
+    std::vector<double> m_hbZ;
     int m_hbFirst[kDecimMaxStages + 1];  //!< first tap of stage i
-    int m_hbZAt[kDecimMaxStages + 1];    //!< first delay slot of stage i
-    int m_hbZMask[kDecimMaxStages];      //!< its length, a power of two, less 1
-    int m_hbPos[kDecimMaxStages];        //!< write cursor
+    int m_hbZAt[kDecimMaxStages + 1];    //!< first history slot of stage i
     int m_hbPhase[kDecimMaxStages];      //!< 0 emits, 1 swallows
 
     std::vector<double> m_win;    //!< sliding analysis window, a ring
