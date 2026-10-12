@@ -127,6 +127,11 @@ private:
     float O;
     float P;
 
+	//What getChunk() hands the host. VST2 leaves chunk memory with the
+	//plug-in, so it lives here rather than being allocated - and leaked - on
+	//every save.
+	float chunkData[kNumParameters];
+
 	//setControlsFromParams() writes controlsFromParams() into A..P, and exists
 	//so the constructor can place the sliders on paraeq::Params::defaults()
 	//rather than on a second copy of those numbers written out in this file.
