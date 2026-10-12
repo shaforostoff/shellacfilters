@@ -46,11 +46,12 @@ One header, `AUEffectBase.h`, holding:
 | | |
 |---|---|
 | scalars and handles | `ComponentResult`, `OSStatus`, `Float32/64`, `AudioUnit`, the `AudioUnitScope`/`Element`/`ParameterID` family |
-| structures | `AudioBufferList`, `AudioBuffer`, `AUChannelInfo`, `AudioUnitParameterInfo` |
+| structures | `AudioBufferList`, `AudioBuffer`, `AUChannelInfo`, `AudioUnitParameterInfo`, `AudioUnitCocoaViewInfo` |
 | constants | the handful of `kAudioUnit*` values these three plug-ins name |
 | `AUBase` | parameter storage, `Globals()`, `GetSampleRate()`, `FillInParameterName()`, `PropertyChanged()` |
 | `AUEffectBase` | the virtuals the plug-ins override, each defaulting to the "not supported" answer |
 | `CFArrayCreate`, `CFRetain` | the identity, for the parameter value strings and clump names ParaEQ publishes |
+| `CFStringRef`, `CFArrayRef`, `CFURLRef` | opaque pointers, so nothing here needs CoreFoundation |
 | `COMPONENT_ENTRY` | defines the `<Name>Entry` symbol, so a missing or misspelled one is a link error |
 
 Plus four methods a real AU does not have, spelled `AUShim*` so they cannot be
@@ -83,8 +84,16 @@ them is asserted:
   back. That is also what lets the tests build on a machine with no
   CoreFoundation.
 
+ParaEQ's editor is the other thing this build does not have. `ParaEQView.mm`
+is AppKit and Objective-C++; `paraeq_au_verify` stands in for the one function
+`ParaEQ.cpp` calls into it, so what it checks is that the plug-in offers
+`kAudioUnitProperty_CocoaUI`, sizes it the way a host reads it, and routes
+`GetProperty` to the view's factory. Whether the class is in the bundle and
+whether AppKit will build the thing are questions for `auval`, which answers
+both: it loads the view bundle and prints the class it found.
+
 What that leaves unproven is everything between the compiler and a DAW: the
-`AudioComponents` registration, the entry point, the `Info.plist`,
+`AudioComponents` registration, the entry point, the `Info.plist`, the editor,
 `GetPropertyInfo`/`GetProperty` beyond the fact that they forward. **That half
 is `scripts/build.sh --validate`**, which builds the real universal
 `.component` against AudioUnitSDK and hands each one to `auval` — Apple's own

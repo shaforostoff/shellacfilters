@@ -43,6 +43,7 @@ typedef uint32_t AudioUnitParameterUnit;
 //! the tests build somewhere that has no CoreFoundation.
 typedef const char * CFStringRef;
 typedef const void * CFArrayRef;
+typedef const void * CFURLRef;
 #define CFSTR(s) (s)
 
 //! A plug-in with an indexed parameter hands the host an array of names for it.
@@ -62,7 +63,19 @@ static const OSStatus kAudioUnitErr_InvalidPropertyValue = -10851;
 
 static const AudioUnitScope kAudioUnitScope_Global = 0;
 
-static const AudioUnitPropertyID kAudioUnitProperty_Latency = 12;
+static const AudioUnitPropertyID kAudioUnitProperty_Latency  = 12;
+static const AudioUnitPropertyID kAudioUnitProperty_CocoaUI = 31;
+
+//! What kAudioUnitProperty_CocoaUI answers with: where a plug-in's own editor
+//! lives and what its factory class is called. Real CoreFoundation objects in a
+//! real build; here the same opaque pointers everything else in this header
+//! uses, which is all a test needs to establish that the plug-in offers the
+//! property, reports the right size for it, and fills both fields in. What the
+//! view then draws is not something a headless test can ask about.
+struct AudioUnitCocoaViewInfo {
+    CFURLRef    mCocoaAUViewBundleLocation;
+    CFStringRef mCocoaAUViewClass[1];
+};
 
 static const AudioUnitParameterUnit kAudioUnitParameterUnit_Generic  = 0;
 static const AudioUnitParameterUnit kAudioUnitParameterUnit_Indexed  = 1;

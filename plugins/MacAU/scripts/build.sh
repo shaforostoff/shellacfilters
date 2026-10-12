@@ -148,6 +148,18 @@ fi
 cxxflags="-std=c++20 -O2 -fvisibility=hidden -Wno-deprecated-declarations"
 frameworks="-framework AudioToolbox -framework CoreAudio -framework CoreFoundation"
 
+# Any Objective-C++ beside a wrapper is that plug-in's editor. ParaEQ has one -
+# sixteen controls is a wall of sliders in a host's generic view, where
+# declick's four and dehum's six are a form that reads perfectly well - and it
+# is the only thing in this tree that wants AppKit, so the two frameworks go on
+# only for the plug-in that has one.
+#
+# -fobjc-arc because the editor was written under ARC and is carried here
+# unchanged; it needs none of the AU SDK, only its own folder, which is what
+# keeps AUBase out of a translation unit that also has NSView in it.
+objcxxflags="-fobjc-arc"
+editor_frameworks="-framework AppKit -framework Foundation"
+
 for arch in $archs; do
     obj="$build/$arch/obj"
     mkdir -p "$obj"
@@ -172,15 +184,30 @@ for arch in $archs; do
         name=${entry%%:*}
         core=${entry##*:}
         (
+            objs=""
             for src in "$root/$name/$name.cpp" "$root/$name/${core}_core.cpp"; do
+                o="$obj/${name}_$(basename "$src" .cpp).o"
+                objs="$objs $o"
                 clang++ $cxxflags -arch "$arch" -mmacosx-version-min="$macos_min" \
                         -I "$root/au_compat" -I "$sdk/include" -I "$root/$name" \
-                        -c "$src" -o "$obj/${name}_$(basename "$src" .cpp).o"
+                        -c "$src" -o "$o"
             done
+
+            editor=""
+            for src in "$root/$name"/*.mm; do
+                [ -f "$src" ] || continue
+                o="$obj/${name}_$(basename "$src" .mm).o"
+                objs="$objs $o"
+                editor="$editor_frameworks"
+                clang++ $cxxflags $objcxxflags -arch "$arch" \
+                        -mmacosx-version-min="$macos_min" -I "$root/$name" \
+                        -c "$src" -o "$o"
+            done
+
+            # shellcheck disable=SC2086
             clang++ $cxxflags -arch "$arch" -mmacosx-version-min="$macos_min" \
                     -bundle -o "$build/$arch/$name" \
-                    "$obj/${name}_$name.o" "$obj/${name}_${core}_core.o" \
-                    $ausdk_objs $frameworks
+                    $objs $ausdk_objs $frameworks $editor
         ) &
     done
     wait

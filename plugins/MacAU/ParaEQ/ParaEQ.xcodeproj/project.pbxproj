@@ -51,6 +51,9 @@
 		F7C347F10ECE5AF8008ADFB6 /* AUBaseHelper.h in Headers */ = {isa = PBXBuildFile; fileRef = F7C347EF0ECE5AF8008ADFB6 /* AUBaseHelper.h */; };
 		DEC11C0DE000000000000003 /* paraeq_core.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DEC11C0DE000000000000001 /* paraeq_core.cpp */; };
 		DEC11C0DE000000000000004 /* paraeq_core.h in Headers */ = {isa = PBXBuildFile; fileRef = DEC11C0DE000000000000002 /* paraeq_core.h */; };
+		DEC11C0DE000000000000008 /* ParaEQControls.h in Headers */ = {isa = PBXBuildFile; fileRef = DEC11C0DE000000000000005 /* ParaEQControls.h */; };
+		DEC11C0DE000000000000009 /* ParaEQView.h in Headers */ = {isa = PBXBuildFile; fileRef = DEC11C0DE000000000000006 /* ParaEQView.h */; };
+		DEC11C0DE00000000000000A /* ParaEQView.mm in Sources */ = {isa = PBXBuildFile; fileRef = DEC11C0DE000000000000007 /* ParaEQView.mm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -103,6 +106,9 @@
 		F7C347EF0ECE5AF8008ADFB6 /* AUBaseHelper.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = AUBaseHelper.h; path = Extras/CoreAudio/AudioUnits/AUPublic/Utility/AUBaseHelper.h; sourceTree = SYSTEM_DEVELOPER_DIR; };
 		DEC11C0DE000000000000001 /* paraeq_core.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = paraeq_core.cpp; sourceTree = "<group>"; };
 		DEC11C0DE000000000000002 /* paraeq_core.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = paraeq_core.h; sourceTree = "<group>"; };
+		DEC11C0DE000000000000005 /* ParaEQControls.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ParaEQControls.h; sourceTree = "<group>"; };
+		DEC11C0DE000000000000006 /* ParaEQView.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ParaEQView.h; sourceTree = "<group>"; };
+		DEC11C0DE000000000000007 /* ParaEQView.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = ParaEQView.mm; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -178,6 +184,9 @@
 				8BA05A690720730100365D66 /* ParaEQVersion.h */,
 				DEC11C0DE000000000000002 /* paraeq_core.h */,
 				DEC11C0DE000000000000001 /* paraeq_core.cpp */,
+				DEC11C0DE000000000000005 /* ParaEQControls.h */,
+				DEC11C0DE000000000000006 /* ParaEQView.h */,
+				DEC11C0DE000000000000007 /* ParaEQView.mm */,
 			);
 			name = "AU Source";
 			sourceTree = "<group>";
@@ -266,6 +275,8 @@
 			files = (
 				8BA05A6E0720730100365D66 /* ParaEQVersion.h in Headers */,
 				DEC11C0DE000000000000004 /* paraeq_core.h in Headers */,
+				DEC11C0DE000000000000008 /* ParaEQControls.h in Headers */,
+				DEC11C0DE000000000000009 /* ParaEQView.h in Headers */,
 				8BA05AAF072073D300365D66 /* AUBase.h in Headers */,
 				8BA05AB1072073D300365D66 /* AUDispatch.h in Headers */,
 				8BA05AB3072073D300365D66 /* AUInputElement.h in Headers */,
@@ -365,6 +376,7 @@
 			files = (
 				8BA05A6B0720730100365D66 /* ParaEQ.cpp in Sources */,
 				DEC11C0DE000000000000003 /* paraeq_core.cpp in Sources */,
+				DEC11C0DE00000000000000A /* ParaEQView.mm in Sources */,
 				8BA05AAE072073D300365D66 /* AUBase.cpp in Sources */,
 				8BA05AB0072073D300365D66 /* AUDispatch.cpp in Sources */,
 				8BA05AB2072073D300365D66 /* AUInputElement.cpp in Sources */,

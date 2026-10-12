@@ -44,6 +44,7 @@
 	
 =============================================================================*/
 #include "ParaEQ.h"
+#include "ParaEQView.h"
 
 #include <string.h>
 
@@ -144,30 +145,6 @@ static CFStringRef kSlopeItem_Off  = CFSTR("Off");
 static CFStringRef kSlopeItem_12dB = CFSTR("12 dB/oct");
 static CFStringRef kSlopeItem_24dB = CFSTR("24 dB/oct");
 
-//! The one place that says which control is which field of paraeq::Params.
-//! ParaEQ::paramsFromControls() is its inverse; the two are read together, and
-//! a control added to one without the other shows up at once as a default that
-//! does not survive a round trip.
-void controlsFromParams(const paraeq::Params & p, float * out)
-{
-	out[kParam_A] = p.hpFrequency;
-	out[kParam_B] = (float)p.hpSlope;
-	out[kParam_C] = p.lfGain;
-	out[kParam_D] = p.lfFrequency;
-	out[kParam_E] = p.lfBell ? 1.0f : 0.0f;
-	out[kParam_F] = p.lmfGain;
-	out[kParam_G] = p.lmfFrequency;
-	out[kParam_H] = p.lmfQ;
-	out[kParam_I] = p.hmfGain;
-	out[kParam_J] = p.hmfFrequency;
-	out[kParam_K] = p.hmfQ;
-	out[kParam_L] = p.hfGain;
-	out[kParam_M] = p.hfFrequency;
-	out[kParam_N] = p.hfBell ? 1.0f : 0.0f;
-	out[kParam_O] = p.outputGain;
-	out[kParam_P] = p.bypass ? 1.0f : 0.0f;
-}
-
 } // anonymous namespace
 
 
@@ -185,7 +162,7 @@ ParaEQ::ParaEQ(AudioUnit component)
 	//knob is for - see the note on defaults() in paraeq_core.h.
 	active = paraeq::Params::defaults();
 	float initial[kNumberOfParameters];
-	controlsFromParams(active, initial);
+	ParaEQControlsFromParams(active, initial);
 	for (AudioUnitParameterID i = 0; i < kNumberOfParameters; ++i) {
 		SetParameter(i, initial[i]);
 	}
@@ -266,7 +243,7 @@ ComponentResult			ParaEQ::GetParameterInfo(AudioUnitScope		inScope,
 	outParameterInfo.maxValue = spec.maxValue;
 
 	float defaults[kNumberOfParameters];
-	controlsFromParams(paraeq::Params::defaults(), defaults);
+	ParaEQControlsFromParams(paraeq::Params::defaults(), defaults);
 	outParameterInfo.defaultValue = defaults[inParameterID];
 
 	return noErr;
@@ -281,6 +258,20 @@ ComponentResult			ParaEQ::GetPropertyInfo (AudioUnitPropertyID	inID,
                                                         UInt32 &		outDataSize,
                                                         bool &			outWritable)
 {
+	//The editor - see ParaEQView.h. One view, so the property is exactly one
+	//AudioUnitCocoaViewInfo: the struct ends in an array of class names, and the
+	//size reported here is how a host finds out how many are in it.
+	//
+	//This is the only property either of the two siblings in this folder would
+	//not also answer, and it is why ParaEQ is the one with an editor: sixteen
+	//controls is a wall of sliders in a generic view, where declick's four and
+	//dehum's six are a form that reads perfectly well.
+	if (inID == kAudioUnitProperty_CocoaUI && inScope == kAudioUnitScope_Global) {
+		outDataSize = sizeof(AudioUnitCocoaViewInfo);
+		outWritable = false;
+		return noErr;
+	}
+
 	return AUEffectBase::GetPropertyInfo (inID, inScope, inElement, outDataSize, outWritable);
 }
 
@@ -303,6 +294,13 @@ ComponentResult			ParaEQ::GetProperty(	AudioUnitPropertyID inID,
                                                         AudioUnitElement 	inElement,
                                                         void *			outData )
 {
+	//Answered in ParaEQView.mm, which is where the class it names is. Nothing
+	//about the view reaches this file: the property is a bundle URL and a class
+	//name, and this hands over the space for them.
+	if (inID == kAudioUnitProperty_CocoaUI && inScope == kAudioUnitScope_Global) {
+		return ParaEQ_CopyCocoaViewInfo((AudioUnitCocoaViewInfo *)outData);
+	}
+
 	return AUEffectBase::GetProperty (inID, inScope, inElement, outData);
 }
 
@@ -353,31 +351,17 @@ ComponentResult ParaEQ::Initialize()
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //	ParaEQ::paramsFromControls
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//The inverse of controlsFromParams(). Nothing is scaled on the way through:
-//every control is published in the core's own units, so this gathers sixteen
-//values and hands them to sanitize(), which is the core's own guard against a
-//host that sends something outside the range it was given.
+//Reads the host's sixteen controls and hands them to the shared mapping in
+//ParaEQControls.h - which is where it went when the editor needed to do the
+//same thing from the other side of an AudioUnit handle. Nothing is converted
+//on the way: every control is published in the core's own units.
 paraeq::Params ParaEQ::paramsFromControls()
 {
-	paraeq::Params p = paraeq::Params::defaults();
-	p.hpFrequency  = GetParameter( kParam_A );
-	p.hpSlope      = (int)(GetParameter( kParam_B ) + 0.5f);
-	p.lfGain       = GetParameter( kParam_C );
-	p.lfFrequency  = GetParameter( kParam_D );
-	p.lfBell       = GetParameter( kParam_E ) > 0.5f;
-	p.lmfGain      = GetParameter( kParam_F );
-	p.lmfFrequency = GetParameter( kParam_G );
-	p.lmfQ         = GetParameter( kParam_H );
-	p.hmfGain      = GetParameter( kParam_I );
-	p.hmfFrequency = GetParameter( kParam_J );
-	p.hmfQ         = GetParameter( kParam_K );
-	p.hfGain       = GetParameter( kParam_L );
-	p.hfFrequency  = GetParameter( kParam_M );
-	p.hfBell       = GetParameter( kParam_N ) > 0.5f;
-	p.outputGain   = GetParameter( kParam_O );
-	p.bypass       = GetParameter( kParam_P ) > 0.5f;
-	p.sanitize();
-	return p;
+	float values[kNumberOfParameters];
+	for (AudioUnitParameterID i = 0; i < kNumberOfParameters; ++i) {
+		values[i] = GetParameter( i );
+	}
+	return ParaEQParamsFromControls(values);
 }
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

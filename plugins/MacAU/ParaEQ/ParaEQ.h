@@ -53,6 +53,7 @@
 #include <math.h>
 
 #include "paraeq_core.h"
+#include "ParaEQControls.h"
 
 /*  A console channel equaliser for disc transfers: high-pass, low shelf, two
  *  peaking bands, high shelf, output trim. Not an Airwindows algorithm; MIT
@@ -103,25 +104,9 @@ static CFStringRef kParameterNName = CFSTR("High Bell");
 static CFStringRef kParameterOName = CFSTR("Output");
 static CFStringRef kParameterPName = CFSTR("Bypass");
 
-enum {
-	kParam_A =0,	//HP Freq
-	kParam_B =1,	//HP Slope
-	kParam_C =2,	//Low Gain
-	kParam_D =3,	//Low Freq
-	kParam_E =4,	//Low Bell
-	kParam_F =5,	//LoMid Gain
-	kParam_G =6,	//LoMid Freq
-	kParam_H =7,	//LoMid Q
-	kParam_I =8,	//HiMid Gain
-	kParam_J =9,	//HiMid Freq
-	kParam_K =10,	//HiMid Q
-	kParam_L =11,	//High Gain
-	kParam_M =12,	//High Freq
-	kParam_N =13,	//High Bell
-	kParam_O =14,	//Output
-	kParam_P =15,	//Bypass
-	kNumberOfParameters=16
-};
+//The sixteen control IDs, and the mapping between them and paraeq::Params,
+//are in ParaEQControls.h - the editor in ParaEQView.mm reads the same controls
+//to draw its curve, and that is the file the two of them share.
 
 //Sixteen controls is a wall of sliders in a generic view unless they are
 //grouped, so each band is a clump and the host draws the headings. Clump 0 is
@@ -135,9 +120,6 @@ enum {
 	kClump_Output    = 6,
 	kNumberOfClumps  = 6
 };
-
-//The high-pass slope is the one control whose number means nothing on its own.
-enum { kNumberOfSlopes = 3 };
 
 #pragma mark ____ParaEQ
 class ParaEQ : public AUEffectBase

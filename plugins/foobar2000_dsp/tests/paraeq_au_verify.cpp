@@ -24,6 +24,8 @@
  *      whose number means nothing by itself;
  *    - a control move that retunes rather than rebuilds, so the curve glides;
  *    - Reset() that clears the filter state and keeps the settings;
+ *    - an editor, which its two siblings do not have: four controls read
+ *      perfectly well as a generic form and sixteen do not;
  *    - mono as well as stereo;
  *    - a host may hand the same buffer in and out.
  *
@@ -46,6 +48,26 @@
 #include <string.h>
 
 #include <vector>
+
+/*  ParaEQ.cpp answers kAudioUnitProperty_CocoaUI by calling into ParaEQView.mm,
+ *  which is AppKit and Objective-C++ and is not in this build. This stands in
+ *  for it, so what the test below establishes is the plumbing - that the
+ *  plug-in offers the property, sizes it the way a host reads it, and routes
+ *  GetProperty through to the view's factory - and nothing about what the
+ *  editor draws, which is not a question a headless test can ask. Loading a
+ *  real one is auval's job: scripts/build.sh --validate.
+ */
+static const char kViewBundleMarker[] = "the component bundle";
+static const char kViewClassMarker[]  = "ShellacFiltersParaEQViewFactory";
+
+extern "C" OSStatus ParaEQ_CopyCocoaViewInfo(AudioUnitCocoaViewInfo * outInfo);
+
+extern "C" OSStatus ParaEQ_CopyCocoaViewInfo(AudioUnitCocoaViewInfo * outInfo) {
+    if (outInfo == NULL) return kAudioUnitErr_InvalidPropertyValue;
+    outInfo->mCocoaAUViewBundleLocation = (CFURLRef)kViewBundleMarker;
+    outInfo->mCocoaAUViewClass[0]       = (CFStringRef)kViewClassMarker;
+    return noErr;
+}
 
 namespace {
 
@@ -590,6 +612,35 @@ void testClumpNames() {
           == kAudioUnitErr_InvalidProperty, "a non-global scope is refused");
 }
 
+//! The editor is published, and the property says where to find it.
+void testCocoaView() {
+    ParaEQ fx((AudioUnit)0);
+
+    UInt32 size = 0;
+    bool writable = true;
+    check(fx.GetPropertyInfo(kAudioUnitProperty_CocoaUI, kAudioUnitScope_Global,
+                             0, size, writable) == noErr
+          && size == sizeof(AudioUnitCocoaViewInfo) && !writable,
+          "kAudioUnitProperty_CocoaUI is one view, read only");
+
+    AudioUnitCocoaViewInfo info;
+    memset(&info, 0, sizeof info);
+    check(fx.GetProperty(kAudioUnitProperty_CocoaUI, kAudioUnitScope_Global, 0, &info) == noErr
+          && info.mCocoaAUViewBundleLocation == (CFURLRef)kViewBundleMarker
+          && info.mCocoaAUViewClass[0] == (CFStringRef)kViewClassMarker,
+          "and GetProperty hands it to the view's own factory");
+
+    check(fx.GetPropertyInfo(kAudioUnitProperty_CocoaUI, 1 /* input scope */,
+                             0, size, writable) != noErr,
+          "a non-global scope is refused");
+
+    //Latency is the property the two siblings answer and this one does not, so
+    //it is also the check that the case above did not swallow everything.
+    check(fx.GetPropertyInfo(kAudioUnitProperty_Latency, kAudioUnitScope_Global,
+                             0, size, writable) != noErr,
+          "no latency property - the base class is still reached");
+}
+
 //! The sample rate reaches the design, so the same controls at a different rate
 //! are a different set of coefficients and the same curve.
 void testSampleRates(const std::vector<float> & inL, const std::vector<float> & inR,
@@ -637,6 +688,7 @@ int main() {
     testParameterInfo();
     testValueStrings();
     testClumpNames();
+    testCocoaView();
 
     if (g_failures == 0) { printf("\nOK\n"); return 0; }
     printf("\n%d failure(s)\n", g_failures);

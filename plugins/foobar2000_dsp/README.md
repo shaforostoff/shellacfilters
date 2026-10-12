@@ -1631,6 +1631,10 @@ template slip — and a bad index or a non-global scope refused. For ParaEQ,
 sixteen, each in the core's own units with the core's own constant for its range,
 each in one of six clumps, value strings on the one indexed control and on
 nothing else, and the whole set round-tripping to `paraeq::Params::defaults()`.
+ParaEQ also publishes an editor, so its test checks the property that says so —
+`kAudioUnitProperty_CocoaUI` sized the way a host reads it, read-only, refused
+outside the global scope, and routed through to the view's own factory. The view
+itself is AppKit and is not in that build; `auval` is what loads a real one.
 
 All three are built against `plugins/MacAU/au_shim` and need no SDK. Read that
 folder's [README](../MacAU/au_shim/README.md) first: unlike `vst2_shim` it is
@@ -1830,8 +1834,8 @@ for hosts on three platforms, in two plug-in formats:
 | `plugins/MacVST/Declick`, `plugins/MacVST/Dehum` | VST2, `.vst` bundle |
 | `plugins/MacAU/Declick`, `plugins/MacAU/Dehum`, `plugins/MacAU/ParaEQ` | Audio Unit, `.component` |
 
-ParaEQ is the newest and so far the narrowest: WinVST only, with no Linux, Mac or
-vdjplugin port of it yet.
+ParaEQ is the newest and so far the narrowest: VST2 on Windows and an Audio
+Unit on macOS, with no Linux, MacVST or vdjplugin port of it yet.
 
 They all compile `declick_core.{h,cpp}`, `dehum_core.{h,cpp}` or
 `paraeq_core.{h,cpp}` — not reimplementations of them, and not translations.
@@ -1865,6 +1869,15 @@ is the only *interface* two hosts have in common. It is canonical in
 `foo_dsp_paraeq` like the core and goes to `plugins/WinVST/ParaEQ` and nowhere
 else — MacAU is deliberately not on that list, an Audio Unit having no Win32
 window to put it in. See [The ParaEQ editor](#the-paraeq-editor).
+
+`plugins/MacAU/ParaEQ` has an editor too, and it is a **second** one rather than
+a mirror of that one, because there is nothing structural for the two to share:
+`paraeq_editor.{h,cpp}` is `windows.h` from the first line to the last, and
+`ParaEQView.mm` is AppKit. What they do share is the only thing that matters,
+which is `paraeq_core.h` — the same `curveTrig()` and `curveDb()` draw both
+curves, so the two editors cannot come to disagree about what the filters do
+even though no line of drawing code is common to them. See [The ParaEQ Audio
+Unit editor](#the-paraeq-audio-unit-editor).
 
 So the copies are mechanical and checked:
 
@@ -2026,6 +2039,62 @@ window lifecycle over the ABI, where a host would break it: size before there is
 a window, open, close, open again, close again, and a second `effEditClose` in a
 row for the hosts that send one.
 
+### The ParaEQ Audio Unit editor
+
+Sixteen controls with their real units and six clumps makes a good generic view,
+and a generic view is still a column of sliders that says what each one *is* and
+nothing about what they do together. So `plugins/MacAU/ParaEQ` publishes
+`kAudioUnitProperty_CocoaUI` and draws its own: a response curve over a console
+strip, read left to right as **low cut, bass, reverb cut, brilliance, hiss cut,
+output**.
+
+Those are the restoration names, the same five the foobar2000 editor uses and
+from the same place — the transfer literature calls them that rather than HP,
+LF, LMF, HMF and HF. The shorthand stays on the parameters, which is what a
+host's own generic view draws and what a saved preset stores. The four gain
+knobs are drawn larger than the other twelve controls, which is the point of a
+fixed layout rather than decoration: those four are what an operator reaches for
+once the session has started, and everything else gets set once for a box of
+records.
+
+It is the editor EmbraceNG — the tango DJ player this core is also embedded in
+— carries for it, moved from AUv3 to AUv2. There a view holds an `AUParameterTree` and
+asks an `AUParameter` for a value, a range and a default; here it holds the
+opaque `AudioUnit` and asks `AudioUnitGetParameter`,
+`kAudioUnitProperty_ParameterInfo` and an `AUEventListener` for the same three
+things. Below those four helpers at the top of `ParaEQView.mm` the two files are
+the same editor. What the move changed:
+
+| | |
+| --- | --- |
+| **`AUParameterSet`, not `AudioUnitSetParameter`** | The second one sets the value and tells nobody, so a host's generic view would go on showing the old one and its automation would not record the move. Naming the view's own listener as the sender is what keeps the change from arriving back as news — the same job the AUv3 original's originator token does. |
+| **A drag is bracketed by gestures** | `kAudioUnitEvent_Begin`/`EndParameterChangeGesture` on mouse down and up, so a host records one automation move and one undo step rather than two hundred. The wheel and the arrow keys send bare value changes: a gesture claims a move has a beginning and an end, and those two have neither. |
+| **The listener callback may touch AppKit** | It arrives on the run loop the view was built on, which is the main one. The AUv3 observer could not: it is called on whatever thread set the value, the render thread included, and has to hop. |
+| **A preset load is a property change** | `AUBase::RestoreState` writes the parameters into the scope directly and then says so once, with `kAudioUnitProperty_PresentPreset`. Without listening for that the editor would still be showing the old setting. |
+| **Defaults come from the unit** | An `AUParameter` has no default value, so EmbraceNG carries a side protocol for the unit to answer "what does double-click restore?" with. An AUv2 parameter carries its own, and that protocol is gone here. |
+| **Nothing about a control is written down twice** | Whether a knob is logarithmic is the unit's own `DisplayLogarithmic` flag and whether it is bipolar is whether its range crosses zero, both read from the table the host's generic view reads. An editor knob and a host slider cannot come to disagree about what a control's travel means. |
+| **One more section** | `OUTPUT` is two columns where the AUv3 original had one, because this unit has a **Bypass** control of its own — the core glides to it rather than switching — and a switch needs the width to say so. |
+| **No `NSLocalizedString`** | It reads the *main* bundle, which in a plug-in is the host application, so every string would be looked up in Logic's tables and come back as whatever Logic has under that key. The strings are literals. |
+
+The view class is in the component's own binary rather than in a nested
+`.bundle` under `Resources/`, which is the other way this is often done: one
+thing to build, one thing to sign, one thing to notarise. The property answers
+with `-[NSBundle bundleForClass:]` rather than the identifier out of the
+`Info.plist`, so there is no copy of that string to drift.
+
+`paraeq_core.h`'s drawing path is what makes the curve cheap enough to redraw on
+a drag: `curveTrig()` builds a table of the per-point constants once per resize
+and `curveDb()` walks the whole cascade over it, which is about a fifth of the
+work of asking `magnitudeDb()` per point. Both editors use it; see [Drawing the
+curve cheaply](#drawing-the-curve-cheaply).
+
+Flatten and Restore Defaults are on a contextual menu rather than on buttons.
+An AU editor is a rectangle inside somebody else's window with no toolbar of its
+own, and two buttons' worth of chrome across the bottom would cost more room
+than the gestures are worth. Flatten is the VST editor's: every gain and the
+trim to 0 dB, leaving frequencies and Q alone, because the setup is worth
+keeping and the curve is not.
+
 ### What version a host shows
 
 `AEffect::version` and `effGetVendorVersion` are both **byte packed**, most
@@ -2095,6 +2164,12 @@ sliders. The payoff is not only that a host shows `100 Hz` rather than `0.43`:
 the number the host stores **is** the number `paraeq::Params` holds, so a setting
 written down in an AU session is the same setting in `foo_dsp_paraeq`, with no
 mapping table in between to get wrong.
+
+It is also the only one of the three with an **editor**. Sixteen grouped sliders
+is a readable generic view and not an interface, where Declick's four and
+Dehum's six are a form that reads perfectly well, so ParaEQ is the one that
+answers `kAudioUnitProperty_CocoaUI` — see [The ParaEQ Audio Unit
+editor](#the-paraeq-audio-unit-editor).
 
 Its wrapper is also much the shortest of the three, and by subtraction. The core
 is zero latency and allocates nothing — `heapBytes()` is 0, `retune()` cannot

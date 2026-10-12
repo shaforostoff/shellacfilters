@@ -1,0 +1,8 @@
+# Apple's AudioUnitSDK, fetched on the first build by scripts/get_sdk.sh.
+# Apache 2.0 and perfectly redistributable - it is not here because it is
+# somebody else's tree to version, and pinning it in scripts/get_sdk.sh says
+# which revision a build used more usefully than a copy would.
+/external/
+
+# Build trees. Release artefacts land in ../dist/au - see ../.gitignore
+/build/
