@@ -14,7 +14,9 @@ namespace dehum_preset {
 //! Identity of this DSP in the stored chain configuration. Never change it.
 GUID guid();
 
-enum { version = 1 };
+//! 1 = pre-delta layout (still read, delta off).
+//! 2 = current layout, with `delta` appended after harmonics.
+enum { version = 2 };
 
 void make(const dehum::Params & params, dsp_preset & out);
 

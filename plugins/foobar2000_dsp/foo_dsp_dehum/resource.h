@@ -35,5 +35,6 @@
 
 #define IDC_HINT                    3020
 #define IDC_DEFAULTS                3030
+#define IDC_DELTA                   3040
 
 #endif // FOO_DSP_DEHUM_RESOURCE_H

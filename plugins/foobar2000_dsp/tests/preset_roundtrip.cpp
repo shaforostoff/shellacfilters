@@ -47,6 +47,7 @@ void compare(const declick::Params & got, const declick::Params & want,
     checkNear(got.dryWet,      want.dryWet,      "dryWet");
     check(got.passes == want.passes, "passes");
     check(got.order  == want.order,  "order");
+    check(got.delta  == want.delta,  "delta");
 }
 
 declick::Params roundTrip(const declick::Params & in) {
@@ -61,6 +62,15 @@ void makeLegacyV1(const declick::Params & p, dsp_preset & out) {
     dsp_preset_builder builder;
     builder << (t_uint32)1;
     builder << p.sensitivity << p.extent << p.maxLengthMs << p.dryWet;
+    builder << (t_uint32)p.passes << (t_uint32)p.order;
+    builder.finish(declick_preset::guid(), out);
+}
+
+//! A version-2 preset, as written before `delta` existed.
+void makeLegacyV2(const declick::Params & p, dsp_preset & out) {
+    dsp_preset_builder builder;
+    builder << (t_uint32)2;
+    builder << p.sensitivity << p.extent << p.maxLengthMs << p.depth << p.dryWet;
     builder << (t_uint32)p.passes << (t_uint32)p.order;
     builder.finish(declick_preset::guid(), out);
 }
@@ -84,6 +94,7 @@ int main() {
         p.dryWet      = 0.75f;
         p.passes      = 3;
         p.order       = 48;
+        p.delta       = true;
         compare(roundTrip(p), p, "non-default values round-trip");
     }
 
@@ -92,6 +103,7 @@ int main() {
         declick::Params p;
         p.sensitivity = 1.0f; p.extent = 0.0f; p.maxLengthMs = 20.0f;
         p.depth = 1.0f; p.dryWet = 0.0f; p.passes = 1; p.order = 8;
+        p.delta = false;
         p.sanitize();
         compare(roundTrip(p), p, "extremes round-trip");
     }
@@ -114,6 +126,23 @@ int main() {
         declick::Params want = p;
         want.depth = declick::Params::defaults().depth;
         compare(got, want, "version-1 preset upgrades");
+    }
+
+    // 4b. A version-2 preset loads with delta off, whatever it was set to.
+    {
+        declick::Params p = declick::Params::defaults();
+        p.sensitivity = 0.8125f;
+        p.depth       = 0.25f;
+        p.order       = 48;
+        p.delta       = true;     // never written; must not come back
+
+        dsp_preset_impl preset;
+        makeLegacyV2(p, preset);
+        const declick::Params got = declick_preset::parse(preset);
+
+        declick::Params want = p;
+        want.delta = false;
+        compare(got, want, "version-2 preset upgrades");
     }
 
     // 5. A preset belonging to somebody else is ignored, not misread.
@@ -172,6 +201,7 @@ int main() {
         p.frequency   = 123.5f;
         p.rumbleHz    = 47.0f;
         p.dryWet      = 0.8125f;
+        p.delta       = true;
         p.sanitize();
 
         dsp_preset_impl preset;
@@ -186,6 +216,21 @@ int main() {
         checkNear(got.rumbleHz,    p.rumbleHz,    "rumbleHz");
         checkNear(got.dryWet,      p.dryWet,      "dryWet");
         check(got.harmonics == p.harmonics, "harmonics");
+        check(got.delta == p.delta, "delta");
+
+        // A version-1 preset, from before delta existed, loads with it off.
+        dsp_preset_impl v1;
+        {
+            dsp_preset_builder b;
+            b << (t_uint32)1;
+            b << p.sensitivity << p.bandwidth << p.searchTo << p.frequency
+              << p.rumbleHz << p.dryWet;
+            b << (t_uint32)p.harmonics;
+            b.finish(dehum_preset::guid(), v1);
+        }
+        Params wantV1 = p;
+        wantV1.delta = false;
+        check(dehum_preset::parse(v1) == wantV1, "version-1 preset upgrades with delta off");
 
         // Frequency and Rumble both have an off value of 0 that sits outside
         // their live ranges; sanitize() must leave it alone rather than clamping

@@ -231,6 +231,7 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 | **Model order** | 8–256, default **128**. The one control where spending CPU clearly buys quality: 128 measurably beats 64 and 256 beats that again. 128 costs about 1.7–1.9× the CPU of 64, which gives up surprisingly little; the VST2, AU and VirtualDJ ports stop at 64. See [Does more CPU help?](#does-more-cpu-help). |
 | **Repair depth** | How much of each click to subtract. 1, the default, replaces the damaged samples outright; 0 subtracts the 45% fraction that adds the least whole-file error, which caps every repair at −5.2 dB. See [Repair depth](#repair-depth) and [Dense crackle](#dense-crackle). |
 | **Dry/Wet** | 0 bypasses. |
+| **Output only what is removed** | Delta monitoring, for testing: outputs input minus output, so you hear what the repair takes out. It should be crackle and clicks and nothing else; music heard in it is collateral damage, and the cue to lower Sensitivity. Saved with the preset, so untick it when done. foobar2000 only. |
 
 Measured over 20 s excerpts of four 78 rpm transfers, at the repair depth of 0
 and order 32 that were the defaults then. The unprocessed originals sit at
@@ -874,6 +875,7 @@ Add *Dehum (line detection)* to the chain and press **Configure selected**.
 | **Frequency** | 0 = detect automatically. Anything else pins the fundamental there and turns the detector off. **This is the control to use if you already know the frequency**, because it acts immediately where detection needs a few seconds. |
 | **Rumble** | 4th-order Butterworth high-pass, default **67 Hz**, 0 = off. Broadband low-frequency noise is a *different defect* from hum — see below — and this is the control for it. 40 Hz was the cautious end: about 4 dB out of the 32–45 Hz band, nothing above 90 Hz touched, safe on material that has real bass — but it leaves rumble audible on the transfers that have it. **67 Hz goes after it properly.** It takes the bottom octave of a double bass with it, so wind it back towards 40 where the low end is worth keeping. |
 | **Dry/Wet** | 0 bypasses, bit-exactly. |
+| **Output only what is removed** | Delta monitoring, for testing: outputs what the notches take out, which should be the hum and nothing else. Rumble is deliberately left out of it — see [Delta monitoring works for the notch, not for Rumble](#delta-monitoring-works-for-the-notch-not-for-rumble). Saved with the preset, so untick it when done. foobar2000 only. |
 
 Latency is **zero**: the detector reads the signal but does not sit in the path,
 so the component processes in place and needs no FIFO. Throughput is **320×

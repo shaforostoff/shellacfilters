@@ -25,6 +25,7 @@ void make(const Params & params, dsp_preset & out) {
     builder << p.sensitivity << p.bandwidth << p.searchTo << p.frequency
             << p.rumbleHz << p.dryWet;
     builder << (t_uint32)p.harmonics;
+    builder << (t_uint32)(p.delta ? 1 : 0);
     builder.finish(guid(), out);
 }
 
@@ -35,13 +36,15 @@ Params parse(const dsp_preset & in) {
             dsp_preset_parser parser(in);
             t_uint32 ver = 0;
             parser >> ver;
-            if (ver == 1u) {
+            if (ver == 1u || ver == 2u) {
                 Params tmp = Params::defaults();
-                t_uint32 harmonics = 0;
+                t_uint32 harmonics = 0, delta = 0;
                 parser >> tmp.sensitivity >> tmp.bandwidth >> tmp.searchTo
                        >> tmp.frequency >> tmp.rumbleHz >> tmp.dryWet;
                 parser >> harmonics;
+                if (ver >= 2u) parser >> delta;   // absent in version 1
                 tmp.harmonics = (int)harmonics;
+                tmp.delta = (delta != 0);
                 p = tmp;
             }
         } catch (...) {

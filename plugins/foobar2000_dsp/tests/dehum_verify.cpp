@@ -616,6 +616,66 @@ void testRetuneKeepsState() {
     check(!ch.retune(makeConfig(q, 96000.0)), "a sample rate change does not");
 }
 
+//! Delta mode outputs what the notches take out and nothing else: input minus
+//! the normal output with the rumble filter off, and the same thing with it on,
+//! because what a high-pass removes is not something to listen to.
+void testDelta() {
+    printf("\ndelta output\n");
+    const double sr = 44100.0;
+    std::vector<double> in((size_t)(sr * 6.0), 0.0);
+    Rng rng;
+    for (size_t i = 0; i < in.size(); ++i) {
+        const double t = (double)i / sr;
+        in[i] = 0.05 * sin(2.0 * kPi * 50.0 * t) + 0.2 * sin(2.0 * kPi * 440.0 * t)
+              + 0.01 * rng.next();
+    }
+
+    dehum::Params p = dehum::Params::defaults();
+    p.frequency = 50.0f;
+    p.rumbleHz = 0.0f;
+    p.dryWet = 0.75f;
+
+    auto run = [&](const dehum::Params & q) {
+        dehum::Channel ch;
+        ch.configure(makeConfig(q, sr));
+        std::vector<double> buf = in;
+        runChannel(ch, buf, 512);
+        return buf;
+    };
+
+    const std::vector<double> out = run(p);
+    p.delta = true;
+    const std::vector<double> del = run(p);
+    p.rumbleHz = 67.0f;
+    const std::vector<double> delRumble = run(p);
+
+    double worst = 0.0;
+    bool rumbleSame = true;
+    for (size_t i = 0; i < in.size(); ++i) {
+        const double d = fabs(del[i] - (in[i] - out[i]));
+        if (d > worst) worst = d;
+        if (delRumble[i] != del[i]) rumbleSame = false;
+    }
+    char msg[160];
+    snprintf(msg, sizeof(msg), "delta is input - output (worst difference %.3g)", worst);
+    check(worst < 1e-12, msg);
+    check(rumbleSame, "the rumble filter does not reach the delta");
+
+    // What is left in the delta is the hum: the 440 Hz tone stays out of it.
+    const size_t from = (size_t)(sr * 3.0);
+    const double hum = toneAmplitude(del, 50.0, sr, from, del.size());
+    const double music = toneAmplitude(del, 440.0, sr, from, del.size());
+    snprintf(msg, sizeof(msg), "delta holds the hum at %.1f dB, the music at %.1f dB",
+             db(hum / 0.05), db(music / 0.2));
+    check(db(hum / 0.05) > -6.0 && db(music / 0.2) < -40.0, msg);
+
+    dehum::Params q = dehum::Params::defaults();
+    dehum::Channel ch;
+    ch.configure(makeConfig(q, sr));
+    q.delta = true;
+    check(ch.retune(makeConfig(q, sr)), "switching delta on retunes");
+}
+
 void testFootprint() {
     printf("\nfootprint\n");
     const double rates[3] = { 44100.0, 96000.0, 192000.0 };
@@ -648,6 +708,7 @@ int main() {
     testSampleRates();
     testRumble();
     testRetuneKeepsState();
+    testDelta();
     testFootprint();
 
     printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "passed",

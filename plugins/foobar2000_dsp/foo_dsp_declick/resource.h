@@ -35,5 +35,6 @@
 
 #define IDC_HINT                    2020
 #define IDC_DEFAULTS                2030
+#define IDC_DELTA                   2040
 
 #endif // FOO_DSP_DECLICK_RESOURCE_H
