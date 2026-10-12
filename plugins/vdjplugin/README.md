@@ -337,10 +337,10 @@ pin the default positions against `Params::defaults()`.
 
 | Slider | Range | Default | |
 | --- | --- | --- | --- |
-| Sensitivity | 0–1 → 6.0–2.5 σ trigger | 0.6 (3.9 σ) | Higher finds more, and eventually starts costing music |
+| Sensitivity | 0–1 → 6.0–2.5 σ trigger | 0.8 (3.2 σ) | Higher finds more, and eventually starts costing music |
 | Extent | 0–1 | 0.5 | How far a detection spreads into its own tail |
 | Max repair | 0.2–20 ms | 4.0 ms | Longest single repair. **Structural** — see below |
-| Depth | 0–1 | 0 | 0 subtracts the calibrated fraction of each click, which adds the least error of its own; 1 replaces damaged samples outright |
+| Depth | 0–1 | 1 | 1 replaces damaged samples outright; 0 subtracts the 45 % fraction that adds the least whole-file error, which caps every repair at −5.2 dB |
 | Passes | 1–3 | 2 | A second pass catches clicks the first uncovers; ~60 % more CPU |
 | Model order | 8–64 in eights | 64 | The one control where CPU clearly buys quality. **Structural** |
 | Dry/Wet | 0–1 | 1 | 0 is a bypass, and an exact one — see *16 bit*, below |
