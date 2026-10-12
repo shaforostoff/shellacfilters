@@ -595,6 +595,62 @@ void testOrderSweep() {
     }
 }
 
+//! The AVX2 kernels sum in a different order and fuse the multiply-adds, so
+//! they may differ from the baseline in the last bits and nowhere else. Every
+//! order, because each changes the tap count and with it which remainder
+//! paths of the blocked filter run. Where the CPU has no AVX2 this compares
+//! the baseline with itself, and says so.
+void testKernels() {
+    allowWideKernels(true);
+    const char * wide = kernelName();
+    printf("AVX2 kernels against the baseline (%s here)\n", wide);
+    const double sr = 44100.0;
+    const size_t N = 16384;
+
+    std::vector<double> dirty(N);
+    Rng rng(77u);
+    for (size_t i = 0; i < N; ++i) {
+        const double t = (double)i / sr;
+        dirty[i] = 0.30 * sin(6.283185307 * 392.0 * t)
+                 + 0.12 * sin(6.283185307 * 987.0 * t)
+                 + 0.01 * rng.centred();
+    }
+    // Dense small crackle and some larger clicks, so that both passes and
+    // the re-repair have work to do.
+    for (size_t i = 2000; i + 16 < N; i += 37 + (rng.next() % 97)) {
+        dirty[i] += (rng.uniform() < 0.1 ? 0.4 : 0.03) * rng.centred();
+    }
+
+    double worst = 0.0;
+    int worstOrder = 0, checked = 0;
+    for (int order = (int)kMinOrder; order <= (int)kMaxOrder; order += 2) {
+        Params p = Params::defaults();
+        p.order = order;
+        p.sanitize();
+        if (p.order != order) continue;
+
+        allowWideKernels(false);
+        const std::vector<double> base = runChannel(dirty, p, sr);
+        allowWideKernels(true);
+        const std::vector<double> fast = runChannel(dirty, p, sr);
+
+        for (size_t i = 0; i < N; ++i) {
+            const double d = fabs(fast[i] - base[i]);
+            if (!(d <= worst)) { worst = d; worstOrder = order; }
+        }
+        ++checked;
+    }
+    allowWideKernels(true);
+    printf("  %d orders, worst difference %.3g (at order %d)\n",
+           checked, worst, worstOrder);
+    // Rounding is ~1e-16 of the signal. A detection decided differently would
+    // be a whole click's worth - far above this.
+    if (!(worst < 1e-9)) {
+        printf("  FAIL  the kernels disagree by more than rounding\n");
+        ++g_failures;
+    }
+}
+
 } // anonymous namespace
 
 int main() {
@@ -603,6 +659,7 @@ int main() {
     testInverseDiagonal();
     testStreaming();
     testOrderSweep();
+    testKernels();
 
     if (g_failures == 0) { printf("\nOK\n"); return 0; }
     printf("\n%d failure(s)\n", g_failures);

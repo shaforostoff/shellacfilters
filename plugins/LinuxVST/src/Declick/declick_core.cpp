@@ -12,10 +12,22 @@
 #include <xmmintrin.h>
 #define DECLICK_HAVE_MXCSR 1
 // SSE2 for the double-precision inner products. It is the floor for every
-// configuration this project builds, so there is no runtime dispatch; the
-// scalar fallback below is kept correct for anything else.
+// configuration this project builds; the scalar fallback below is kept
+// correct for anything else.
 #include <emmintrin.h>
 #define DECLICK_SSE2 1
+// AVX2 and FMA on top, chosen at run time from CPUID - see pickKernels().
+// MSVC compiles AVX2 intrinsics without /arch:AVX2; GCC and clang need the
+// target attribute on every function that uses them.
+#include <immintrin.h>
+#define DECLICK_AVX2 1
+#if defined(__GNUC__) || defined(__clang__)
+#define DECLICK_AVX2_FN __attribute__((target("avx2,fma")))
+#include <cpuid.h>
+#else
+#define DECLICK_AVX2_FN
+#include <intrin.h>
+#endif
 #elif defined(_M_ARM64) || defined(__aarch64__)
 #define DECLICK_HAVE_FPCR 1
 #define DECLICK_SSE2 0
@@ -24,6 +36,9 @@
 #endif
 #else
 #define DECLICK_SSE2 0
+#endif
+#ifndef DECLICK_AVX2
+#define DECLICK_AVX2 0
 #endif
 
 namespace declick {
@@ -141,7 +156,204 @@ const double kAbsurd = 1.0e30;
 
 inline bool finite(double v) { return v > -kAbsurd && v < kAbsurd; }
 
+// ---------------------------------------------------------------------------
+// The hot loops, as two kernels with a baseline and an AVX2 + FMA version.
+//
+// filter:   out[i] = sum_k h[k] * x[i+k], for i < count and k < taps. The
+//           forward and backward prediction residuals and the per-click
+//           interpolation residual are all this shape.
+// autocorr: r[d] = sum_i x[i] * x[i+d], for d <= maxLag. x must be followed by
+//           maxLag zeros; the baseline does not read them, the AVX2 version
+//           does, which turns it into a filter of x against itself.
+//
+// The baseline is exactly the dot() loops these replaced, so a CPU without
+// AVX2 produces what it always did, bit for bit.
+
+typedef void (*FilterFn)(const double * h, const double * x, double * out,
+                         int count, int taps);
+typedef void (*AutocorrFn)(const double * x, int n, double * r, int maxLag);
+
+struct Kernels {
+    FilterFn    filter;
+    AutocorrFn  autocorr;
+    const char * name;
+};
+
+void filterBase(const double * h, const double * x, double * out,
+                int count, int taps) {
+    for (int i = 0; i < count; ++i) out[i] = dot(h, x + i, taps);
+}
+
+void autocorrBase(const double * x, int n, double * r, int maxLag) {
+    for (int d = 0; d <= maxLag; ++d) r[d] = dot(x + d, x, n - d);
+}
+
+const Kernels kBaseKernels = {
+    filterBase, autocorrBase, DECLICK_SSE2 ? "sse2" : "scalar"
+};
+
+#if DECLICK_AVX2
+
+// Every floating-point operation in these functions is an intrinsic, and that
+// is load-bearing. Without /arch:AVX2, MSVC encodes the intrinsics as AVX but
+// any plain double arithmetic or store as legacy SSE2, and on Haswell - the
+// 2014 MacBook Air - each switch between the two with the upper halves of the
+// registers dirty costs about 70 cycles. Hence the masked loads instead of a
+// scalar tail, _mm_store_sd instead of `out[i] = ...`, and the explicit
+// _mm256_zeroupper() before returning to SSE2 code.
+
+const int64_t kLaneMask[8] = { -1, -1, -1, -1, 0, 0, 0, 0 };
+
+//! The first r lanes, r in 0..4.
+DECLICK_AVX2_FN inline __m256i laneMask(int r) {
+    return _mm256_loadu_si256((const __m256i *)(kLaneMask + 4 - r));
+}
+
+//! dot() with FMA, leaving the sum in the low lane of a register.
+DECLICK_AVX2_FN inline __m128d dotAvx2(const double * x, const double * y, int n) {
+    __m256d s0 = _mm256_setzero_pd(), s1 = _mm256_setzero_pd();
+    __m256d s2 = _mm256_setzero_pd(), s3 = _mm256_setzero_pd();
+    int i = 0;
+    for (; i + 16 <= n; i += 16) {
+        s0 = _mm256_fmadd_pd(_mm256_loadu_pd(x + i),      _mm256_loadu_pd(y + i),      s0);
+        s1 = _mm256_fmadd_pd(_mm256_loadu_pd(x + i + 4),  _mm256_loadu_pd(y + i + 4),  s1);
+        s2 = _mm256_fmadd_pd(_mm256_loadu_pd(x + i + 8),  _mm256_loadu_pd(y + i + 8),  s2);
+        s3 = _mm256_fmadd_pd(_mm256_loadu_pd(x + i + 12), _mm256_loadu_pd(y + i + 12), s3);
+    }
+    for (; i + 4 <= n; i += 4) {
+        s0 = _mm256_fmadd_pd(_mm256_loadu_pd(x + i), _mm256_loadu_pd(y + i), s0);
+    }
+    if (i < n) {
+        const __m256i m = laneMask(n - i);
+        s1 = _mm256_fmadd_pd(_mm256_maskload_pd(x + i, m),
+                             _mm256_maskload_pd(y + i, m), s1);
+    }
+    const __m256d t = _mm256_add_pd(_mm256_add_pd(s0, s1), _mm256_add_pd(s2, s3));
+    const __m128d u = _mm_add_pd(_mm256_castpd256_pd128(t), _mm256_extractf128_pd(t, 1));
+    return _mm_add_sd(u, _mm_unpackhi_pd(u, u));
+}
+
+//! One broadcast tap times consecutive x feeds four outputs per register, so
+//! a block of outputs shares every load of h. dot() per output is bound by
+//! its two loads per multiply-add; this needs about one. Each accumulator is
+//! still a dependent chain, one FMA latency per tap, and enough of them
+//! side by side cover that latency: eight on x64, four on x86, which has
+//! only eight vector registers. What is left over at the end goes through
+//! dotAvx2().
+DECLICK_AVX2_FN void filterAvx2(const double * h, const double * x, double * out,
+                                int count, int taps) {
+    int i = 0;
+#if defined(_M_X64) || defined(__x86_64__)
+    for (; i + 32 <= count; i += 32) {
+        const double * xi = x + i;
+        __m256d a0 = _mm256_setzero_pd(), a1 = _mm256_setzero_pd();
+        __m256d a2 = _mm256_setzero_pd(), a3 = _mm256_setzero_pd();
+        __m256d a4 = _mm256_setzero_pd(), a5 = _mm256_setzero_pd();
+        __m256d a6 = _mm256_setzero_pd(), a7 = _mm256_setzero_pd();
+        for (int k = 0; k < taps; ++k) {
+            const __m256d hk = _mm256_broadcast_sd(h + k);
+            const double * xk = xi + k;
+            a0 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk),      a0);
+            a1 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 4),  a1);
+            a2 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 8),  a2);
+            a3 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 12), a3);
+            a4 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 16), a4);
+            a5 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 20), a5);
+            a6 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 24), a6);
+            a7 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 28), a7);
+        }
+        _mm256_storeu_pd(out + i,      a0);
+        _mm256_storeu_pd(out + i + 4,  a1);
+        _mm256_storeu_pd(out + i + 8,  a2);
+        _mm256_storeu_pd(out + i + 12, a3);
+        _mm256_storeu_pd(out + i + 16, a4);
+        _mm256_storeu_pd(out + i + 20, a5);
+        _mm256_storeu_pd(out + i + 24, a6);
+        _mm256_storeu_pd(out + i + 28, a7);
+    }
+#endif
+    for (; i + 16 <= count; i += 16) {
+        const double * xi = x + i;
+        __m256d a0 = _mm256_setzero_pd(), a1 = _mm256_setzero_pd();
+        __m256d a2 = _mm256_setzero_pd(), a3 = _mm256_setzero_pd();
+        for (int k = 0; k < taps; ++k) {
+            const __m256d hk = _mm256_broadcast_sd(h + k);
+            const double * xk = xi + k;
+            a0 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk),      a0);
+            a1 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 4),  a1);
+            a2 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 8),  a2);
+            a3 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 12), a3);
+        }
+        _mm256_storeu_pd(out + i,      a0);
+        _mm256_storeu_pd(out + i + 4,  a1);
+        _mm256_storeu_pd(out + i + 8,  a2);
+        _mm256_storeu_pd(out + i + 12, a3);
+    }
+    for (; i < count; ++i) _mm_store_sd(out + i, dotAvx2(h, x + i, taps));
+    _mm256_zeroupper();
+}
+
+DECLICK_AVX2_FN void autocorrAvx2(const double * x, int n, double * r, int maxLag) {
+    // With maxLag zeros after x, r[d] = sum over all n of x[k] * x[k+d].
+    filterAvx2(x, x, r, maxLag + 1, n);
+}
+
+const Kernels kAvx2Kernels = { filterAvx2, autocorrAvx2, "avx2" };
+
+//! AVX2 and FMA in the CPU, and YMM state saved by the OS.
+bool cpuHasAvx2Fma() {
+    unsigned ecx1, ebx7;
+#if defined(__GNUC__) || defined(__clang__)
+    unsigned a, b, c, d;
+    if (__get_cpuid_max(0, 0) < 7) return false;
+    __cpuid(1, a, b, c, d);
+    ecx1 = c;
+    __cpuid_count(7, 0, a, b, c, d);
+    ebx7 = b;
+#else
+    int r[4];
+    __cpuid(r, 0);
+    if (r[0] < 7) return false;
+    __cpuid(r, 1);
+    ecx1 = (unsigned)r[2];
+    __cpuidex(r, 7, 0);
+    ebx7 = (unsigned)r[1];
+#endif
+    // FMA is 1.ECX[12], AVX 1.ECX[28], AVX2 7.EBX[5]. OSXSAVE, 1.ECX[27], has
+    // to be checked as well before XGETBV, which faults without it.
+    const unsigned need1 = (1u << 12) | (1u << 27) | (1u << 28);
+    if ((ecx1 & need1) != need1 || !(ebx7 & (1u << 5))) return false;
+
+    // XCR0 bits 1 and 2: the OS saves the SSE and the upper YMM state on a
+    // context switch. Without that the CPU has AVX2 but cannot use it.
+#if defined(__GNUC__) || defined(__clang__)
+    unsigned lo, hi;
+    __asm__ __volatile__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    const unsigned long long xcr0 = ((unsigned long long)hi << 32) | lo;
+#else
+    const unsigned long long xcr0 = _xgetbv(0);
+#endif
+    return (xcr0 & 6u) == 6u;
+}
+
+#endif // DECLICK_AVX2
+
+const Kernels * pickKernels(bool allowWide) {
+#if DECLICK_AVX2
+    if (allowWide && cpuHasAvx2Fma()) return &kAvx2Kernels;
+#endif
+    (void)allowWide;
+    return &kBaseKernels;
+}
+
+//! Chosen once, when the module loads.
+const Kernels * g_kernels = pickKernels(true);
+
 } // anonymous namespace
+
+const char * kernelName() { return g_kernels->name; }
+
+void allowWideKernels(bool allow) { g_kernels = pickKernels(allow); }
 
 // ---------------------------------------------------------------------------
 
@@ -397,7 +609,10 @@ void Channel::configure(const Config & cfg) {
     // exact length needed each time, which is what zeroes them; reserving here
     // is what stops that from ever reallocating.
     const size_t ctx = 3 * bo;
-    m_scratch.reserve(need > (size_t)cfg.madWindow ? need : (size_t)cfg.madWindow);
+    // need + bo: the fit window, and the bufOrder zeros the AVX2
+    // autocorrelation reads past its end.
+    m_scratch.reserve(need + bo > (size_t)cfg.madWindow ? need + bo
+                                                        : (size_t)cfg.madWindow);
     m_seg.reserve(bm + 2 * ctx + 1);          // L    = m + 2*ctx
     m_err.reserve(bm + 2 * ctx + 1);          // rows = L - order
     m_rhs.reserve(bm + 1);                    // m
@@ -478,7 +693,9 @@ void Channel::fitModel(int from, int to) {
     // injected-click ground truth at contamination from 0.7% to 5.2%.
     // Crackle is dense but tiny, and a sum over a thousand lag products
     // barely notices it. See the README.
-    m_scratch.resize((size_t)n);
+    // `order` zeros past the end: the AVX2 autocorrelation reads them.
+    m_scratch.resize((size_t)n + (size_t)order);
+    for (int i = n; i < n + order; ++i) m_scratch[(size_t)i] = 0.0;
     double acc = 0.0;
     for (int i = 0; i < n; ++i) acc += fabs(m_win[from + i]);
     const double lim = 6.0 * (acc / (double)n) + 1e-12;
@@ -498,10 +715,7 @@ void Channel::fitModel(int from, int to) {
     }
 
     m_ra.assign((size_t)order + 1, 0.0);
-    const double * xw = &m_scratch[0];
-    for (int d = 0; d <= order; ++d) {
-        m_ra[d] = dot(xw + d, xw, n - d);
-    }
+    g_kernels->autocorr(&m_scratch[0], n, &m_ra[0], order);
     if (!(m_ra[0] > 0.0)) {
         setUnitModel();
         return;
@@ -529,14 +743,12 @@ void Channel::detect(int from, int to, int pass) {
     // sum_k a[k]*win[i-k] walks the window backwards, so it uses the reversed
     // coefficients and reads forward from i-order; the backward residual
     // already walks forward and uses m_a directly.
-    const double * arev = &m_arev[0];
-    const double * a = &m_a[0];
-    const int taps = order + 1;
-    for (int i = from; i < to; ++i) {
-        m_fwd[i] = dot(arev, &m_win[i - order], taps);
-    }
-    for (int i = to - 1; i >= from; --i) {
-        m_bwd[i] = dot(a, &m_win[i], taps);
+    if (to > from) {
+        const int taps = order + 1;
+        g_kernels->filter(&m_arev[0], &m_win[(size_t)(from - order)],
+                          &m_fwd[(size_t)from], to - from, taps);
+        g_kernels->filter(&m_a[0], &m_win[(size_t)from],
+                          &m_bwd[(size_t)from], to - from, taps);
     }
 
     if (pass == 0) {
@@ -620,8 +832,9 @@ bool Channel::repairRun(int s, int e, bool again) {
         m_seg[(size_t)t] = (t >= cs && t <= ce) ? 0.0 : m_win[lo0 + t];
     }
     m_err.resize((size_t)rows);
-    for (int r = rLo; r <= rHi; ++r) {
-        m_err[(size_t)r] = dot(&m_arev[0], &m_seg[(size_t)r], order + 1);
+    if (rHi >= rLo) {
+        g_kernels->filter(&m_arev[0], &m_seg[(size_t)rLo], &m_err[(size_t)rLo],
+                          rHi - rLo + 1, order + 1);
     }
 
     // rhs[j] = -sum over the rows touching column c of a[order-(c-i)]*err[i]

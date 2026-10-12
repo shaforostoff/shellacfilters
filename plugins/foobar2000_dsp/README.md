@@ -155,7 +155,9 @@ that would stop the image from loading on Windows 7:
 
 It is a load-time check. Functions resolved at runtime through `GetProcAddress`
 are invisible to it, and so is the instruction set the code was compiled for —
-an `AVX2` build loads fine on a CPU without AVX2 and then crashes.
+an `AVX2` build loads fine on a CPU without AVX2 and then crashes. Declick's
+AVX2 kernels are not that: they are compiled into the SSE2 build and run only
+where CPUID says the CPU and the OS support them.
 
 ---
 
@@ -225,8 +227,8 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 | **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.8** (3.2σ), chosen by ear; 0.7 measures marginally gentler. See [Dense crackle](#dense-crackle). |
 | **Extent** | How far a detection spreads into its own tail before the repair stops. Raise it if repairs leave a residual tick behind them. |
 | **Max repair** | Longest single repair. Anything longer is treated as music and left alone. 4 ms suits 78s. |
-| **Passes** | A second pass catches clicks the first one uncovers; the model is refitted in between. Small but real gain, roughly 60% more CPU. |
-| **Model order** | 8–256, default **128**. The one control where spending CPU clearly buys quality: 128 measurably beats 64 and 256 beats that again. 128 costs about 1.9× the CPU of 64, which gives up surprisingly little; the VST2, AU and VirtualDJ ports stop at 64. See [Does more CPU help?](#does-more-cpu-help). |
+| **Passes** | A second pass catches clicks the first one uncovers; the model is refitted in between. Small but real gain, roughly 50–60% more CPU. |
+| **Model order** | 8–256, default **128**. The one control where spending CPU clearly buys quality: 128 measurably beats 64 and 256 beats that again. 128 costs about 1.7–1.9× the CPU of 64, which gives up surprisingly little; the VST2, AU and VirtualDJ ports stop at 64. See [Does more CPU help?](#does-more-cpu-help). |
 | **Repair depth** | How much of each click to subtract. 1, the default, replaces the damaged samples outright; 0 subtracts the 45% fraction that adds the least whole-file error, which caps every repair at −5.2 dB. See [Repair depth](#repair-depth) and [Dense crackle](#dense-crackle). |
 | **Dry/Wet** | 0 bypasses. |
 
@@ -247,10 +249,11 @@ Note how flat the right-hand end is: quadrupling the number of samples touched
 (3.4 % → 14.0 %) only takes 21 events/s down to 18. Past about 0.7, sensitivity
 mostly buys collateral damage. **Repair depth is the more effective lever**.
 
-Throughput: ~67× realtime at the defaults, ~130× at order 64, measured end to
-end over 60 s of 44.1 kHz mono shellac including file I/O — about 1.5 % of one
-core on a modern desktop, and an estimated 9× realtime stereo on a 2014
-MacBook Air. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
+Throughput: ~120× realtime at the defaults on a CPU with AVX2 and FMA, ~67×
+without; ~205× and ~130× at order 64. Measured end to end over 60 s of
+44.1 kHz mono shellac including file I/O — under 1 % of one core on a modern
+desktop, and 24× realtime stereo on a 2014 MacBook Pro, whose Haswell has
+both. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
 Latency ~24 ms, reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
 must go in before the first block comes out, but the emitted stream is aligned
@@ -606,12 +609,16 @@ Measured end to end over 60 s of 44.1 kHz mono shellac including file I/O, at
 the defaults apart from the order (sensitivity 0.8, depth 1, two passes,
 re-repair):
 
-| order | x64 | x86 | before the per-click fix, x64 | 2014 MacBook Air, stereo (estimated) |
-| --- | --- | --- | --- | --- |
-| 32 | 195× | 178× | 175× | ~28× |
-| 64 | 130× | 117× | 101× | ~18× |
-| **128** (default) | **67×** | 60× | 44× | ~9× |
-| 256 | 27× | 24× | 15× | ~4× |
+| order | x64, AVX2 | x64, SSE2 | x86, AVX2 | x86, SSE2 | before the per-click fix, x64 SSE2 | 2014 MacBook Pro, stereo, AVX2 / SSE2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 32 | 264× | 195× | 218× | 178× | 175× | 57× / 36× |
+| 64 | 206× | 130× | 159× | 117× | 101× | 41× / 24× |
+| **128** (default) | **120×** | 67× | 87× | 60× | 44× | **24×** / 13× |
+| 256 | 52× | 27× | 36× | 24× | 15× | 9.3× / 4.8× |
+
+The kernels are picked when the module loads, so the same binary runs the SSE2
+columns on a CPU without AVX2 and FMA. See
+[Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
 
 The same, at the defaults of the time — sensitivity 0.6, depth 0, no
 re-repair — and before and after the optimisation below:
@@ -623,17 +630,27 @@ re-repair — and before and after the optimisation below:
 | 128 | **50×** | 45× | 16× | ~7× |
 | 256 | 18× | 15× | 5× | ~2.5× |
 
-The last columns are estimates, not measurements: a 1.4 GHz Haswell i5-4260U
-is roughly 3–4× slower per core than the machine above, and stereo doubles the
-work. After the optimisation below, **order 128 is viable on that machine** —
-it was not before.
+The MacBook Pro column of the first table is measured, on a 2.4 GHz Haswell
+i5-4258U (MacBookPro11,1): best of seven runs, on a different 60 s of shellac
+from the other columns, with the machine otherwise in light use. Mono, it
+runs 120×, 87×, 48× and 19× with AVX2 at orders 32 to 256, and 77×, 52×, 25×
+and 9.5× without — about 2.5× slower than the Zen 4 above, allowing for the
+different clip. Its gain from AVX2, 1.9× at the defaults, is no smaller than
+the Zen 4's, although its FMA takes 5 cycles against 4. The 2014 MacBook Air
+has the same generation of Haswell, an i5-4260U, at 1.4 GHz base and 2.7 GHz
+turbo against 2.4 and 2.9, so expect it somewhat below that column.
+
+The last column of the second table is an estimate, not a measurement: the
+i5-4260U taken as roughly 3–4× slower per core than the machine above, and
+stereo doubling the work. After the optimisation below, **order 128 is viable
+on that machine** — it was not before.
 
 `kMaxOrder` is 256 and **the default is 128**. It used to be 64, chosen as the
 point where paying for the one lever that clearly pays was still cheap, with
 128 left as the user's call. It became the default once the target was set as
-the best result real-time playback can afford: on a 2014 MacBook Air, the
-slowest machine this is played on, 128 is still an estimated 9× realtime
-stereo. See [Dense crackle](#dense-crackle).
+the best result real-time playback can afford: the slowest machine this is
+played on is a 2014 MacBook Air, and the MacBook Pro of the same Haswell
+generation runs 128 at 24× realtime stereo. See [Dense crackle](#dense-crackle).
 Offline nothing has a deadline at all, and 256 is there for it.
 
 #### Where the time goes, and what was done about it
@@ -692,6 +709,35 @@ Later, once the dense-crackle defaults had made the repairs expensive:
   order 64 and 1.8× at order 256, and bit-exact: the same products of the same
   inputs, checked byte for byte on twelve renders across order, depth and
   re-repair mode.
+* **AVX2 and FMA, picked at run time.** Every hot loop but the fit is a filter,
+  `out[i] = sum_k h[k] * x[i+k]`, and the fit's autocorrelation becomes one too
+  once the window is followed by `order` zeros: the window filtered by itself.
+  The AVX2 filter multiplies one broadcast tap into four consecutive samples
+  at a time, with eight such accumulators side by side. Each multiply-add then
+  needs about one load instead of `dot()`'s two, and eight chains cover the
+  FMA latency. **1.8× at the defaults on x64** (67× → 120× realtime), 1.6× at
+  order 64 and 1.9× at order 256. x86 gets 1.45×: it has only eight vector
+  registers, so it runs four chains rather than eight. A 2014 Haswell MacBook
+  Pro gains as much, 1.9× at the defaults (25× → 48× realtime, mono).
+  CPUID and XGETBV pick the kernels once, when the module loads. Without AVX2
+  and FMA the SSE2 code runs unchanged, bit for bit. The builds stay at
+  `/arch:SSE2` (see the note under `check_win7.ps1`). That has a cost: without
+  `/arch:AVX2`, MSVC encodes the intrinsics as AVX but plain `double`
+  arithmetic as legacy SSE, and Haswell charges about 70 cycles for each
+  switch between the two. So the kernels do every floating-point operation
+  with intrinsics, down to the masked tail loads and the stores, and end with
+  `vzeroupper`. GCC and clang get the same code through
+  `__attribute__((target("avx2,fma")))`, which covers the Linux VST and the
+  Intel half of the Mac builds; Apple silicon has its own path.
+  The AVX2 output is **not bit-identical** to SSE2. FMA rounds once where a
+  multiply and an add round twice, and the sums are split differently. Over
+  60 s of shellac, **99.9986 %** of output samples are identical, the worst
+  deviation is **−156.5 dBFS**, and the rms deviation is **191 dB below the
+  signal**. Across the click probes and the dense-crackle benches, the worst
+  is −144.5 dBFS, at order 256 with re-repair 2. Not one detection decision
+  changed. `declick_verify` holds the two kernels within 1e-9 of each other
+  at every order, and `declick_cli --no-avx2` runs the baseline for
+  comparisons.
 
 One idea that is now *less* attractive than it looked: replacing the fit
 autocorrelation with an FFT. Direct is `O(n × order)` against `O(n log n)`, but

@@ -35,6 +35,7 @@ void usage() {
         "  -w <0..1>    Dry/wet (default 1)\n"
         "  --delta      Write what was removed instead of the repaired audio\n"
         "  --quiet\n"
+        "  --no-avx2    Use the baseline SSE2 kernels even where AVX2 is available\n"
         "\n"
         "  Calibration only, not exposed in the component:\n"
         "  --alpha <x>  Over-subtraction on the estimate variance\n"
@@ -66,6 +67,7 @@ int main(int argc, char ** argv) {
         const std::string a = argv[i];
         if (a == "--delta") { delta = true; continue; }
         if (a == "--quiet") { quiet = true; continue; }
+        if (a == "--no-avx2") { declick::allowWideKernels(false); continue; }
         if (a == "-h" || a == "--help") { usage(); return 0; }
         if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); return 2; }
         float v = 0.0f;
@@ -180,6 +182,7 @@ int main(int argc, char ** argv) {
                params.maxLengthMs, cfg.passes, cfg.passes == 1 ? "" : "es", cfg.order);
         printf("  depth %.3f, alpha %.3f, wmax %.3f\n",
                params.depth, cfg.wienerAlpha, cfg.wienerMax);
+        printf("  kernels %s\n", declick::kernelName());
         printf("  latency %d samples (%.1f ms)\n", cfg.latency,
                1000.0 * cfg.latency / (double)audio.sampleRate);
         printf("  repaired %llu of %llu samples (%.2f%%)\n",
