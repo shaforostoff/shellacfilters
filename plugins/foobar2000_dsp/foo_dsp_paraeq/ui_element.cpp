@@ -193,10 +193,14 @@ public:
 
     // -- told from outside ---------------------------------------------------
 
+    //! A chain without the equaliser has no settings to offer, so a panel keeps
+    //! the ones it has: they are what "Add to DSP chain" puts back.
     void onChainChanged(const Params & p, bool engaged) {
-        m_params  = p;
         m_engaged = engaged;
-        m_editor.setParams(p);
+        if (engaged) {
+            m_params = p;
+            m_editor.setParams(p);
+        }
         m_editor.refreshEngaged();
     }
 
