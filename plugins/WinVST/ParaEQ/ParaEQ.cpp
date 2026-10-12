@@ -164,6 +164,7 @@ ParaEQ::ParaEQ(audioMasterCallback audioMaster) :
 	//host's guess of a sample rate; the first call redoes it if the host
 	//disagrees.
 	active = paramsFromControls();
+	paraeq::Config cfg;
 	cfg.compute(active, 44100.0);
 	chanL.configure(cfg);
 	chanR.configure(cfg);
@@ -234,7 +235,6 @@ void ParaEQ::updateConfig()
 		chanR.retune(next);
 	}
 
-	cfg = next;
 	active = p;
 	activeRate = rate;
 	//No setInitialDelay() or ioChanged() here: the latency is zero whatever the

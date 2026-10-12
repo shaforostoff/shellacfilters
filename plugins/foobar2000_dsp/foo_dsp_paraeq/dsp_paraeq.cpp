@@ -36,7 +36,6 @@ public:
     dsp_paraeq(const dsp_preset & in) {
         m_pending = paraeq_preset::parse(in);
         m_active  = m_pending;
-        m_cfg.compute(m_active, 44100.0);
     }
 
     static GUID g_get_guid() { return paraeq_preset::guid(); }
@@ -93,7 +92,6 @@ public:
             Config cfg;
             cfg.compute(params, (double)rate);
             for (size_t c = 0; c < m_chan.size(); ++c) m_chan[c]->retune(cfg);
-            m_cfg    = cfg;
             m_active = params;
         }
 
@@ -145,7 +143,6 @@ private:
         }
 
         m_chan.swap(chans);
-        m_cfg      = cfg;
         m_channels = channels;
         m_rate     = rate;
         m_active   = params;
@@ -155,7 +152,6 @@ private:
     std::mutex m_lock;
     Params m_pending;   //!< written by apply_preset, read by on_chunk
     Params m_active;    //!< playback thread only
-    Config m_cfg;
 
     std::vector<std::unique_ptr<Channel> > m_chan;
     unsigned m_channels = 0;

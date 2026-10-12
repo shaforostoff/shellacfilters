@@ -170,6 +170,7 @@ ParaEQ::ParaEQ(AudioUnit component)
 	//Nothing in this core is sized by the parameters or by the sample rate -
 	//heapBytes() is 0 - so this is the whole of the setup and Initialize() only
 	//has to redo the arithmetic at the rate the host turns out to have.
+	paraeq::Config cfg;
 	cfg.compute(active, 44100.0);
 	chan[0].configure(cfg);
 	chan[1].configure(cfg);
@@ -396,7 +397,6 @@ void ParaEQ::updateConfig()
 		chan[1].retune(next);
 	}
 
-	cfg = next;
 	active = p;
 	activeRate = rate;
 }

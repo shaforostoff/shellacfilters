@@ -142,7 +142,6 @@ private:
 
 	paraeq::Channel chanL;
 	paraeq::Channel chanR;
-	paraeq::Config cfg;
 	paraeq::Params active;
 	double activeRate;
 	bool needsConfigure;
