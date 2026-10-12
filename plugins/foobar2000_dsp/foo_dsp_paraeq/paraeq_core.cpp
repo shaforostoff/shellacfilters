@@ -377,12 +377,10 @@ void Channel::flush()
 }
 
 
-bool Channel::retune(const Config & cfg)
+void Channel::retune(const Config & cfg)
 {
     m_cfg = cfg;
     m_settled = false;
-
-    return true;
 }
 
 
