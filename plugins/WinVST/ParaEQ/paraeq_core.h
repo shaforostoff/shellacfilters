@@ -250,12 +250,6 @@ struct Config {
                                 //!< per sample
 
     void compute(const Params & p, double sampleRate);
-
-    //! Always true. Nothing here is sized by the parameters or by the sample
-    //! rate, so every change - a sample rate change included - can be retuned
-    //! into a running Channel. Kept for symmetry with the sibling cores, whose
-    //! callers branch on it.
-    bool structurallyEquals(const Config &) const { return true; }
 };
 
 //! Flush-to-zero for the duration of a scope. The biquad states are recursions
@@ -300,17 +294,16 @@ public:
     void flush();
 
     //! Point the glide at a new target, keeping filter state and keeping the
-    //! active coefficients where they are. Never fails - see
-    //! Config::structurallyEquals - and never allocates, so a render thread may
-    //! call it on every block.
-    bool retune(const Config & cfg);
+    //! active coefficients where they are. Nothing here is sized by the
+    //! parameters or by the sample rate, so every change - a sample rate change
+    //! included - can be retuned in: this never fails and never allocates, and
+    //! a render thread may call it on every block.
+    void retune(const Config & cfg);
 
     //! In place, interleaved by `stride`. Zero latency: what goes in comes out,
     //! same count, same alignment.
     template<typename Sample>
     void process(Sample * io, size_t frames, size_t stride);
-
-    const Config & config() const { return m_cfg; }
 
     //! True once the active coefficients have reached the target, i.e. nothing
     //! is gliding. process() takes a cheaper path in that state, which is the
@@ -319,9 +312,6 @@ public:
     //! rest of the move is inaudible; expect a few hundred milliseconds rather
     //! than the kGlideSec the ear hears.
     bool settled() const { return m_settled; }
-
-    //! The coefficients actually in use, which lag the target during a glide.
-    const Biquad & activeStage(int index) const { return m_active[index]; }
 
     size_t heapBytes() const { return 0; }
 

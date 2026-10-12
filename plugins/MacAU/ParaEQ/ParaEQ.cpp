@@ -387,7 +387,7 @@ void ParaEQ::updateConfig()
 		needsReset = false;
 	} else {
 		//Every control move retunes in place. retune() never fails and never
-		//allocates - see Config::structurallyEquals - so unlike the two
+		//allocates - see paraeq_core.h - so unlike the two
 		//siblings there is no rebuild path here and no rate change that forces
 		//one. The curve glides to the new one over kGlideSec rather than
 		//switching to it, which is what keeps a knob drag from stepping the
