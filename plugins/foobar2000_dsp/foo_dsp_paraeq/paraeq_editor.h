@@ -273,6 +273,7 @@ private:
     bool  m_tracking = false;   //!< TrackMouseEvent is armed
     bool  m_engaged  = true;
     int   m_footHot  = -1;
+    int   m_wheelRest = 0;      //!< wheel delta short of a whole notch
 
     bool  m_pushDirty = false;
     bool  m_pushTimer = false;

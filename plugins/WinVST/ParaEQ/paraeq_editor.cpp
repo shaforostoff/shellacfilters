@@ -1608,8 +1608,13 @@ void Editor::onWheel(POINT screenPt, int delta)
 
     select(band);
 
-    const int steps = delta / WHEEL_DELTA;
-    const int n = (steps == 0) ? (delta > 0 ? 1 : -1) : steps;
+    // A precision touchpad sends a notch as many small deltas. Each of them
+    // taken as a whole notch would move the band once per message rather than
+    // once per notch, so the remainder is carried until it adds up to one.
+    m_wheelRest += delta;
+    const int n = m_wheelRest / WHEEL_DELTA;
+    m_wheelRest %= WHEEL_DELTA;
+    if (n == 0) return;
 
     if (GetKeyState(VK_SHIFT) & 0x8000) {
         nudgeQ(band, n);
