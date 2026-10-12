@@ -358,7 +358,10 @@ foreach(_au Declick Dehum ParaEQ)
             "${_dir}")
 
         if(MSVC)
-            target_compile_options(${_core}_au_verify PRIVATE /W4)
+            # /wd4068: `#pragma mark` is Xcode's section marker, which these
+            # files are edited in. MSVC does not know it; the test includes the
+            # headers too, so this is target-wide rather than per-source below.
+            target_compile_options(${_core}_au_verify PRIVATE /W4 /wd4068)
             # The wrapper follows the Airwindows AU house pattern - the template's
             # unused parameters, `fpdL = 1.0;` on a uint32_t, and a float store
             # from a double - so it warns exactly where the other 540 do. Those
