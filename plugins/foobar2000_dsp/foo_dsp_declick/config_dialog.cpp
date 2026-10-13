@@ -36,13 +36,16 @@ struct slider_def {
 
 const slider_def k_sliders[] = {
     { IDC_SLIDER_SENSITIVITY, IDC_LABEL_SENSITIVITY, IDC_VALUE_SENSITIVITY, 1000,  0.0,  1.0, 3, L"",
-      L"How readily a sample is called a click. The default puts the trigger at 3.2 sigma above "
-      L"the local noise estimate. Past it, music starts being flagged as damage faster than "
-      L"crackle is found; 0.7 is slightly gentler." },
+      L"How readily a sample is called a click. The default, 0.8, puts the trigger at 3.2 sigma "
+      L"above the local noise estimate and was chosen by ear on crackly 78s. Past it, music starts "
+      L"being flagged as damage faster than crackle is found. On clean records 0.6-0.7 takes less "
+      L"and leaves little behind." },
 
     { IDC_SLIDER_EXTENT,      IDC_LABEL_EXTENT,      IDC_VALUE_EXTENT,      1000,  0.0,  1.0, 3, L"",
       L"How far each detection spreads outwards into the tail of the click. Higher repairs more "
-      L"of the decay; too high starts replacing good audio either side of it." },
+      L"of the decay, but it lowers the floor for every repair, so too high starts replacing good "
+      L"audio either side. A strong click whose error rings through zero is repaired whole "
+      L"without it. Lower it (0.3) on clean records." },
 
     { IDC_SLIDER_MAXLEN,      IDC_LABEL_MAXLEN,      IDC_VALUE_MAXLEN,       198,  0.2, 20.0, 1, L" ms",
       L"The longest single stretch that may be reconstructed. Damage longer than this is left "
@@ -53,10 +56,11 @@ const slider_def k_sliders[] = {
       L"first pass's repairs uncover." },
 
     { IDC_SLIDER_ORDER,       IDC_LABEL_ORDER,       IDC_VALUE_ORDER,        124,  8.0, 256.0, 0, L"",
-      L"Taps in the autoregressive model that predicts what the waveform should have been. The "
-      L"lever that pays most: against injected-click ground truth, 128 takes whole-file error "
-      L"from +0.60 to +1.31 dB and 256 to +2.55 dB. It also costs real CPU and adds latency, "
-      L"which is why the default stops at 128; 64 gives up little and costs 2.5x less." },
+      L"Taps in the autoregressive model that predicts what the waveform should have been. Higher "
+      L"orders model the music better, so they change clean records least - 256 is the gentlest - "
+      L"but they also miss more of the short clicks on heavily crackled transfers, where 64-128 "
+      L"catches more. 128 is the balance. Any value works, not only powers of two; CPU and latency "
+      L"grow with it (256 costs about 2.4x what 128 does, 64 about 0.6x)." },
 
     { IDC_SLIDER_DEPTH,       IDC_LABEL_DEPTH,       IDC_VALUE_DEPTH,       1000,  0.0,  1.0, 3, L"",
       L"How much of the estimated click is subtracted. 1, the default, replaces the damaged "
