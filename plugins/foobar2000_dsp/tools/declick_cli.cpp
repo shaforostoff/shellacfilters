@@ -43,7 +43,8 @@ void usage() {
         "  --wmax <x>   Ceiling on the subtracted fraction\n"
         "  --rerepair <0..2>  Repair runs again once the model is refitted (default 1)\n"
         "  --dip <n>    Samples below the floor a run may step over (default 1)\n"
-        "  --dip-far <0..1>  How far above the floor it must be beyond them (default 0.5)\n");
+        "  --dip-far <0..1>  How far above the floor it must be beyond them (default 0.5)\n"
+        "  --dip-peak <x>    Only runs that peak this many sigma or more may (default 6)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -67,6 +68,7 @@ int main(int argc, char ** argv) {
     float rerepair = -1.0f;
     float dip = -1.0f;
     float dipFar = -1.0f;
+    float dipPeak = -1.0f;
 
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
@@ -86,6 +88,7 @@ int main(int argc, char ** argv) {
         else if (a == "--rerepair") rerepair = v;
         else if (a == "--dip") dip = v;
         else if (a == "--dip-far") dipFar = v;
+        else if (a == "--dip-peak") dipPeak = v;
         else if (a == "-s") params.sensitivity = v;
         else if (a == "-e") params.extent = v;
         else if (a == "-l") params.maxLengthMs = v;
@@ -114,6 +117,7 @@ int main(int argc, char ** argv) {
     if (rerepair >= 0.0f) cfg.rerepair = (int)rerepair;
     if (dip >= 0.0f) cfg.dip = (int)dip;
     if (dipFar >= 0.0f) cfg.dipFar = dipFar;
+    if (dipPeak >= 0.0f) cfg.dipPeak = dipPeak;
 
     std::vector<std::unique_ptr<declick::Channel> > chans;
     for (unsigned c = 0; c < channels; ++c) {

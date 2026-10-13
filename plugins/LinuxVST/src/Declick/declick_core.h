@@ -137,7 +137,8 @@ struct Config {
     //! How many samples below the hysteresis floor a run may step over, and
     //! how far above the floor - as a fraction of the way up to the trigger -
     //! the detection function must be on the other side. Not user-facing;
-    //! declick_cli sweeps them as --dip and --dip-far.
+    //! declick_cli sweeps them as --dip and --dip-far. The figures in this
+    //! paragraph predate dipPeak, below.
     //! A click's prediction error rings, and on band-limited material - an
     //! MP3 is empty above 16 kHz - it swings through zero inside the click.
     //! Where that dipped under the floor the run ended early, and the repair
@@ -152,8 +153,20 @@ struct Config {
     //! on a clean D'Arienzo transfer, where it changed the music by -30.9 dB
     //! against -46.4 with no dip at all; 0.5 changes it by -35.6 and was
     //! heard to remove no more attack than none. dip 0 is plain hysteresis.
+    //!
+    //! dipPeak (--dip-peak): only a run whose detection peaks at this many
+    //! sigma may step over a dip. Most runs that are stretched barely cross
+    //! the trigger - noise alone crosses 3.2 sigma ~100 times a second - and
+    //! on clean material those carried most of what the dip removed: two
+    //! thirds of it on the Malvon master. At 6 the Malvon master goes from
+    //! -33.6 to -36.4 dB removed (-36.8 with no dip), the clean D'Arienzo
+    //! from -35.6 to -45.5 (-46.4), while a crackly D'Arienzo MP3 keeps
+    //! 85% of what the dip gained on clicks above 8 sigma. Benchmark: SNR
+    //! back to 25.4 dB, change to clean music -34.6, largest crackle -9.8.
+    //! Preferred by ear over 5 and over no limit.
     int    dip          = 1;
     double dipFar       = 0.5;
+    double dipPeak      = 6.0;
     int    pad          = 272;   //!< context needed either side of a block
     int    latency      = 784;
 
