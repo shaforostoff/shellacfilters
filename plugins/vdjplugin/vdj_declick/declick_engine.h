@@ -186,7 +186,7 @@ private:
     // Slider positions for the calibrated defaults, the same ones the VST2 port
     // opens on. Named because two of them are not the round number they look
     // like: MaxLen is linear in milliseconds and Order in eights.
-    static constexpr float kDefA = 0.8f;   // Sensitivity -> trigger at 3.2 sigma
+    static constexpr float kDefA = 0.9f;   // Sensitivity -> trigger at 2.85 sigma
     static constexpr float kDefB = 0.5f;   // Extent
     static constexpr float kDefC = 0.2f;   // Max repair -> 4.0 ms
     static constexpr float kDefD = 1.0f;   // Depth -> outright replacement

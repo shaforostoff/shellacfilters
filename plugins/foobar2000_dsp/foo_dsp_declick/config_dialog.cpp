@@ -36,10 +36,11 @@ struct slider_def {
 
 const slider_def k_sliders[] = {
     { IDC_SLIDER_SENSITIVITY, IDC_LABEL_SENSITIVITY, IDC_VALUE_SENSITIVITY, 1000,  0.0,  1.0, 3, L"",
-      L"How readily a sample is called a click. The default, 0.8, puts the trigger at 3.2 sigma "
-      L"above the local noise estimate and was chosen by ear on crackly 78s. Past it, music starts "
-      L"being flagged as damage faster than crackle is found. On clean records 0.6-0.7 takes less "
-      L"and leaves little behind." },
+      L"How readily a sample is called a click. The default, 0.9, puts the trigger at 2.85 sigma "
+      L"above the local noise estimate. Detections near the trigger are only partly repaired - "
+      L"they are as likely noise or music as clicks - and full repair is kept for clear ones. "
+      L"Past the default, music starts being flagged as damage faster than crackle is found. On "
+      L"clean records 0.7-0.8 takes less still." },
 
     { IDC_SLIDER_EXTENT,      IDC_LABEL_EXTENT,      IDC_VALUE_EXTENT,      1000,  0.0,  1.0, 3, L"",
       L"How far each detection spreads outwards into the tail of the click. Higher repairs more "

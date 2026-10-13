@@ -26,7 +26,7 @@ void usage() {
         "\n"
         "  declick_cli <in.wav> <out.wav> [options]\n"
         "\n"
-        "  -s <0..1>    Sensitivity (default 0.8, higher catches more)\n"
+        "  -s <0..1>    Sensitivity (default 0.9, higher catches more)\n"
         "  -e <0..1>    Extent, how far a detection spreads (default 0.5)\n"
         "  -l <ms>      Longest single repair, ms (default 4)\n"
         "  -p <1..3>    Passes (default 2)\n"
@@ -44,7 +44,9 @@ void usage() {
         "  --rerepair <0..2>  Repair runs again once the model is refitted (default 1)\n"
         "  --dip <n>    Samples below the floor a run may step over (default 1)\n"
         "  --dip-far <0..1>  How far above the floor it must be beyond them (default 0.5)\n"
-        "  --dip-peak <x>    Only runs that peak this many sigma or more may (default 6)\n");
+        "  --dip-peak <x>    Only runs that peak this many sigma or more may (default 6)\n"
+        "  --soft-min <0..1>  Share of a run at the trigger that is repaired (default 0.5)\n"
+        "  --soft-span <x>    Sigma above the trigger where repair is full (default 3.5, 0 off)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -69,6 +71,8 @@ int main(int argc, char ** argv) {
     float dip = -1.0f;
     float dipFar = -1.0f;
     float dipPeak = -1.0f;
+    float softMin = -1.0f;
+    float softSpan = -1.0f;
 
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
@@ -89,6 +93,8 @@ int main(int argc, char ** argv) {
         else if (a == "--dip") dip = v;
         else if (a == "--dip-far") dipFar = v;
         else if (a == "--dip-peak") dipPeak = v;
+        else if (a == "--soft-min") softMin = v;
+        else if (a == "--soft-span") softSpan = v;
         else if (a == "-s") params.sensitivity = v;
         else if (a == "-e") params.extent = v;
         else if (a == "-l") params.maxLengthMs = v;
@@ -118,6 +124,8 @@ int main(int argc, char ** argv) {
     if (dip >= 0.0f) cfg.dip = (int)dip;
     if (dipFar >= 0.0f) cfg.dipFar = dipFar;
     if (dipPeak >= 0.0f) cfg.dipPeak = dipPeak;
+    if (softMin >= 0.0f) cfg.softMin = softMin;
+    if (softSpan >= 0.0f) cfg.softSpan = softSpan;
 
     std::vector<std::unique_ptr<declick::Channel> > chans;
     for (unsigned c = 0; c < channels; ++c) {
