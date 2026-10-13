@@ -72,7 +72,7 @@ public:
 
     //! Sliders to core units, identical to Declick::paramsFromControls() in the
     //! VST2 port. The quantised ones use equal-width buckets, so Passes at 0.5
-    //! lands on the 2 the tuning was done at and Model order at 1.0 on 64.
+    //! lands on the 2 the tuning was done at and Model order at 0.4677 on 128.
     declick::Params params() const {
         declick::Params p = declick::Params::defaults();
         p.sensitivity = pinParameter(m_a);
@@ -80,7 +80,7 @@ public:
         p.maxLengthMs = pinParameter(m_c) * 20.0f;                  // 0.2 .. 20 ms
         p.depth       = pinParameter(m_d);
         p.passes      = 1 + (int)(pinParameter(m_e) * 2.999f);      // 1, 2, 3
-        p.order       = 8 + 8 * (int)(pinParameter(m_f) * 7.999f);  // 8 .. 64 in eights
+        p.order       = 16 + 8 * (int)(pinParameter(m_f) * 30.999f); // 16 .. 256 in eights
         p.dryWet      = pinParameter(m_g);
         p.sanitize();
         return p;
@@ -191,7 +191,7 @@ private:
     static constexpr float kDefC = 0.2f;   // Max repair -> 4.0 ms
     static constexpr float kDefD = 1.0f;   // Depth -> outright replacement
     static constexpr float kDefE = 0.5f;   // Passes -> 2
-    static constexpr float kDefF = 1.0f;   // Model order -> 64
+    static constexpr float kDefF = 0.4677f; // Model order -> 128
     static constexpr float kDefG = 1.0f;   // Dry/Wet
 
     // VirtualDJ writes straight through the pointers DeclareParameterSlider was

@@ -20,8 +20,8 @@ Declick::Declick(audioMasterCallback audioMaster) :
 	C = 0.2;  //MaxLen, 4.0 ms
 	D = 1.0;  //Depth, outright replacement
 	E = 0.5;  //Passes, 2
-	F = 1.0;  //Order, 64 - the top of this slider, which stops where the
-	          //real-time budget does; the core itself goes to kMaxOrder
+	F = 0.4677;  //Order, 128 - the slider runs 16 .. 256 in eights, as far
+	             //as the core's kMaxOrder; 128 is the foobar2000 default
 	G = 1.0;  //Dry/Wet
 
 	//the channels allocate on configure(), so get that out of the audio thread
@@ -68,7 +68,7 @@ static float pinParameter(float data)
 }
 
 //Sliders to core units. The quantized ones use equal-width buckets, so E at 0.5
-//lands on the 2 passes the tuning was done at, and F at 1.0 on order 64.
+//lands on the 2 passes the tuning was done at, and F at 0.4677 on order 128.
 declick::Params Declick::paramsFromControls()
 {
 	declick::Params p = declick::Params::defaults();
@@ -77,7 +77,7 @@ declick::Params Declick::paramsFromControls()
 	p.maxLengthMs = C * 20.0f;                     //0.2 .. 20 ms, clamped below
 	p.depth       = D;
 	p.passes      = 1 + (int)(E * 2.999f);         //1, 2, 3
-	p.order       = 8 + 8 * (int)(F * 7.999f);     //8 .. 64 in eights
+	p.order       = 16 + 8 * (int)(F * 30.999f);   //16 .. 256 in eights
 	p.dryWet      = G;
 	p.sanitize();
 	return p;

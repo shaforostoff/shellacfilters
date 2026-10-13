@@ -105,13 +105,10 @@ void testSliders() {
 
     // The declared defaults are what VirtualDJ opens a fresh effect on, so they
     // have to be the same positions the members start at - and those have to
-    // land on the calibrated core defaults, except for the order: the core's
-    // default is 128, and this slider stops at 64, where a live mix's
-    // real-time budget does.
-    declick::Params want = declick::Params::defaults();
-    if (want.order > 64) want.order = 64;
+    // land on the calibrated core defaults, order 128 included.
+    const declick::Params want = declick::Params::defaults();
     const declick::Params got = engine.params();
-    check(got == want, "default slider positions map to Params::defaults(), order capped at 64");
+    check(got == want, "default slider positions map to Params::defaults()");
     checkf(got.order == want.order, "order %.0f, expected %.0f",
            (double)got.order, (double)want.order);
     checkf(got.passes == want.passes, "passes %.0f, expected %.0f",

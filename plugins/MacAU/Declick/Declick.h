@@ -75,9 +75,9 @@ static const float kDefaultValue_ParamB = 0.5f;  //Extent
 static const float kDefaultValue_ParamC = 0.2f;  //MaxLen, 4.0 ms
 static const float kDefaultValue_ParamD = 1.0f;  //Depth, outright replacement
 static const float kDefaultValue_ParamE = 0.5f;  //Passes, 2
-static const float kDefaultValue_ParamF = 1.0f;  //Order, 64 - the top of this slider, which stops
-                                                //where the real-time budget does; the core itself
-                                                //goes to kMaxOrder
+static const float kDefaultValue_ParamF = 0.4677f;  //Order, 128 - the slider runs 16 .. 256 in
+                                                   //eights, as far as the core's kMaxOrder; 128 is
+                                                   //the foobar2000 default
 static const float kDefaultValue_ParamG = 1.0f;  //Dry/Wet
 
 static CFStringRef kParameterAName = CFSTR("Sensitv");

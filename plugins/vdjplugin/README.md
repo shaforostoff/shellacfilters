@@ -20,7 +20,7 @@ shape of the whole port, so it is worth stating plainly.
 
 Declick is a detect-and-interpolate repairer. To rebuild a damaged sample it
 needs the audio on *both* sides of it, so the core holds `Config::latency`
-samples — 880 at 44.1 kHz with the default Max repair and Model order. A host
+samples — 1072 at 44.1 kHz with the default Max repair and Model order. A host
 that hands over n samples and wants n back can only get that by accepting a
 delay. In a DJ program a delay is not a detail: it moves the deck later than
 everything it is being mixed against.
@@ -78,7 +78,7 @@ short of the notch it eventually reaches, the scouted run is already there.
 
 Both use the buffer interface, and neither is built against `IVdjPluginDsp8`.
 The live interface was implemented first and then dropped: it works, but under
-it Declick plays 880 samples - about 20 ms - late, and on a deck that is being
+it Declick plays 1072 samples - about 24 ms - late, and on a deck that is being
 mixed a delay is not a detail. What the live interface would have bought is the
 ability to run on a microphone or on the master, where there is no song to read
 ahead of; if you want that back, the wrapper is in the history of
@@ -342,7 +342,7 @@ pin the default positions against `Params::defaults()`.
 | Max repair | 0.2–20 ms | 4.0 ms | Longest single repair. **Structural** — see below |
 | Depth | 0–1 | 1 | 1 replaces damaged samples outright; 0 subtracts the 45 % fraction that adds the least whole-file error, which caps every repair at −5.2 dB |
 | Passes | 1–3 | 2 | A second pass catches clicks the first uncovers; ~60 % more CPU |
-| Model order | 8–64 in eights | 64 | The one control where CPU clearly buys quality. **Structural** |
+| Model order | 16–256 in eights | 128 | Higher changes clean records least; 64–128 catches more on heavily crackled ones. Settings saved by earlier versions reopen at a different order: the slider used to run 8–64. **Structural** |
 | Dry/Wet | 0–1 | 1 | 0 is a bypass, and an exact one — see *16 bit*, below |
 
 ### Dehum
@@ -381,10 +381,10 @@ or forward by more than 0.25 s, restarts the pipeline.
 
 **A restart warms up.** It rewinds 0.25 s before the audio that was asked for and
 runs the core over that first, so Declick's noise estimate and Dehum's analysis
-window are settled by the time anyone hears anything. At the measured 205×
-realtime for Declick at this port's default order of 64 (130× on a CPU without
-AVX2), that is 1–2 ms of work in the call that pays for it.
-Wind Model order up to 256 and it is roughly four to five times that — the figure to
+window are settled by the time anyone hears anything. At the measured 120×
+realtime for Declick at this port's default order of 128 (67× on a CPU without
+AVX2), that is 2–4 ms of work in the call that pays for it.
+Wind Model order up to 256 and it is roughly two and a half times that — the figure to
 revisit if you do.
 
 **`pos` does not come from one consumer, and that one cost real debugging.**

@@ -267,7 +267,7 @@ ComponentResult Declick::Initialize()
 //	Declick::paramsFromControls
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //Sliders to core units. The quantized ones use equal-width buckets, so E at 0.5
-//lands on the 2 passes the tuning was done at, and F at 1.0 on order 64.
+//lands on the 2 passes the tuning was done at, and F at 0.4677 on order 128.
 declick::Params Declick::paramsFromControls()
 {
 	declick::Params p = declick::Params::defaults();
@@ -276,7 +276,7 @@ declick::Params Declick::paramsFromControls()
 	p.maxLengthMs = GetParameter( kParam_C ) * 20.0f;        //0.2 .. 20 ms, clamped below
 	p.depth       = GetParameter( kParam_D );
 	p.passes      = 1 + (int)(GetParameter( kParam_E ) * 2.999f);     //1, 2, 3
-	p.order       = 8 + 8 * (int)(GetParameter( kParam_F ) * 7.999f); //8 .. 64 in eights
+	p.order       = 16 + 8 * (int)(GetParameter( kParam_F ) * 30.999f); //16 .. 256 in eights
 	p.dryWet      = GetParameter( kParam_G );
 	p.sanitize();
 	return p;
