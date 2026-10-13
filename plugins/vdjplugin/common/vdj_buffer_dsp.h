@@ -352,7 +352,27 @@ private:
             // Past the end of the song, or not decoded yet. Zeros are what
             // Channel::drain() feeds for the same purpose: they push the tail
             // of the real audio out of the pipeline instead of stranding it.
-            std::fill(m_in.begin(), m_in.begin() + frames * kChannels, 0.0);
+            //
+            // But a slice that straddles the end fails as a whole, and zeroing
+            // all of it threw away the song's last up-to-kSliceFrames frames:
+            // whether any of them were heard depended on how the slices fell,
+            // so it showed up only at some Model orders. Keep the longest
+            // prefix that does read - a binary search, a dozen reads at most
+            // and only at the end of the song - and zero the rest.
+            size_t ok = 0, bad = frames;
+            while (bad - ok > 1) {
+                const size_t mid = ok + (bad - ok) / 2;
+                const short * part = NULL;
+                if (src.read((int)m_inPos, (int)mid, &part) && part != NULL) ok = mid;
+                else bad = mid;
+            }
+            raw = NULL;
+            if (ok > 0 && src.read((int)m_inPos, (int)ok, &raw) && raw != NULL) {
+                fromShorts(raw, m_in.data(), ok);
+            } else {
+                ok = 0;
+            }
+            std::fill(m_in.begin() + ok * kChannels, m_in.begin() + frames * kChannels, 0.0);
         }
 
         engine.push(m_in.data(), frames);
