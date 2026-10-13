@@ -18,4 +18,9 @@ fb2k_component(foo_dsp_declick "Declick"
     WIN32_SOURCES
         config_dialog.cpp
         foo_dsp_declick.rc
+
+    MAC_SOURCES
+        config_view_mac.mm
+        ../mac/slider_panel.mm
+        ../mac/slider_panel.h
 )

@@ -20,4 +20,9 @@ fb2k_component(foo_dsp_dehum "Dehum"
     WIN32_SOURCES
         config_dialog.cpp
         foo_dsp_dehum.rc
+
+    MAC_SOURCES
+        config_view_mac.mm
+        ../mac/slider_panel.mm
+        ../mac/slider_panel.h
 )

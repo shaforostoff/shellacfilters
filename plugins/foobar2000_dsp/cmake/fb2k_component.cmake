@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # fb2k_component.cmake
 #
-# fb2k_component(<name> <display name> SOURCES ... WIN32_SOURCES ...)
+# fb2k_component(<name> <display name> SOURCES ... WIN32_SOURCES ... MAC_SOURCES ...)
 #
 # Declares one foobar2000 component, in the shape each platform loads:
 #
@@ -18,19 +18,23 @@
 #             it, and mac/<name>.component is where foobar2000 for Mac looks.
 #
 # SOURCES are compiled everywhere. WIN32_SOURCES - the dialogs, the resource
-# script, anything that draws with GDI - only on Windows.
+# script, anything that draws with GDI - only on Windows, and MAC_SOURCES - the
+# Cocoa views - only on macOS. mac/ at the top of this project holds what more
+# than one component's Cocoa view is built from, and is on the include path
+# there.
 #
 # scripts\build_release.ps1 and scripts/build_release_macos.sh assemble the
 # results into archives.
 # ---------------------------------------------------------------------------
 
 function(fb2k_component name display_name)
-    cmake_parse_arguments(PARSE_ARGV 2 arg "" "" "SOURCES;WIN32_SOURCES")
+    cmake_parse_arguments(PARSE_ARGV 2 arg "" "" "SOURCES;WIN32_SOURCES;MAC_SOURCES")
 
     set(_sources ${arg_SOURCES})
     if(WIN32)
         list(APPEND _sources ${arg_WIN32_SOURCES})
     else()
+        list(APPEND _sources ${arg_MAC_SOURCES})
         # foobar2000_get_interface; see FB2K_COMPONENT_CLIENT_SOURCE in
         # fb2k_sdk.cmake for why it is compiled here rather than linked.
         list(APPEND _sources "${FB2K_COMPONENT_CLIENT_SOURCE}")
@@ -63,6 +67,12 @@ function(fb2k_component name display_name)
         set(_version "${CMAKE_MATCH_1}")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                      "${CMAKE_CURRENT_SOURCE_DIR}/version.h")
+
+        target_include_directories(${name} PRIVATE "${PROJECT_SOURCE_DIR}/mac")
+        # Objective-C class names are one namespace across every bundle in the
+        # process, and the shared Cocoa sources are compiled into more than one
+        # component; their classes take this as a suffix to stay apart.
+        target_compile_definitions(${name} PRIVATE FOO_DSP_MAC_CLASS_SUFFIX=${name})
 
         string(REPLACE "_" "-" _bundle_id "${name}")
         # BUNDLE with a MODULE library is what makes CMake lay out the bundle
