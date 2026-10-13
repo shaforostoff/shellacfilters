@@ -59,13 +59,11 @@ struct Params {
 
     static Params defaults() {
         Params p;
-        // 0.8 puts the trigger at 3.2 sigma. By the numbers 0.7 is marginally
-        // ahead - against real crackle injected at known positions and click
-        // probes on a tone and a master transfer, it gives up only 0.5 dB of
-        // dense crackle removal for ~1 dB less harm - but 0.8 won the
-        // listening comparison on three full shellac transfers, with no music
-        // audible in what it removes. See the README.
-        p.sensitivity = 0.8f;
+        // 0.9 puts the trigger at 2.85 sigma. It was 0.8 (3.2 sigma), chosen
+        // by ear on three full shellac transfers, until weak detections got a
+        // partial repair (Config::softMin): with that, 0.9 reaches the small
+        // clicks 0.8 did and takes less from clean records. See the README.
+        p.sensitivity = 0.9f;
         p.extent      = 0.5f;
         p.maxLengthMs = 4.0f;
         // 1 replaces the damaged samples outright. The old default of 0, a
@@ -174,6 +172,24 @@ struct Config {
     int    dip          = 1;
     double dipFar       = 0.5;
     double dipPeak      = 6.0;
+
+    //! Partial repair of weak detections. Not user-facing; declick_cli sweeps
+    //! them as --soft-min and --soft-span. A run whose detection peaks right
+    //! at the trigger has only softMin of its discrepancy taken out, rising
+    //! linearly to all of it softSpan sigma above the trigger.
+    //! A run that barely crosses the trigger is about as likely noise or
+    //! music as a click - noise alone crosses 3.2 sigma ~100 times a second -
+    //! and on clean records those runs carry most of what is removed. Raising
+    //! the trigger instead loses the small clicks with the false ones;
+    //! repairing them by half keeps most of what they were worth. Together
+    //! with Sensitivity 0.9 (trigger 2.85 sigma), against the hard repair at
+    //! 0.8: the Malvon master -36.4 -> -38.6 dB removed, the clean D'Arienzo
+    //! -45.5 -> -47.3, while a crackly D'Arienzo MP3 keeps 2.08/s clicks
+    //! above 8 sigma against 1.93 (Sensitivity 0.7 alone: -37.2 dB, 2.28/s).
+    //! Benchmark: small crackle -3.9 dB removed against -3.8, all of it
+    //! -6.2 against -6.4, harm -15.5 against -13.9. Chosen by ear over 0.6.
+    double softMin      = 0.5;
+    double softSpan     = 3.5;
     int    pad          = 272;   //!< context needed either side of a block
     int    latency      = 784;
 
@@ -344,8 +360,9 @@ private:
     void interpolate(int from, int to, int reach);
     //! Repairs m_win[s..e] with the current model. False if it could not.
     //! `again` for a re-repair: the click is taken from m_dry, and the
-    //! repair is not counted a second time.
-    bool repairRun(int s, int e, bool again);
+    //! repair is not counted a second time. `gain` scales what is taken out;
+    //! see Config::softMin.
+    bool repairRun(int s, int e, bool again, double gain);
     //! Repairs every run recorded this block again, with the current model.
     void rerepairRuns();
     void fitModel(int from, int to);
@@ -401,6 +418,7 @@ private:
     //! Config::rerepair. Runs are disjoint and start inside the block, so
     //! there can be no more than kBlock of them.
     std::vector<int> m_runs;
+    std::vector<double> m_runGain;   //!< each run's repair gain, one per pair
     int    m_nruns = 0;
 
     std::vector<double> m_madRing; //!< |forward residual| history

@@ -857,6 +857,7 @@ void Channel::configure(const Config & cfg) {
     m_delta.assign(need, 0.0);
     m_corr.assign(2 * (bo + 1), 0.0);
     m_runs.assign(2 * (size_t)kBlock, 0);
+    m_runGain.assign((size_t)kBlock, 1.0);
 
     // The fit always spans the whole sliding window, so the Hann taper is the
     // same every block. Build it once here - sized to the envelope like
@@ -911,7 +912,7 @@ size_t Channel::heapBytes() const {
             + m_ra.capacity() + m_aa.capacity() + m_pvar.capacity() + m_sinv.capacity()
             + m_madRing.capacity() + m_scratch.capacity()
             + m_fitWin.capacity() + m_fitR.capacity() + m_delta.capacity()
-            + m_corr.capacity()
+            + m_corr.capacity() + m_runGain.capacity()
             + m_aarev.capacity() + m_rhs.capacity() + m_solve.capacity()
             + m_out.capacity()) * sizeof(double)
            + m_flag.capacity() + m_runs.capacity() * sizeof(int);
@@ -1203,6 +1204,13 @@ void Channel::interpolate(int from, int to, int reach) {
         double peak = 0.0;
         for (int t = s; t <= e; ++t) if (m_det[t] > peak) peak = m_det[t];
         const bool mayDip = peak >= m_cfg.dipPeak;
+        // And only one that triggered hard is repaired in full; one at the
+        // trigger loses softMin of its discrepancy. See Config::softMin.
+        double gain = 1.0;
+        if (m_cfg.softSpan > 0.0) {
+            const double u = (peak - hi) / m_cfg.softSpan;
+            gain = m_cfg.softMin + (1.0 - m_cfg.softMin) * dmin(dmax(u, 0.0), 1.0);
+        }
         while (mayDip) {
             int j = s - 1;
             while (j >= s - 1 - dip && j >= from && !m_flag[j] && m_det[j] <= lo) --j;
@@ -1228,21 +1236,22 @@ void Channel::interpolate(int from, int to, int reach) {
         // than maxRun, or out to the edge of the window - falls back to the
         // plain one, so stepping over dips can only ever add to a repair.
         // A huge click on a quiet floor rings above it for a long way.
-        bool ok = repairRun(s, e, false);
+        bool ok = repairRun(s, e, false, gain);
         if (!ok && (s != s0 || e != e0)) {
             s = s0; e = e0;
-            ok = repairRun(s, e, false);
+            ok = repairRun(s, e, false, gain);
         }
         i = e + 1;
         if (ok && m_cfg.rerepair > 0 &&
             m_nruns + 2 <= (int)m_runs.size()) {
+            m_runGain[(size_t)(m_nruns / 2)] = gain;
             m_runs[(size_t)m_nruns++] = s;
             m_runs[(size_t)m_nruns++] = e;
         }
     }
 }
 
-bool Channel::repairRun(int s, int e, bool again) {
+bool Channel::repairRun(int s, int e, bool again, double gain) {
     const int order = m_cfg.order;
     const int ctx = 3 * order;
     const int m = e - s + 1;
@@ -1352,6 +1361,7 @@ bool Channel::repairRun(int s, int e, bool again) {
         }
         if (w > wcap) w = wcap;
         w += depth * (1.0 - w);   // at depth 1 this is outright replacement
+        w *= gain;
 
         if (w > 0.0) {
             m_win[s + j] = x - w * dj;
@@ -1367,7 +1377,8 @@ bool Channel::repairRun(int s, int e, bool again) {
 
 void Channel::rerepairRuns() {
     for (int k = 0; k + 1 < m_nruns; k += 2) {
-        repairRun(m_runs[(size_t)k], m_runs[(size_t)k + 1], true);
+        repairRun(m_runs[(size_t)k], m_runs[(size_t)k + 1], true,
+                  m_runGain[(size_t)(k / 2)]);
     }
 }
 

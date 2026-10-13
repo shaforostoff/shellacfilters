@@ -258,7 +258,7 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 
 | | |
 | --- | --- |
-| **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.8** (3.2σ), chosen by ear on crackly 78s; on clean records 0.6–0.7 takes less and leaves little behind. See [Dense crackle](#dense-crackle). |
+| **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.9** (2.85σ). Runs that barely cross the trigger are only partly repaired — half of what the model says is wrong at the trigger, rising to all of it 3.5σ above — so the default reaches small clicks without taking much from clean records; on clean records 0.7–0.8 takes less still. See [Dense crackle](#dense-crackle). |
 | **Extent** | How far a detection spreads into its own tail before the repair stops. Raise it if repairs leave a residual tick behind them — but it lowers the floor for every repair, so it spreads into good audio everywhere; a strong click whose error rings through zero is already repaired whole without it (see the dip rule under [Dense crackle](#dense-crackle)). 0.3 is gentler on clean records. |
 | **Max repair** | Longest single repair. Anything longer is treated as music and left alone. 4 ms suits 78s. |
 | **Passes** | A second pass catches clicks the first one uncovers; the model is refitted in between. Small but real gain, roughly 50–60% more CPU. |
@@ -284,7 +284,7 @@ Note how flat the right-hand end is: quadrupling the number of samples touched
 (3.4 % → 14.0 %) only takes 21 events/s down to 18. Past about 0.7, sensitivity
 mostly buys collateral damage. **Repair depth is the more effective lever**.
 
-Throughput: ~215× realtime at the defaults on a CPU with AVX2 and FMA, ~115×
+Throughput: ~205× realtime at the defaults on a CPU with AVX2 and FMA, ~110×
 without; ~365× and ~215× at order 64. Measured end to end over 60 s of
 44.1 kHz mono shellac including file I/O — about half a percent of one core on
 a modern desktop. A 2014 MacBook Pro, whose Haswell has both, runs it at 42×
@@ -323,14 +323,14 @@ in the output):
 
 | Order | Malvon master, removed | clean D'Arienzo, removed | crackly D'Arienzo MP3, large clicks left | *Hotel Victoria* MP3, large clicks left | CPU vs 128 |
 | --- | --- | --- | --- | --- | --- |
-| 64 | −35.4 dB | −42.1 dB | 1.63/s | 0.47/s | ~0.6× |
-| **128** | −36.4 dB | −45.5 dB | 1.93/s | 0.40/s | 1× |
-| 192 | −38.2 dB | −44.5 dB | 2.18/s | 0.37/s | ~1.5× |
-| 256 | −38.7 dB | −46.4 dB | 2.57/s | 0.33/s | ~2.1× |
+| 64 | −37.5 dB | −44.5 dB | 1.78/s | 0.52/s | ~0.6× |
+| **128** | −38.6 dB | −47.3 dB | 2.08/s | 0.48/s | 1× |
+| 192 | −40.7 dB | −47.2 dB | 2.50/s | 0.37/s | ~1.6× |
+| 256 | −41.4 dB | −48.5 dB | 2.78/s | 0.42/s | ~2.2× |
 
 * **Crackly 78s** — the defaults.
 * **Clean or lightly crackled records, remasters** — Model order 256 and
-  Sensitivity 0.6–0.7: the least change to the music. Remasters that clip
+  Sensitivity 0.7–0.8: the least change to the music. Remasters that clip
   can make *Output only what is removed* pulse with the rhythm; that is the
   clipping and crackle on the loud beats being taken out, not the attacks
   (they measure unchanged, and none was heard missing).
@@ -963,8 +963,10 @@ whitened domain, by event size, alongside click probes of three shapes at
 | the same at order 64 | −6.3 / −9.6 dB | −13.4 | −10.0 / −9.2 / −4.2 dB | −33.5 dB |
 | the same at s 0.7 | −5.6 / −8.7 dB | −15.0 | −11.0 / −10.8 / −4.8 dB | −35.6 dB |
 | plus dip 1 / 0.5, on every run | −6.8 / −10.4 dB | −13.7 | −8.4 / −8.1 / −3.8 dB | −31.8 dB |
-| **current defaults** (dip only on runs peaking at 6σ) | **−6.4 / −9.8 dB** | −13.9 | −9.5 / −8.0 / −3.7 dB | −34.6 dB |
-| current, order 64 | −6.6 / −10.3 dB | −13.4 | −9.9 / −9.1 / −1.6 dB | −32.3 dB |
+| dip only on runs peaking at 6σ | −6.4 / −9.8 dB | −13.9 | −9.5 / −8.0 / −3.7 dB | −34.6 dB |
+| the same at order 64 | −6.6 / −10.3 dB | −13.4 | −9.9 / −9.1 / −1.6 dB | −32.3 dB |
+| **current defaults** (s 0.9, weak runs half repaired) | **−6.2 / −9.5 dB** | −15.5 | −11.2 / −9.5 / −3.9 dB | −36.2 dB |
+| current, order 64 | −6.5 / −10.1 dB | −15.0 | −11.5 / −9.5 / −1.9 dB | −33.2 dB |
 
 Lower is better everywhere; the last column is how much each changes music
 with no clicks injected at all, and that excerpt has a little crackle of its
@@ -1019,8 +1021,35 @@ What changed, and why:
   (1.12/s with no dip, 0.48/s on every run, 0.60/s at 6σ on this excerpt).
   On the benchmark harm, SNR and clean-music change return almost to where
   they were without the dip. Preferred by ear over 5σ and over no limit.
+* **Weak runs repaired by half, and Sensitivity 0.9** (`Config::softMin`
+  0.5, `softSpan` 3.5). Even after the dip limit, runs peaking under 6σ
+  carried most of what the Malvon master lost — 210 a second under 4σ,
+  at the rate noise alone crosses the trigger. No feature of a single run
+  told those apart from small real clicks: not the run's length, nor how
+  many samples crossed, nor whether the forward and backward errors agreed,
+  nor a local noise estimate (it matched the 30 ms one around every run).
+  What does pay is to stop betting everything on them: a run at the trigger
+  now has half its discrepancy taken out, rising to all of it 3.5σ higher,
+  and the trigger drops to 2.85σ so the small clicks are still reached.
+  Malvon master −36.4 → −38.6 dB removed, clean D'Arienzo −45.5 → −47.3,
+  while the crackly D'Arienzo MP3 keeps 2.08/s clicks above 8σ against
+  1.93. Lowering Sensitivity to 0.7 instead gets −37.2 dB for 2.28/s — the
+  soft repair buys two to three times as much per click left. On the
+  benchmark the small crackle comes out as well as before (−3.9 dB against
+  −3.8), harm drops 1.6 dB and the click probes improve but for the thump
+  on a tone (−5.8 → −5.5 dB); the largest crackle gives up 0.3 dB. About
+  5 % more CPU. Preferred by ear over 0.6 / 3, which leaves the MP3 exactly as
+  many clicks as before (1.93/s) but takes 0.9 dB more from the Malvon
+  master.
 
 Tried and dropped:
+
+* **Shorter runs for weak detections** — a higher floor for runs that peak
+  under 5–6σ. Kind to the clean D'Arienzo, but it cost the crackly MP3 more
+  clicks than it saved on the Malvon master; the half repair above does
+  both better. Requiring the forward and backward errors to agree inside a
+  weak run, the textbook signature of an additive click, traded worse too:
+  on real records it separated clicks from noise only weakly.
 
 * **Sparse deconvolution** (L1 on the residual, FISTA) — the textbook
   decrackler. Same crackle removal as the existing detector at 4.5 dB more

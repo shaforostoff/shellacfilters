@@ -70,7 +70,7 @@
 //these are the calibrated defaults foo_dsp_declick ships, expressed as slider
 //positions: see paramsFromControls() for the mappings, and the foobar2000_dsp
 //README for how each number was arrived at.
-static const float kDefaultValue_ParamA = 0.8f;  //Sensitv, 0.8 puts the trigger at 3.2 sigma
+static const float kDefaultValue_ParamA = 0.9f;  //Sensitv, 0.9 puts the trigger at 2.85 sigma
 static const float kDefaultValue_ParamB = 0.5f;  //Extent
 static const float kDefaultValue_ParamC = 0.2f;  //MaxLen, 4.0 ms
 static const float kDefaultValue_ParamD = 1.0f;  //Depth, outright replacement

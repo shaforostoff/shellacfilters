@@ -18,10 +18,11 @@ namespace {
 
 const slider_panel::row k_rows[] = {
     { "Sensitivity",  1000,  0.0,   1.0, 3, "",    NULL,
-      "How readily a sample is called a click. The default, 0.8, puts the trigger at 3.2 "
-      "sigma above the local noise estimate and was chosen by ear on crackly 78s. Past it, "
-      "music starts being flagged as damage faster than crackle is found. On clean records "
-      "0.6-0.7 takes less and leaves little behind." },
+      "How readily a sample is called a click. The default, 0.9, puts the trigger at 2.85 "
+      "sigma above the local noise estimate. Detections near the trigger are only partly "
+      "repaired - they are as likely noise or music as clicks - and full repair is kept for "
+      "clear ones. Past the default, music starts being flagged as damage faster than crackle "
+      "is found. On clean records 0.7-0.8 takes less still." },
 
     { "Extent",       1000,  0.0,   1.0, 3, "",    NULL,
       "How far each detection spreads outwards into the tail of the click. Higher repairs "

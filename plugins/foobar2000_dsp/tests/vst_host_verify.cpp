@@ -757,8 +757,17 @@ void testFloatPath(const std::vector<double> & inL, const std::vector<double> & 
     openThroughAbi(a);
     openThroughAbi(b);
 
+    /*  The double path is fed the same float-quantized input the float path
+     *  gets. Otherwise the input rounding alone can tip a Declick run sitting
+     *  at the trigger one way on one path and the other way on the other, and
+     *  the difference stops being about the float path at all. */
+    std::vector<double> qL(inL.size()), qR(inR.size());
+    for (size_t i = 0; i < inL.size(); ++i) {
+        qL[i] = (double)(float)inL[i];
+        qR[i] = (double)(float)inR[i];
+    }
     std::vector<double> dL, dR;
-    runThroughAbi(a, inL, inR, dL, dR, kBlock);
+    runThroughAbi(a, qL, qR, dL, dR, kBlock);
 
     /*  processReplacing is the double path plus a dither, so this is a
      *  tolerance rather than an identity - and the dither is seeded from rand(),
