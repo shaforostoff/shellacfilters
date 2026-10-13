@@ -942,14 +942,20 @@ void Channel::interpolate(int from, int to, int reach) {
         while (s - 1 >= from && m_det[s - 1] > lo && !m_flag[s - 1]) --s;
         while (e + 1 < reach && m_det[e + 1] > lo && !m_flag[e + 1]) ++e;
         int s0 = s, e0 = e;
-        for (;;) {
+        // Only a run that triggered hard may step over a dip: one that
+        // barely crossed the trigger is as likely noise or music, and
+        // stretching it only takes more of the music.
+        double peak = 0.0;
+        for (int t = s; t <= e; ++t) if (m_det[t] > peak) peak = m_det[t];
+        const bool mayDip = peak >= m_cfg.dipPeak;
+        while (mayDip) {
             int j = s - 1;
             while (j >= s - 1 - dip && j >= from && !m_flag[j] && m_det[j] <= lo) --j;
             if (j < s - 1 - dip || j < from || m_flag[j]) break;
             if (j < s - 1 && m_det[j] <= far) break;
             s = j;
         }
-        for (;;) {
+        while (mayDip) {
             int j = e + 1;
             while (j <= e + 1 + dip && j < reach && !m_flag[j] && m_det[j] <= lo) ++j;
             if (j > e + 1 + dip || j >= reach || m_flag[j]) break;

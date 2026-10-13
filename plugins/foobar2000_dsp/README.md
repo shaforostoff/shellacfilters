@@ -815,8 +815,9 @@ whitened domain, by event size, alongside click probes of three shapes at
 | s 0.8, depth 1, order 128, re-repair | −6.1 / −8.9 dB | −13.9 | −9.7 / −9.8 / −4.3 dB | −34.9 dB |
 | the same at order 64 | −6.3 / −9.6 dB | −13.4 | −10.0 / −9.2 / −4.2 dB | −33.5 dB |
 | the same at s 0.7 | −5.6 / −8.7 dB | −15.0 | −11.0 / −10.8 / −4.8 dB | −35.6 dB |
-| **current defaults** (the above, plus dip 1 / 0.5) | **−6.8 / −10.4 dB** | −13.7 | −8.4 / −8.1 / −3.8 dB | −31.8 dB |
-| current, order 64 (the VST2/AU/VirtualDJ default) | −7.0 / −10.9 dB | −13.1 | −7.7 / −8.9 / −1.8 dB | −30.3 dB |
+| plus dip 1 / 0.5, on every run | −6.8 / −10.4 dB | −13.7 | −8.4 / −8.1 / −3.8 dB | −31.8 dB |
+| **current defaults** (dip only on runs peaking at 6σ) | **−6.4 / −9.8 dB** | −13.9 | −9.5 / −8.0 / −3.7 dB | −34.6 dB |
+| current, order 64 (the VST2/AU/VirtualDJ default) | −6.6 / −10.3 dB | −13.4 | −9.9 / −9.1 / −1.6 dB | −32.3 dB |
 
 Lower is better everywhere; the last column is how much each changes music
 with no clicks injected at all, and that excerpt has a little crackle of its
@@ -860,6 +861,17 @@ What changed, and why:
   attacks on a clean D'Arienzo transfer (−30.9 dB of change against −35.6,
   and −46.4 with no dip at all); the halfway rule was heard to take no more
   attack than none.
+* **…but only for runs that trigger hard** (`Config::dipPeak` 6σ). Most of
+  the runs the dip stretched had barely crossed the trigger — noise alone
+  crosses 3.2σ about 100 times a second — and on clean material they carried
+  most of what the dip removed: two thirds of it on the Malvon master. With
+  the dip kept to runs peaking at 6σ or more, the Malvon master goes back
+  from −33.6 to −36.4 dB removed (−36.8 with no dip) and the clean D'Arienzo
+  from −35.6 to −45.5 (−46.4), while a crackly D'Arienzo MP3 keeps 85 % of
+  what the dip gained on clicks above 8σ, and *Hotel Victoria* most of it
+  (1.12/s with no dip, 0.48/s on every run, 0.60/s at 6σ on this excerpt).
+  On the benchmark harm, SNR and clean-music change return almost to where
+  they were without the dip. Preferred by ear over 5σ and over no limit.
 
 Tried and dropped:
 
