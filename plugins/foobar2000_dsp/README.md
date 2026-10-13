@@ -812,9 +812,11 @@ whitened domain, by event size, alongside click probes of three shapes at
 | | dense crackle removed, all / largest | harm | clicks in music, imp / tick / thump | change to clean music |
 | --- | --- | --- | --- | --- |
 | old defaults (s 0.6, depth 0, order 64) | −2.5 / −3.2 dB | −18.4 | −4.5 / −4.6 / −3.0 dB | −43.0 dB |
-| **new defaults** (s 0.8, depth 1, order 128, re-repair) | **−6.1 / −8.9 dB** | −13.9 | **−9.7 / −9.8 / −4.3 dB** | −34.9 dB |
-| new, order 64 (the VST2/AU/VirtualDJ default) | −6.3 / −9.6 dB | −13.4 | −10.0 / −9.2 / −4.2 dB | −33.5 dB |
-| new at s 0.7 | −5.6 / −8.7 dB | −15.0 | −11.0 / −10.8 / −4.8 dB | −35.6 dB |
+| s 0.8, depth 1, order 128, re-repair | −6.1 / −8.9 dB | −13.9 | −9.7 / −9.8 / −4.3 dB | −34.9 dB |
+| the same at order 64 | −6.3 / −9.6 dB | −13.4 | −10.0 / −9.2 / −4.2 dB | −33.5 dB |
+| the same at s 0.7 | −5.6 / −8.7 dB | −15.0 | −11.0 / −10.8 / −4.8 dB | −35.6 dB |
+| **current defaults** (the above, plus dip 1 / 0.5) | **−6.8 / −10.4 dB** | −13.7 | −8.4 / −8.1 / −3.8 dB | −31.8 dB |
+| current, order 64 (the VST2/AU/VirtualDJ default) | −7.0 / −10.9 dB | −13.1 | −7.7 / −8.9 / −1.8 dB | −30.3 dB |
 
 Lower is better everywhere; the last column is how much each changes music
 with no clicks injected at all, and that excerpt has a little crackle of its
@@ -841,6 +843,23 @@ What changed, and why:
   audible in what it removes, and the ear is the measure the numbers are
   standing in for. 128 over 64 is worth ~1 dB on the probes and ~1.5 dB less
   harm.
+* **Hysteresis that steps over a dip** (`Config::dip` 1, `dipFar` 0.5). Found
+  on MP3 transfers with a cleaner copy of the same record to compare against
+  (Canaro, *Hotel Victoria*): the clicks left behind had all been detected,
+  but repaired over too short a run. A click's prediction error rings, and on
+  material that is empty above 16 kHz it swings through zero inside the
+  click; where it dipped under the floor the run ended there, and the repair
+  leaned on damaged samples just past its edge — leaving the click, sometimes
+  rebuilding it larger. A run may now step over one sample below the floor if
+  the detection function is back above it, halfway to the trigger, on the far
+  side; if that makes a run too long to repair, the plain run is repaired
+  instead. Clicks left above 8σ on that transfer: 1.1/s → 0.48/s (its clean copy
+  measures 0.2/s). On the benchmark it costs 1.1 dB of whole-file SNR, and
+  some of the probe removal above; no CPU to speak of. Accepting any return
+  above the floor went further, to 0.3/s, but audibly took more of the
+  attacks on a clean D'Arienzo transfer (−30.9 dB of change against −35.6,
+  and −46.4 with no dip at all); the halfway rule was heard to take no more
+  attack than none.
 
 Tried and dropped:
 
@@ -856,6 +875,16 @@ Tried and dropped:
 * **A coarse (order 4–16) model for large events.** Big-event removal rose to
   −12 dB on dense crackle — and fell from −15 to −1 dB on a loud click on a
   pure tone, which a low order cannot carry across a gap.
+* **More Extent** for the clicks the dip rule catches. The floor drops for
+  every run, so they spread into the noise everywhere: Extent 0.8 left 0.72/s
+  on *Hotel Victoria* at the cost dip 1 / 0.5 pays for 0.48/s.
+* **Merging runs that touch**, or that a later pass finds next to an earlier
+  repair. The first is nearly as good as the dip rule but treats the clean
+  samples between two real clicks as damage, at 1.3 dB of SNR; the second
+  found nothing, because the damage it was meant for is inside the run.
+* **Mid/side processing** of stereo transfers of mono records. The side
+  channel holds crackle and almost no music, but declicking it separately
+  did nothing for the mid, which is what is heard.
 * **More Extent** for thumps. A thump's tail is a decaying resonance, which is
   exactly what an AR model predicts well, so the residual detector cannot see
   it whatever the hysteresis. Thumps need a mechanism of their own.
