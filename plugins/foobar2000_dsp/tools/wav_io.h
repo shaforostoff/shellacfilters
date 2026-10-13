@@ -41,12 +41,23 @@ inline void wr16(unsigned char * p, uint16_t v) {
     p[0] = (unsigned char)(v); p[1] = (unsigned char)(v >> 8);
 }
 
+//! fopen_s where MSVC would otherwise warn about fopen, fopen everywhere else -
+//! fopen_s is Annex K, which no other C library ships.
+inline FILE * open(const std::string & path, const char * mode) {
+#ifdef _MSC_VER
+    FILE * f = NULL;
+    return fopen_s(&f, path.c_str(), mode) == 0 ? f : NULL;
+#else
+    return fopen(path.c_str(), mode);
+#endif
+}
+
 } // namespace detail
 
 //! Returns false and fills `err` on failure.
 inline bool read(const std::string & path, Audio & out, std::string & err) {
-    FILE * f = NULL;
-    if (fopen_s(&f, path.c_str(), "rb") != 0 || f == NULL) {
+    FILE * f = detail::open(path, "rb");
+    if (f == NULL) {
         err = "cannot open " + path;
         return false;
     }
@@ -133,8 +144,8 @@ inline bool read(const std::string & path, Audio & out, std::string & err) {
 
 //! Always writes 32 bit float, so comparisons are not clouded by requantisation.
 inline bool writeFloat32(const std::string & path, const Audio & a, std::string & err) {
-    FILE * f = NULL;
-    if (fopen_s(&f, path.c_str(), "wb") != 0 || f == NULL) {
+    FILE * f = detail::open(path, "wb");
+    if (f == NULL) {
         err = "cannot create " + path;
         return false;
     }

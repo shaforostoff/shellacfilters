@@ -26,8 +26,10 @@ declick::Params parse(const dsp_preset & in);
 
 } // namespace declick_preset
 
+#ifdef _WIN32
 //! Blocking modal configuration dialog. Main thread only.
 void declick_config_popup(const dsp_preset & data, HWND parent,
                           dsp_preset_edit_callback & callback);
+#endif
 
 #endif // FOO_DSP_DECLICK_PRESET_H

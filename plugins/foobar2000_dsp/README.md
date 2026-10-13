@@ -159,6 +159,33 @@ an `AVX2` build loads fine on a CPU without AVX2 and then crashes. Declick's
 AVX2 kernels are not that: they are compiled into the SSE2 build and run only
 where CPUID says the CPU and the OS support them.
 
+### macOS
+
+```bash
+scripts/build_release_macos.sh
+```
+
+Declick, Dehum and the Parametric EQ have macOS builds; DeCrackle does not.
+This builds them universal (Apple Silicon and Intel), runs the test suites
+that apply there, signs each bundle ad hoc, and writes
+`foo_dsp_<name>-<version>-mac.fb2k-component` plus a `-symbols.zip` with the
+`.dSYM` to `../dist/`. Needs CMake and the Xcode command line tools; the SDK
+is fetched the same way as on Windows.
+
+To ship one archive per component that installs on both platforms, build the
+Windows ones first, copy them into `../dist/`, and merge:
+
+```bash
+scripts/build_release_macos.sh --merge ../dist
+```
+
+That adds `mac/foo_dsp_<name>.component` next to the DLLs in each Windows
+archive and writes it back under the Windows name. `--help` lists the rest
+(`--arch`, `--sign`, `--skip-tests`, `--clean`, and naming components).
+
+The macOS components have no configuration dialog yet, so they run with
+their default settings, and the Parametric EQ has no UI element there.
+
 ---
 
 ## Building by hand
@@ -171,6 +198,11 @@ cmake --build build/x64 --config Release
 ```bash
 cmake -S . -B build/x86 -A Win32
 cmake --build build/x86 --config Release
+```
+
+```bash
+cmake -S . -B build/mac -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+cmake --build build/mac
 ```
 
 The first configure downloads and unpacks

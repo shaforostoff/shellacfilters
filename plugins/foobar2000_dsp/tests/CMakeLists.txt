@@ -16,16 +16,17 @@
 #                        runs on the audio thread. No SDK.
 #   dehum_vst_verify   - the WinVST port of the dehummer vs. the core it shares.
 #                        No SDK.
-#                        These two are Windows targets only because this project
-#                        is; scripts/build_linuxvst.sh builds and runs the same
-#                        two sources against the LinuxVST copies, which are
-#                        required to be byte-identical. So are the MacVST ones,
-#                        which is why MacVST gets no target of its own.
+#                        These two build on Windows and macOS, the platforms
+#                        this project does; scripts/build_linuxvst.sh builds and
+#                        runs the same two sources against the LinuxVST copies,
+#                        which are required to be byte-identical. So are the
+#                        MacVST ones, which is why MacVST gets no target of its
+#                        own.
 #   paraeq_vst_verify  - the WinVST port of the equaliser vs. the core it
 #                        shares. Same arrangement, except that ParaEQ has no
 #                        LinuxVST or MacVST port to mirror, so this target is
 #                        the only place that code is compiled outside the DLL.
-#                        No SDK.
+#                        No SDK. Windows only: the editor draws with GDI.
 #   declick_au_verify  - the MacAU port of the declicker vs. the core it shares.
 #                        MacAU is a wrapper in its own right rather than a
 #                        mirror of the VST one, so unlike MacVST it does need a
@@ -43,8 +44,10 @@
 #                        against every plug-in they produce.
 #   preset_roundtrip   - every parameter survives save/load. Links the SDK, so
 #                        it needs foobar2000's shared.dll; skips if absent.
+#                        Windows only.
 #   component_smoke    - loads the built DLL through foobar2000's own service
 #                        plumbing. Needs foobar2000 installed; skips if absent.
+#                        Windows only.
 # ---------------------------------------------------------------------------
 
 add_executable(decrackle_verify
@@ -275,7 +278,8 @@ endif()
 
 set(WINVST_PARAEQ_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../WinVST/ParaEQ")
 
-if(EXISTS "${WINVST_PARAEQ_DIR}/ParaEQ.cpp")
+# Windows only: the editor draws with GDI.
+if(WIN32 AND EXISTS "${WINVST_PARAEQ_DIR}/ParaEQ.cpp")
     add_executable(paraeq_vst_verify
         paraeq_vst_verify.cpp
         "${WINVST_SHIM_DIR}/audioeffectx.cpp"
@@ -309,7 +313,7 @@ if(EXISTS "${WINVST_PARAEQ_DIR}/ParaEQ.cpp")
 
     add_test(NAME paraeq_vst_verify COMMAND paraeq_vst_verify)
     set_target_properties(paraeq_vst_verify PROPERTIES FOLDER "tests")
-else()
+elseif(WIN32)
     message(STATUS "plugins/WinVST/ParaEQ not present - skipping paraeq_vst_verify")
 endif()
 
@@ -376,6 +380,16 @@ foreach(_au Declick Dehum ParaEQ)
         message(STATUS "plugins/MacAU/${_au} not present - skipping ${_core}_au_verify")
     endif()
 endforeach()
+
+# ---------------------------------------------------------------------------
+# Everything below links the SDK and runs against an installed foobar2000's
+# shared.dll, which fb2k_find_runtime locates by reading PE headers - Windows
+# only, then. foobar2000 for Mac has no shared library to borrow: the SDK's
+# shared/ half is compiled into each component instead.
+
+if(NOT WIN32)
+    return()
+endif()
 
 # ---------------------------------------------------------------------------
 # Preset serialisation. Always built - a compile break here is worth catching

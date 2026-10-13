@@ -45,8 +45,10 @@ void core_remove();
 
 } // namespace paraeq_preset
 
+#ifdef _WIN32
 //! Blocking modal configuration dialog. Main thread only.
 void paraeq_config_popup(const dsp_preset & data, HWND parent,
                          dsp_preset_edit_callback & callback);
+#endif
 
 #endif // FOO_DSP_PARAEQ_PRESET_H
