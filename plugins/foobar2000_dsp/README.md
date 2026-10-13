@@ -183,8 +183,10 @@ That adds `mac/foo_dsp_<name>.component` next to the DLLs in each Windows
 archive and writes it back under the Windows name. `--help` lists the rest
 (`--arch`, `--sign`, `--skip-tests`, `--clean`, and naming components).
 
-The macOS components have no configuration dialog yet, so they run with
-their default settings, and the Parametric EQ has no UI element there.
+Declick and Dehum have the same settings on macOS as on Windows, in a
+view foobar2000 for Mac shows in its own window. The Parametric EQ has no
+configuration view there yet, nor a UI element, so it runs with its
+defaults - which is flat.
 
 ---
 

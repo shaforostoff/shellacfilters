@@ -84,6 +84,21 @@ if(NOT APPLE)
 endif()
 
 add_library(fb2k_sdk_core STATIC ${FB2K_SDK_SOURCES})
+# guids.cpp is kept out of link time optimisation on macOS. With it in, the
+# Xcode 15 linker refuses the arm64 slice of any component that wraps an
+# NSObject for the host - which every Cocoa configuration view does:
+#
+#   ld: invalid use of GOT ADRP in 'implement_service_query<...
+#       NSObjectWrapperImpl>::service_query(...)' to
+#       'fb2k::NSObjectWrapper::class_guid'
+#
+# Taking the referring file, commonObjects-Apple.mm, out of LTO instead does
+# not help; taking the file that defines the GUID out does. It holds nothing
+# but GUID constants, so nothing on the audio path is any slower for it.
+if(APPLE)
+    set_source_files_properties("${FB2K_SDK_DIR}/foobar2000/SDK/guids.cpp"
+        TARGET_DIRECTORY fb2k_sdk_core PROPERTIES COMPILE_OPTIONS "-fno-lto")
+endif()
 target_link_libraries(fb2k_sdk_core PUBLIC fb2k_pfc)
 
 set(_fb2k_targets fb2k_pfc fb2k_sdk_core)

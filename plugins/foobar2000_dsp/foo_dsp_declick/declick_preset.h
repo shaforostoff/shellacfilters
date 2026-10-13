@@ -30,6 +30,11 @@ declick::Params parse(const dsp_preset & in);
 //! Blocking modal configuration dialog. Main thread only.
 void declick_config_popup(const dsp_preset & data, HWND parent,
                           dsp_preset_edit_callback & callback);
+#else
+//! The configuration view foobar2000 for Mac embeds in a window of its own: an
+//! NSViewController, wrapped. Changes go to `callback` as they are made. Main
+//! thread only.
+service_ptr declick_config_view(dsp_preset_edit_callback_v2::ptr callback);
 #endif
 
 #endif // FOO_DSP_DECLICK_PRESET_H
