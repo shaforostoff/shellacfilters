@@ -922,6 +922,8 @@ void Channel::detect(int from, int to, int pass) {
 void Channel::interpolate(int from, int to, int reach) {
     const double hi = m_cfg.thresholdHi;
     const double lo = m_cfg.thresholdLo;
+    const int dip = m_cfg.dip;
+    const double far = lo + m_cfg.dipFar * (hi - lo);
 
     int i = from;
     while (i < to) {
@@ -932,16 +934,46 @@ void Channel::interpolate(int from, int to, int reach) {
         // processBlock() detected over: a burst that straddles the block edge
         // has to be repaired whole, or its unrepaired tail is taken as clean
         // context for the half that is.
+        // It steps over a dip of up to Config::dip samples, as long as the
+        // detection function is well back above the floor on the far side:
+        // inside a click the error rings through zero, which is no reason
+        // to end the repair halfway.
         int s = i, e = i;
         while (s - 1 >= from && m_det[s - 1] > lo && !m_flag[s - 1]) --s;
         while (e + 1 < reach && m_det[e + 1] > lo && !m_flag[e + 1]) ++e;
+        int s0 = s, e0 = e;
+        for (;;) {
+            int j = s - 1;
+            while (j >= s - 1 - dip && j >= from && !m_flag[j] && m_det[j] <= lo) --j;
+            if (j < s - 1 - dip || j < from || m_flag[j]) break;
+            if (j < s - 1 && m_det[j] <= far) break;
+            s = j;
+        }
+        for (;;) {
+            int j = e + 1;
+            while (j <= e + 1 + dip && j < reach && !m_flag[j] && m_det[j] <= lo) ++j;
+            if (j > e + 1 + dip || j >= reach || m_flag[j]) break;
+            if (j > e + 1 && m_det[j] <= far) break;
+            e = j;
+        }
         // One sample of slack either side; a repair that stops exactly at the
         // damage boundary tends to leave a step.
         if (s > from) --s;
         if (e < reach - 1) ++e;
+        if (s0 > from) --s0;
+        if (e0 < reach - 1) ++e0;
 
+        // A run the dips stretched past what repairRun() will take - longer
+        // than maxRun, or out to the edge of the window - falls back to the
+        // plain one, so stepping over dips can only ever add to a repair.
+        // A huge click on a quiet floor rings above it for a long way.
+        bool ok = repairRun(s, e, false);
+        if (!ok && (s != s0 || e != e0)) {
+            s = s0; e = e0;
+            ok = repairRun(s, e, false);
+        }
         i = e + 1;
-        if (repairRun(s, e, false) && m_cfg.rerepair > 0 &&
+        if (ok && m_cfg.rerepair > 0 &&
             m_nruns + 2 <= (int)m_runs.size()) {
             m_runs[(size_t)m_nruns++] = s;
             m_runs[(size_t)m_nruns++] = e;

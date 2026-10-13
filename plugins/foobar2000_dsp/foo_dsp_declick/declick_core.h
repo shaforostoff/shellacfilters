@@ -133,6 +133,27 @@ struct Config {
     //! 0.6 dB on those for a further 27%. It needs passes >= 2 to do
     //! anything at all at 1.
     int    rerepair     = 1;
+
+    //! How many samples below the hysteresis floor a run may step over, and
+    //! how far above the floor - as a fraction of the way up to the trigger -
+    //! the detection function must be on the other side. Not user-facing;
+    //! declick_cli sweeps them as --dip and --dip-far.
+    //! A click's prediction error rings, and on band-limited material - an
+    //! MP3 is empty above 16 kHz - it swings through zero inside the click.
+    //! Where that dipped under the floor the run ended early, and the repair
+    //! leaned on damaged samples just past its edge: it left the click in,
+    //! sometimes rebuilt it larger. On such a transfer (Canaro, Hotel
+    //! Victoria) these settings take the clicks left above 8 sigma from
+    //! 1.1/s to 0.48/s; the injected crackle loses -6.8 dB instead of -6.1,
+    //! -10.4 instead of -8.9 on the largest events, for 1.1 dB of whole-file
+    //! SNR. Raising Extent instead pays more for less.
+    //! dipFar 0 (any return above the floor) went further, to 0.3/s, but
+    //! also spread into the attacks of clean, crisp recordings - audibly so
+    //! on a clean D'Arienzo transfer, where it changed the music by -30.9 dB
+    //! against -46.4 with no dip at all; 0.5 changes it by -35.6 and was
+    //! heard to remove no more attack than none. dip 0 is plain hysteresis.
+    int    dip          = 1;
+    double dipFar       = 0.5;
     int    pad          = 272;   //!< context needed either side of a block
     int    latency      = 784;
 
