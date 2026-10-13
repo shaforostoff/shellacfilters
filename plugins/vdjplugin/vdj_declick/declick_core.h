@@ -79,6 +79,13 @@ struct Params {
         // 1.5 dB less harm, at about 1.9x the CPU - still 24x real time stereo
         // on a 2014 Haswell MacBook Pro, measured. Drop to 64 where that is
         // too much; it gives up surprisingly little.
+        // Higher orders model the music better, so they change clean
+        // records least: removed from the Malvon master, -35.4 dB at 64,
+        // -36.4 at 128, -38.7 at 256. But they also predict some short
+        // clicks well enough to miss them - clicks above 8 sigma left on a
+        // crackly D'Arienzo MP3 go 1.63/s, 1.93/s, 2.57/s - so 128 stays
+        // the balance, 256 is for clean records, and any even order is as
+        // valid as a power of two (CPU scales smoothly with it).
         p.order       = 128;
         p.dryWet      = 1.0f;
         p.delta       = false;

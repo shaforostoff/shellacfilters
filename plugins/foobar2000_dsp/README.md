@@ -224,11 +224,11 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 
 | | |
 | --- | --- |
-| **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.8** (3.2σ), chosen by ear; 0.7 measures marginally gentler. See [Dense crackle](#dense-crackle). |
-| **Extent** | How far a detection spreads into its own tail before the repair stops. Raise it if repairs leave a residual tick behind them. |
+| **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.8** (3.2σ), chosen by ear on crackly 78s; on clean records 0.6–0.7 takes less and leaves little behind. See [Dense crackle](#dense-crackle). |
+| **Extent** | How far a detection spreads into its own tail before the repair stops. Raise it if repairs leave a residual tick behind them — but it lowers the floor for every repair, so it spreads into good audio everywhere; a strong click whose error rings through zero is already repaired whole without it (see the dip rule under [Dense crackle](#dense-crackle)). 0.3 is gentler on clean records. |
 | **Max repair** | Longest single repair. Anything longer is treated as music and left alone. 4 ms suits 78s. |
 | **Passes** | A second pass catches clicks the first one uncovers; the model is refitted in between. Small but real gain, roughly 50–60% more CPU. |
-| **Model order** | 8–256, default **128**. The one control where spending CPU clearly buys quality: 128 measurably beats 64 and 256 beats that again. 128 costs about 1.7–1.9× the CPU of 64, which gives up surprisingly little; the VST2, AU and VirtualDJ ports stop at 64. See [Does more CPU help?](#does-more-cpu-help). |
+| **Model order** | 8–256 in steps of 2, default **128**. Higher orders model the music better, so they change clean records least, and remove isolated clicks better; but they also predict some short clicks well enough to miss them on heavily crackled transfers. 128 is the balance. Any even value is as good as a power of two — CPU and latency grow smoothly with it: 256 costs about 2.4× what 128 does, 64 about 0.6×. The VST2, AU and VirtualDJ ports stop at 64. See [Choosing settings](#choosing-settings) and [Does more CPU help?](#does-more-cpu-help). |
 | **Repair depth** | How much of each click to subtract. 1, the default, replaces the damaged samples outright; 0 subtracts the 45% fraction that adds the least whole-file error, which caps every repair at −5.2 dB. See [Repair depth](#repair-depth) and [Dense crackle](#dense-crackle). |
 | **Dry/Wet** | 0 bypasses. |
 | **Output only what is removed** | Delta monitoring, for testing: outputs input minus output, so you hear what the repair takes out. It should be crackle and clicks and nothing else; music heard in it is collateral damage, and the cue to lower Sensitivity. Saved with the preset, so untick it when done. foobar2000 only. |
@@ -280,6 +280,28 @@ Memory is **750 kB per channel** at 44.1 kHz and 1.5 MB at 192 kHz, fixed at
 `configure()` and independent of the parameters — see
 [Real-time safety](#real-time-safety) for why it is sized that way, and why
 that figure is *lower* than what the same code used to reach at run time.
+
+### Choosing settings
+
+The defaults are tuned on crackly 78 rpm transfers. Measured on whole tracks
+(removed signal relative to the music; large clicks left are events above 8σ
+in the output):
+
+| Order | Malvon master, removed | clean D'Arienzo, removed | crackly D'Arienzo MP3, large clicks left | *Hotel Victoria* MP3, large clicks left | CPU vs 128 |
+| --- | --- | --- | --- | --- | --- |
+| 64 | −35.4 dB | −42.1 dB | 1.63/s | 0.47/s | ~0.6× |
+| **128** | −36.4 dB | −45.5 dB | 1.93/s | 0.40/s | 1× |
+| 192 | −38.2 dB | −44.5 dB | 2.18/s | 0.37/s | ~1.6× |
+| 256 | −38.7 dB | −46.4 dB | 2.57/s | 0.33/s | ~2.4× |
+
+* **Crackly 78s** — the defaults.
+* **Clean or lightly crackled records, remasters** — Model order 256 and
+  Sensitivity 0.6–0.7: the least change to the music. Remasters that clip
+  can make *Output only what is removed* pulse with the rhythm; that is the
+  clipping and crackle on the loud beats being taken out, not the attacks
+  (they measure unchanged, and none was heard missing).
+* **Heavily crackled transfers, MP3s especially** — keep order at 128, or try
+  64, which catches more of the short clicks.
 
 ### Real-time safety
 
