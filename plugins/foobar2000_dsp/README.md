@@ -228,7 +228,7 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 | **Extent** | How far a detection spreads into its own tail before the repair stops. Raise it if repairs leave a residual tick behind them — but it lowers the floor for every repair, so it spreads into good audio everywhere; a strong click whose error rings through zero is already repaired whole without it (see the dip rule under [Dense crackle](#dense-crackle)). 0.3 is gentler on clean records. |
 | **Max repair** | Longest single repair. Anything longer is treated as music and left alone. 4 ms suits 78s. |
 | **Passes** | A second pass catches clicks the first one uncovers; the model is refitted in between. Small but real gain, roughly 50–60% more CPU. |
-| **Model order** | 8–256 in steps of 2, default **128**. Higher orders model the music better, so they change clean records least, and remove isolated clicks better; but they also predict some short clicks well enough to miss them on heavily crackled transfers. 128 is the balance. Any even value is as good as a power of two — CPU and latency grow smoothly with it: 256 costs about 2.4× what 128 does, 64 about 0.6×. The VST2, AU and VirtualDJ ports stop at 64. See [Choosing settings](#choosing-settings) and [Does more CPU help?](#does-more-cpu-help). |
+| **Model order** | 8–256 in steps of 2, default **128**. Higher orders model the music better, so they change clean records least, and remove isolated clicks better; but they also predict some short clicks well enough to miss them on heavily crackled transfers. 128 is the balance. Any even value is as good as a power of two — CPU and latency grow smoothly with it: 256 costs about 2.4× what 128 does, 64 about 0.6×. The VST2, AU and VirtualDJ ports run 16–256 in eights, with the same default of 128. See [Choosing settings](#choosing-settings) and [Does more CPU help?](#does-more-cpu-help). |
 | **Repair depth** | How much of each click to subtract. 1, the default, replaces the damaged samples outright; 0 subtracts the 45% fraction that adds the least whole-file error, which caps every repair at −5.2 dB. See [Repair depth](#repair-depth) and [Dense crackle](#dense-crackle). |
 | **Dry/Wet** | 0 bypasses. |
 | **Output only what is removed** | Delta monitoring, for testing: outputs input minus output, so you hear what the repair takes out. It should be crackle and clicks and nothing else; music heard in it is collateral damage, and the cue to lower Sensitivity. Saved with the preset, so untick it when done. foobar2000 only. |
@@ -839,7 +839,7 @@ whitened domain, by event size, alongside click probes of three shapes at
 | the same at s 0.7 | −5.6 / −8.7 dB | −15.0 | −11.0 / −10.8 / −4.8 dB | −35.6 dB |
 | plus dip 1 / 0.5, on every run | −6.8 / −10.4 dB | −13.7 | −8.4 / −8.1 / −3.8 dB | −31.8 dB |
 | **current defaults** (dip only on runs peaking at 6σ) | **−6.4 / −9.8 dB** | −13.9 | −9.5 / −8.0 / −3.7 dB | −34.6 dB |
-| current, order 64 (the VST2/AU/VirtualDJ default) | −6.6 / −10.3 dB | −13.4 | −9.9 / −9.1 / −1.6 dB | −32.3 dB |
+| current, order 64 | −6.6 / −10.3 dB | −13.4 | −9.9 / −9.1 / −1.6 dB | −32.3 dB |
 
 Lower is better everywhere; the last column is how much each changes music
 with no clicks injected at all, and that excerpt has a little crackle of its
@@ -1861,8 +1861,8 @@ wrong pre-roll makes the core zero-fill mid-stream. Around it, the things an AU
 has to get right that a VST does not:
 
 * `GetLatency()` and `GetTailTime()` are **seconds**, not samples, and both have
-  to come back out as `cfg.latency` at the rate in force — 880 samples at the
-  shipping default, 784 after dropping to order 32, 1088 at 96 kHz;
+  to come back out as `cfg.latency` at the rate in force — 1072 samples at the
+  shipping default, 784 after dropping to order 32, 1280 at 96 kHz;
 * `PropertyChanged(kAudioUnitProperty_Latency)` is what an AU says instead of
   `audioMasterIOChanged`, so it must fire **exactly once** for Max repair or
   Model order and **never** for the other five, for Dehum's seven, or across a
@@ -2531,7 +2531,7 @@ and a compiler would not:
 | `resvd1`, `resvd2`, `future[56]` | left zeroed, as the host expects |
 | the deprecated `process` | a no-op function, not a null pointer, because a host old enough to call it will not check first |
 | opcode routing | all seven parameter names arrive at the right index; displays and labels stay inside `kVstMaxParamStrLen` in a buffer bigger than promised |
-| the latency contract | Declick declares 880 samples at 44.1 kHz with `effGetTailSize` matching, and calls `audioMasterIOChanged` twice for the two structural parameters; Dehum declares 0 and calls it **never** |
+| the latency contract | Declick declares 1072 samples at 44.1 kHz with `effGetTailSize` matching, and calls `audioMasterIOChanged` twice for the two structural parameters; Dehum declares 0 and calls it **never** |
 | `main` | exported as well as `VSTPluginMain`, for hosts that predate the rename, and reaching the same plug-in when called. On Windows the `.def` makes them one address and that is asserted too; the `.so` gets a forwarder instead, because there is no `.def` to alias with |
 | `effClose` | 24 open/close cycles do not accumulate private bytes. This is a contract, not a nicety: the host frees nothing, so a shim that forgets the `delete` leaks the whole instance on every plug-in scan, and Dehum carries ~400 kB of analysis state per channel |
 

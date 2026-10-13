@@ -167,8 +167,8 @@ stereo on the 2014 MacBook Air that playback actually runs on).
 * **Core edits go in `foo_dsp_declick/`**, then
   `scripts/sync_cores.ps1` pushes them to the five mirrors;
   `-Check` must report "every mirror matches". The VST2/AU/VirtualDJ
-  wrappers hard-code default slider positions, and their tests model the
-  order cap at 64.
+  wrappers hard-code default slider positions (Order 0.4677 = 128 on a
+  16–256 slider), and their tests check the mapping.
 * **Several wrapper files are Latin-1** (the © in the header). Edit them
   byte-wise; a UTF-8 round trip turns © into U+FFFD.
 * **`declick_rt_verify` forbids allocation** on the audio path: size any

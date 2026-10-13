@@ -16,8 +16,8 @@
 #
 # Both are IVdjPluginBufferDsp8 rather than IVdjPluginDsp8, and that is the one
 # design decision worth knowing before reading anything here. A buffer plug-in
-# is asked for the song and may read any part of it, so Declick's 880 samples of
-# lookahead cost an extra read instead of 20 ms of delay - and a delay on a deck
+# is asked for the song and may read any part of it, so Declick's 1072 samples of
+# lookahead cost an extra read instead of 24 ms of delay - and a delay on a deck
 # is not a detail, it moves the deck off everything it is being mixed against.
 # See README.md.
 # ---------------------------------------------------------------------------

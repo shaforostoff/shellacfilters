@@ -48,13 +48,10 @@
 
 namespace {
 
-//! What the plug-in opens on. The core's default order is 128, but this
-//! slider stops at 64 - where a DAW's real-time budget does - so the plug-in's
-//! defaults are the core's with the order capped there.
+//! What the plug-in opens on: the core's defaults, order 128 included. The
+//! slider runs 16 .. 256 in eights, and the default position lands on 128.
 declick::Params wrapperDefaults() {
-    declick::Params p = declick::Params::defaults();
-    if (p.order > 64) p.order = 64;
-    return p;
+    return declick::Params::defaults();
 }
 
 int g_failures = 0;
@@ -359,9 +356,8 @@ void testParameterMoves(const std::vector<float> & inL, const std::vector<float>
     char d[64]; snprintf(d, sizeof d, "longest silent run %d samples", worstRun);
     check(worstRun < 64, "a Sensitivity move leaves no gap in the audio", d);
 
-    // Down to 32, not up to 64: the default is order 64 and the slider tops out
-    // there, so moving to 1.0 would be moving to where it already is.
-    fx.SetParameter(kParam_F, 0.5f);             // Model order: rebuild
+    // Down from the default 128 to 32 (16 + 8 * floor(0.08 * 30.999)).
+    fx.SetParameter(kParam_F, 0.08f);            // Model order: rebuild
     runBlocks(fx, inL, inR, aL, aR, bs);
     declick::Params p32 = wrapperDefaults();
     p32.sensitivity = 0.85f;
