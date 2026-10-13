@@ -667,12 +667,12 @@ Measured end to end over 60 s of 44.1 kHz mono shellac including file I/O, at
 the defaults apart from the order (sensitivity 0.8, depth 1, two passes,
 re-repair):
 
-| order | x64, AVX2 | x64, SSE2 | x86, AVX2 | x86, SSE2 | before the per-click fix, x64 SSE2 | 2014 MacBook Pro, stereo, AVX2 / SSE2 |
-| --- | --- | --- | --- | --- | --- | --- |
-| 32 | 264× | 195× | 218× | 178× | 175× | 57× / 36× |
-| 64 | 206× | 130× | 159× | 117× | 101× | 41× / 24× |
-| **128** (default) | **120×** | 67× | 87× | 60× | 44× | **24×** / 13× |
-| 256 | 52× | 27× | 36× | 24× | 15× | 9.3× / 4.8× |
+| order | x64, AVX2 | x64, SSE2 | x86, AVX2 | x86, SSE2 | before the per-click fix, x64 SSE2 | 2014 MacBook Pro, stereo, AVX2 / SSE2 | M1, stereo, NEON / baseline |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 32 | 264× | 195× | 218× | 178× | 175× | 57× / 36× | 171× / 85× |
+| 64 | 206× | 130× | 159× | 117× | 101× | 41× / 24× | 109× / 46× |
+| **128** (default) | **120×** | 67× | 87× | 60× | 44× | **24×** / 13× | **54×** / 20× |
+| 256 | 52× | 27× | 36× | 24× | 15× | 9.3× / 4.8× | 20× / 7.2× |
 
 The kernels are picked when the module loads, so the same binary runs the SSE2
 columns on a CPU without AVX2 and FMA. See
@@ -697,6 +697,14 @@ different clip. Its gain from AVX2, 1.9× at the defaults, is no smaller than
 the Zen 4's, although its FMA takes 5 cycles against 4. The 2014 MacBook Air
 has the same generation of Haswell, an i5-4260U, at 1.4 GHz base and 2.7 GHz
 turbo against 2.4 and 2.9, so expect it somewhat below that column.
+
+The M1 column is measured too, on an M1 Mac mini: the arm64 half of the
+universal Release build, best of seven runs, on a third 60 s of shellac —
+Canaro's *Serenata* (1934), stereo. Runs agreed to within 3 %. The baseline
+figures are with `--no-neon`. NEON gains 2.6× at the defaults, more than AVX2
+does on either x64 machine. Order costs it a little more than it costs the
+Zen 4: 256 takes 2.7× as long as 128 there against 2.3×, and 2.8× against
+2.5× with the baseline kernels.
 
 The last column of the second table is an estimate, not a measurement: the
 i5-4260U taken as roughly 3–4× slower per core than the machine above, and
