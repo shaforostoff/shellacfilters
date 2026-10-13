@@ -338,6 +338,8 @@ private:
     void growOut();               //!< only reachable by overrunning maxBlock
     void processBlock();          //!< repairs m_win[m_pad .. m_pad+kBlock)
     void detect(int from, int to, int pass);
+    //! The median of the noise ring's first `have` entries; see the .cpp.
+    double ringMedian(size_t have);
     //! Repairs bursts that start in [from, to); a burst may run on to `reach`.
     void interpolate(int from, int to, int reach);
     //! Repairs m_win[s..e] with the current model. False if it could not.
@@ -347,6 +349,8 @@ private:
     //! Repairs every run recorded this block again, with the current model.
     void rerepairRuns();
     void fitModel(int from, int to);
+    //! The fit's autocorrelation from the last one's; see the .cpp.
+    bool updateAutocorr(int n, int order);
     //! a[0] = 1, rest zero: pass the audio through unmodelled. Keeps m_arev in
     //! step, which is why the degenerate paths in fitModel() all come here.
     void setUnitModel();
@@ -371,6 +375,7 @@ private:
     //! first repair after each fit and shared by the rest - and blocks with
     //! nothing to repair never build it at all.
     std::vector<double> m_aa;
+    std::vector<double> m_aarev;     //!< m_aa reversed, for repairRun()
     bool   m_aaValid = false;
     //! Hann window for the model fit, precomputed. It depends only on the fit
     //! length, which is fixed once configured, so computing it per block cost a
@@ -378,8 +383,16 @@ private:
     std::vector<double> m_hann;
     int    m_hannLen = 0;
     std::vector<double> m_scratch;   //!< model fitting / median
-    std::vector<double> m_seg;       //!< interpolation segment
-    std::vector<double> m_err;       //!< interpolation prediction error
+    //! The last fit's tapered window, behind m_fitLead zeros, and its
+    //! autocorrelation before the ridge: what the next pass over the same
+    //! window updates instead of recomputing. m_fitLen is its length, 0 once
+    //! the window has moved on.
+    std::vector<double> m_fitWin;
+    std::vector<double> m_fitR;
+    std::vector<double> m_delta;     //!< new taper minus m_fitWin
+    std::vector<double> m_corr;      //!< updateAutocorr()'s two filters
+    int    m_fitLen = 0;
+    int    m_fitLead = 0;
     std::vector<double> m_rhs;       //!< interpolation right hand side
     std::vector<double> m_solve;     //!< Cholesky factor
     std::vector<double> m_sinv;      //!< banded slice of G^-1
@@ -394,6 +407,7 @@ private:
     int    m_madPos = 0;
     bool   m_madFull = false;
     double m_scale = 1e-6;
+    double m_medHint = 0.0;        //!< last ringMedian(), where to look next
 
     //! Finished samples, as a fixed-capacity ring - m_out.size() IS the
     //! capacity, so reset() must not clear() it. It used to be a vector that

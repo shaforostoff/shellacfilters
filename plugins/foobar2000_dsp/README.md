@@ -262,7 +262,7 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 | **Extent** | How far a detection spreads into its own tail before the repair stops. Raise it if repairs leave a residual tick behind them — but it lowers the floor for every repair, so it spreads into good audio everywhere; a strong click whose error rings through zero is already repaired whole without it (see the dip rule under [Dense crackle](#dense-crackle)). 0.3 is gentler on clean records. |
 | **Max repair** | Longest single repair. Anything longer is treated as music and left alone. 4 ms suits 78s. |
 | **Passes** | A second pass catches clicks the first one uncovers; the model is refitted in between. Small but real gain, roughly 50–60% more CPU. |
-| **Model order** | 8–256 in steps of 2, default **128**. Higher orders model the music better, so they change clean records least, and remove isolated clicks better; but they also predict some short clicks well enough to miss them on heavily crackled transfers. 128 is the balance. Any even value is as good as a power of two — CPU and latency grow smoothly with it: 256 costs about 2.4× what 128 does, 64 about 0.6×. The VST2, AU and VirtualDJ ports run 16–256 in eights, with the same default of 128. See [Choosing settings](#choosing-settings) and [Does more CPU help?](#does-more-cpu-help). |
+| **Model order** | 8–256 in steps of 2, default **128**. Higher orders model the music better, so they change clean records least, and remove isolated clicks better; but they also predict some short clicks well enough to miss them on heavily crackled transfers. 128 is the balance. Any even value is as good as a power of two — CPU and latency grow smoothly with it: 256 costs about 2.1× what 128 does, 64 about 0.6×. The VST2, AU and VirtualDJ ports run 16–256 in eights, with the same default of 128. See [Choosing settings](#choosing-settings) and [Does more CPU help?](#does-more-cpu-help). |
 | **Repair depth** | How much of each click to subtract. 1, the default, replaces the damaged samples outright; 0 subtracts the 45% fraction that adds the least whole-file error, which caps every repair at −5.2 dB. See [Repair depth](#repair-depth) and [Dense crackle](#dense-crackle). |
 | **Dry/Wet** | 0 bypasses. |
 | **Output only what is removed** | Delta monitoring, for testing: outputs input minus output, so you hear what the repair takes out. It should be crackle and clicks and nothing else; music heard in it is collateral damage, and the cue to lower Sensitivity. Saved with the preset, so untick it when done. foobar2000 only. |
@@ -284,11 +284,12 @@ Note how flat the right-hand end is: quadrupling the number of samples touched
 (3.4 % → 14.0 %) only takes 21 events/s down to 18. Past about 0.7, sensitivity
 mostly buys collateral damage. **Repair depth is the more effective lever**.
 
-Throughput: ~120× realtime at the defaults on a CPU with AVX2 and FMA, ~67×
-without; ~205× and ~130× at order 64. Measured end to end over 60 s of
-44.1 kHz mono shellac including file I/O — under 1 % of one core on a modern
-desktop, and 24× realtime stereo on a 2014 MacBook Pro, whose Haswell has
-both. An M1 runs it at 88× mono with NEON. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
+Throughput: ~215× realtime at the defaults on a CPU with AVX2 and FMA, ~115×
+without; ~365× and ~215× at order 64. Measured end to end over 60 s of
+44.1 kHz mono shellac including file I/O — about half a percent of one core on
+a modern desktop. The 2014 MacBook Pro ran 24× realtime stereo, and an M1 88×
+mono with NEON, before the latest round of work, which made the x64 build
+1.6× faster at the defaults; neither has been measured since. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
 Latency ~24 ms, reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
 must go in before the first block comes out, but the emitted stream is aligned
@@ -325,8 +326,8 @@ in the output):
 | --- | --- | --- | --- | --- | --- |
 | 64 | −35.4 dB | −42.1 dB | 1.63/s | 0.47/s | ~0.6× |
 | **128** | −36.4 dB | −45.5 dB | 1.93/s | 0.40/s | 1× |
-| 192 | −38.2 dB | −44.5 dB | 2.18/s | 0.37/s | ~1.6× |
-| 256 | −38.7 dB | −46.4 dB | 2.57/s | 0.33/s | ~2.4× |
+| 192 | −38.2 dB | −44.5 dB | 2.18/s | 0.37/s | ~1.5× |
+| 256 | −38.7 dB | −46.4 dB | 2.57/s | 0.33/s | ~2.1× |
 
 * **Crackly 78s** — the defaults.
 * **Clean or lightly crackled records, remasters** — Model order 256 and
@@ -823,6 +824,69 @@ Later, once the dense-crackle defaults had made the repairs expensive:
   −144.5 dBFS and the rms deviation 185 dB below the signal, and as many
   samples are repaired at orders 64, 128 and 256. `declick_verify` holds
   the two within 1e-9 on the M1, and `declick_cli --no-neon` runs the baseline.
+
+Later still, a round that took the defaults from 134× to 217× realtime on
+x64 with AVX2 (74× → 116× without), 1.5× at order 64 and 1.85× at order 256.
+Profiled by cycle counter first: the fit was 45 % of the run time, detection
+36 % and the repairs 19 %, and three things inside those stood out.
+
+| order | x64, AVX2, before | after | x64, SSE2, before | after |
+| --- | --- | --- | --- | --- |
+| 32 | 320× | 500× | 245× | 334× |
+| 64 | 245× | 367× | 151× | 216× |
+| **128** (default) | 134× | **217×** | 74× | 116× |
+| 256 | 55× | 102× | 29× | 52× |
+
+Best of seven (five for SSE2), the same 60 s clip and machine as the first
+table; the "before" columns are a fresh run of the previous build, which
+reads a little above that table on the day.
+
+* **The noise estimate's median** was `nth_element` over the whole 30 ms ring,
+  1323 values every block: 14 % of the run time. The median moves little from
+  block to block, so one branch-free pass now keeps only the values within
+  ±12.5 % of the last one and counts those below, and `nth_element` sorts out
+  that tenth. If the median has left the band, a second pass keeps the side it
+  went to. An order statistic is the same however it is found, so this is
+  **bit-exact**.
+* **Levinson-Durbin** was 17 %: its inner product walks the autocorrelation
+  backwards, as a serial chain of dependent additions. With the
+  autocorrelation reversed it goes through `dot()`, and the symmetric
+  coefficient update runs two from each end at a time in SSE2 (that half is
+  bit-exact).
+* **Every pass after the first refits the same window**, which differs from
+  the last fit's only where that pass repaired it — a few dozen samples of
+  some 1600. `r'[d] = r[d] + Σ δ[p]·(w'[p+d] + w[p−d])` over the changed
+  samples is two short filters per stretch of changes instead of the whole
+  autocorrelation again.
+* **The per-click right-hand side was built the long way.** It is `−AᵀA`
+  applied to the window with the run zeroed, and was computed exactly so: the
+  prediction error of the `m + order` rows touching the run, multiplied back
+  through the model — about 17 000 multiply-adds for a 4-sample click at
+  order 128. But `AᵀA` is the Toeplitz matrix of the coefficients'
+  autocorrelation, which the solve already builds once per fit, so each
+  sample's right-hand side is a sum of `aa[|t − c|]·x[t]` over the known
+  samples within `order` of it: `2·order − m + 1` terms, an eighth of the work
+  for a typical click. The repairs went from 19 % of the run time to 11 %. The
+  coefficient autocorrelation now goes through the wide kernel as well, and
+  the scan for each repair's local range is vectorised (bit-exact: a maximum
+  is a maximum).
+* **The AVX2 filter takes its taps in groups of four**, a stride of four apart,
+  so each unaligned load of `x` feeds up to four FMAs: 11 loads per 32
+  multiply-adds instead of 36. Worth only 2–3 % on the Zen 4, which has three
+  load ports; it is aimed at Haswell, which has two and pays double for a load
+  that straddles a cache line, and has not been measured there yet.
+
+Apart from the median, the local-range scan and the Levinson update, these
+change the sums' order, so the output moves in the last bits — as the AVX2
+kernels did. On the 60 s benchmark clip 99.9997 % of samples are identical,
+the worst deviation is −162.6 dBFS and the rms deviation 205 dB below the
+signal; on the four reference transfers (Cachirulo and La tablada, hum and
+clean), the worst is −144.5 dBFS with either kernel, and every one repairs
+exactly as many samples as before.
+
+What is left is the first pass's autocorrelation and the two prediction
+residuals, both close to the FMA units' peak on the Zen 4, and Levinson, now
+bound by the latency of its recursion rather than by its arithmetic.
 
 One idea that is now *less* attractive than it looked: replacing the fit
 autocorrelation with an FFT. Direct is `O(n × order)` against `O(n log n)`, but

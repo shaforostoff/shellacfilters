@@ -153,6 +153,36 @@ inline double dot(const double * x, const double * y, int n) {
 inline double dmin(double a, double b) { return a < b ? a : b; }
 inline double dmax(double a, double b) { return a > b ? a : b; }
 
+//! The largest |x[i]|, or 0 for n <= 0. A maximum is exact, so splitting it
+//! changes nothing; the loop it replaced was scalar, and compilers do not
+//! vectorise a reduction of fabs() through a compare.
+inline double absMax(const double * x, int n) {
+    double r = 0.0;
+    int i = 0;
+#if DECLICK_SSE2
+    const __m128d sign = _mm_set1_pd(-0.0);
+    __m128d m0 = _mm_setzero_pd(), m1 = _mm_setzero_pd();
+    for (; i + 4 <= n; i += 4) {
+        m0 = _mm_max_pd(m0, _mm_andnot_pd(sign, _mm_loadu_pd(x + i)));
+        m1 = _mm_max_pd(m1, _mm_andnot_pd(sign, _mm_loadu_pd(x + i + 2)));
+    }
+    m0 = _mm_max_pd(m0, m1);
+    r = _mm_cvtsd_f64(_mm_max_sd(m0, _mm_unpackhi_pd(m0, m0)));
+#elif DECLICK_NEON
+    float64x2_t m0 = vdupq_n_f64(0.0), m1 = vdupq_n_f64(0.0);
+    for (; i + 4 <= n; i += 4) {
+        m0 = vmaxq_f64(m0, vabsq_f64(vld1q_f64(x + i)));
+        m1 = vmaxq_f64(m1, vabsq_f64(vld1q_f64(x + i + 2)));
+    }
+    r = vmaxvq_f64(vmaxq_f64(m0, m1));
+#endif
+    for (; i < n; ++i) {
+        const double v = fabs(x[i]);
+        if (v > r) r = v;
+    }
+    return r;
+}
+
 inline float clampf(float v, float lo, float hi) {
     if (!(v > lo)) return lo;        // negated, so NaN lands on lo
     if (!(v < hi)) return hi;
@@ -160,6 +190,11 @@ inline float clampf(float v, float lo, float hi) {
 }
 
 const double kAbsurd = 1.0e30;
+
+//! Half-width of the band around the last median that Channel::ringMedian()
+//! looks in first, as a fraction of it. Any value gives the same median; this
+//! one only decides how often the second pass runs.
+const double kMedianBand = 0.125;
 
 inline bool finite(double v) { return v > -kAbsurd && v < kAbsurd; }
 
@@ -242,12 +277,23 @@ DECLICK_AVX2_FN inline __m128d dotAvx2(const double * x, const double * y, int n
 }
 
 //! One broadcast tap times consecutive x feeds four outputs per register, so
-//! a block of outputs shares every load of h. dot() per output is bound by
-//! its two loads per multiply-add; this needs about one. Each accumulator is
-//! still a dependent chain, one FMA latency per tap, and enough of them
-//! side by side cover that latency: eight on x64, four on x86, which has
-//! only eight vector registers. What is left over at the end goes through
-//! dotAvx2().
+//! a block of outputs shares every load of h. Each accumulator is a dependent
+//! chain, one FMA latency per tap, and enough of them side by side cover that
+//! latency: eight on x64, four on x86, which has only eight vector registers.
+//!
+//! The loads of x are shared as well. Accumulator j wants x at 4j + k for tap
+//! k, which for tap k + 4 is what accumulator j + 1 wanted for tap k. So taps
+//! go in groups of four a stride of four apart - k, k+4, k+8, k+12 - and each
+//! load of x feeds up to four of them: 11 loads and 4 broadcasts per 32
+//! multiply-adds where one tap at a time took 36. Most of those loads straddle
+//! a cache line, which costs Haswell two, and it can only issue two a cycle,
+//! so tap at a time left its FMA units waiting on them. x86 runs two taps a
+//! group, four accumulators. The taps left over go one at a time, and the
+//! outputs left over through dotAvx2().
+//!
+//! Each accumulator still adds its taps in a fixed order, but no longer in
+//! index order, so this differs from one tap at a time in the last bits.
+#define DECLICK_FMA(acc, hv, xv) acc = _mm256_fmadd_pd(hv, xv, acc)
 DECLICK_AVX2_FN void filterAvx2(const double * h, const double * x, double * out,
                                 int count, int taps) {
     int i = 0;
@@ -258,7 +304,45 @@ DECLICK_AVX2_FN void filterAvx2(const double * h, const double * x, double * out
         __m256d a2 = _mm256_setzero_pd(), a3 = _mm256_setzero_pd();
         __m256d a4 = _mm256_setzero_pd(), a5 = _mm256_setzero_pd();
         __m256d a6 = _mm256_setzero_pd(), a7 = _mm256_setzero_pd();
-        for (int k = 0; k < taps; ++k) {
+        int k = 0;
+        for (; k + 16 <= taps; k += 16) {
+            for (int r = 0; r < 4; ++r) {
+                const __m256d h0 = _mm256_broadcast_sd(h + k + r);
+                const __m256d h1 = _mm256_broadcast_sd(h + k + r + 4);
+                const __m256d h2 = _mm256_broadcast_sd(h + k + r + 8);
+                const __m256d h3 = _mm256_broadcast_sd(h + k + r + 12);
+                const double * p = xi + k + r;
+                __m256d v;
+                v = _mm256_loadu_pd(p);
+                DECLICK_FMA(a0, h0, v);
+                v = _mm256_loadu_pd(p + 4);
+                DECLICK_FMA(a1, h0, v); DECLICK_FMA(a0, h1, v);
+                v = _mm256_loadu_pd(p + 8);
+                DECLICK_FMA(a2, h0, v); DECLICK_FMA(a1, h1, v); DECLICK_FMA(a0, h2, v);
+                v = _mm256_loadu_pd(p + 12);
+                DECLICK_FMA(a3, h0, v); DECLICK_FMA(a2, h1, v); DECLICK_FMA(a1, h2, v);
+                DECLICK_FMA(a0, h3, v);
+                v = _mm256_loadu_pd(p + 16);
+                DECLICK_FMA(a4, h0, v); DECLICK_FMA(a3, h1, v); DECLICK_FMA(a2, h2, v);
+                DECLICK_FMA(a1, h3, v);
+                v = _mm256_loadu_pd(p + 20);
+                DECLICK_FMA(a5, h0, v); DECLICK_FMA(a4, h1, v); DECLICK_FMA(a3, h2, v);
+                DECLICK_FMA(a2, h3, v);
+                v = _mm256_loadu_pd(p + 24);
+                DECLICK_FMA(a6, h0, v); DECLICK_FMA(a5, h1, v); DECLICK_FMA(a4, h2, v);
+                DECLICK_FMA(a3, h3, v);
+                v = _mm256_loadu_pd(p + 28);
+                DECLICK_FMA(a7, h0, v); DECLICK_FMA(a6, h1, v); DECLICK_FMA(a5, h2, v);
+                DECLICK_FMA(a4, h3, v);
+                v = _mm256_loadu_pd(p + 32);
+                DECLICK_FMA(a7, h1, v); DECLICK_FMA(a6, h2, v); DECLICK_FMA(a5, h3, v);
+                v = _mm256_loadu_pd(p + 36);
+                DECLICK_FMA(a7, h2, v); DECLICK_FMA(a6, h3, v);
+                v = _mm256_loadu_pd(p + 40);
+                DECLICK_FMA(a7, h3, v);
+            }
+        }
+        for (; k < taps; ++k) {
             const __m256d hk = _mm256_broadcast_sd(h + k);
             const double * xk = xi + k;
             a0 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk),      a0);
@@ -284,7 +368,26 @@ DECLICK_AVX2_FN void filterAvx2(const double * h, const double * x, double * out
         const double * xi = x + i;
         __m256d a0 = _mm256_setzero_pd(), a1 = _mm256_setzero_pd();
         __m256d a2 = _mm256_setzero_pd(), a3 = _mm256_setzero_pd();
-        for (int k = 0; k < taps; ++k) {
+        int k = 0;
+        for (; k + 8 <= taps; k += 8) {
+            for (int r = 0; r < 4; ++r) {
+                const __m256d h0 = _mm256_broadcast_sd(h + k + r);
+                const __m256d h1 = _mm256_broadcast_sd(h + k + r + 4);
+                const double * p = xi + k + r;
+                __m256d v;
+                v = _mm256_loadu_pd(p);
+                DECLICK_FMA(a0, h0, v);
+                v = _mm256_loadu_pd(p + 4);
+                DECLICK_FMA(a1, h0, v); DECLICK_FMA(a0, h1, v);
+                v = _mm256_loadu_pd(p + 8);
+                DECLICK_FMA(a2, h0, v); DECLICK_FMA(a1, h1, v);
+                v = _mm256_loadu_pd(p + 12);
+                DECLICK_FMA(a3, h0, v); DECLICK_FMA(a2, h1, v);
+                v = _mm256_loadu_pd(p + 16);
+                DECLICK_FMA(a3, h1, v);
+            }
+        }
+        for (; k < taps; ++k) {
             const __m256d hk = _mm256_broadcast_sd(h + k);
             const double * xk = xi + k;
             a0 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk),      a0);
@@ -300,6 +403,7 @@ DECLICK_AVX2_FN void filterAvx2(const double * h, const double * x, double * out
     for (; i < count; ++i) _mm_store_sd(out + i, dotAvx2(h, x + i, taps));
     _mm256_zeroupper();
 }
+#undef DECLICK_FMA
 
 DECLICK_AVX2_FN void autocorrAvx2(const double * x, int n, double * r, int maxLag) {
     // With maxLag zeros after x, r[d] = sum over all n of x[k] * x[k+d].
@@ -580,13 +684,36 @@ bool levinson(const double * r, int order, double * a) {
     double err = r[0];
     if (!(err > 0.0)) return false;
 
+    // sum_j a[j] * r[i-j] walks r backwards, which as a plain loop is one long
+    // chain of dependent additions - at order 128 it was a sixth of the whole
+    // run time. With r reversed it is a forward inner product, and dot()
+    // splits the chain.
+    double rrevBuf[kMaxOrder + 1];
+    const bool rev = order <= (int)kMaxOrder;
+    if (rev) for (int i = 0; i <= order; ++i) rrevBuf[order - i] = r[i];
+
     for (int i = 1; i <= order; ++i) {
         double acc = r[i];
-        for (int j = 1; j < i; ++j) acc += a[j] * r[i - j];
+        if (rev) acc += dot(&a[1], &rrevBuf[order - i + 1], i - 1);
+        else for (int j = 1; j < i; ++j) acc += a[j] * r[i - j];
         const double k = -acc / err;
         if (!(k > -1.0 && k < 1.0)) return i > 1;   // lost positive definiteness
         // Symmetric update; the second half must read pre-update values.
-        for (int j = 1; j <= i / 2; ++j) {
+        int j = 1;
+#if DECLICK_SSE2
+        // Two from each end at a time, the far pair swapped into step - the
+        // same products and sums as the loop below, so the same bits.
+        const __m128d kk = _mm_set1_pd(k);
+        for (; 2 * j + 2 < i; j += 2) {
+            const __m128d lo = _mm_loadu_pd(a + j);
+            const __m128d hi = _mm_shuffle_pd(_mm_loadu_pd(a + i - j - 1),
+                                              _mm_loadu_pd(a + i - j - 1), 1);
+            _mm_storeu_pd(a + j, _mm_add_pd(lo, _mm_mul_pd(kk, hi)));
+            const __m128d nh = _mm_add_pd(hi, _mm_mul_pd(kk, lo));
+            _mm_storeu_pd(a + i - j - 1, _mm_shuffle_pd(nh, nh, 1));
+        }
+#endif
+        for (; j <= i / 2; ++j) {
             const double aj = a[j];
             const double ai = a[i - j];
             a[j]     = aj + k * ai;
@@ -715,11 +842,20 @@ void Channel::configure(const Config & cfg) {
     m_fwd.assign(need, 0.0);
     m_bwd.assign(need, 0.0);
     m_det.assign(need, 0.0);
-    m_a.assign(bo + 1, 0.0);
+    // bufOrder zeros after the model, for the wide autocorrelation of it.
+    m_a.assign(2 * bo + 1, 0.0);
     m_ra.assign(bo + 1, 0.0);
     m_arev.assign(bo + 1, 0.0);
     m_aa.assign(bo + 1, 0.0);
+    m_aarev.assign(bo + 1, 0.0);
     m_madRing.assign((size_t)cfg.madWindow, 0.0);
+    // updateAutocorr() reads up to `order` before the last fit's taper, so it
+    // is kept behind bufOrder zeros.
+    m_fitLead = cfg.bufOrder;
+    m_fitWin.assign(need + bo, 0.0);
+    m_fitR.assign(bo + 1, 0.0);
+    m_delta.assign(need, 0.0);
+    m_corr.assign(2 * (bo + 1), 0.0);
     m_runs.assign(2 * (size_t)kBlock, 0);
 
     // The fit always spans the whole sliding window, so the Hann taper is the
@@ -753,13 +889,10 @@ void Channel::configure(const Config & cfg) {
     // fitModel() can ask for. They are still assign()ed and resize()d to the
     // exact length needed each time, which is what zeroes them; reserving here
     // is what stops that from ever reallocating.
-    const size_t ctx = 3 * bo;
     // need + bo: the fit window, and the bufOrder zeros the wide
     // autocorrelation reads past its end.
     m_scratch.reserve(need + bo > (size_t)cfg.madWindow ? need + bo
                                                         : (size_t)cfg.madWindow);
-    m_seg.reserve(bm + 2 * ctx + 1);          // L    = m + 2*ctx
-    m_err.reserve(bm + 2 * ctx + 1);          // rows = L - order
     m_rhs.reserve(bm + 1);                    // m
     m_solve.reserve((bm + 1) * (bo + 1));     // n * (band+1)
 
@@ -776,8 +909,10 @@ size_t Channel::heapBytes() const {
     return (m_win.capacity() + m_dry.capacity() + m_fwd.capacity()
             + m_bwd.capacity() + m_det.capacity() + m_a.capacity()
             + m_ra.capacity() + m_aa.capacity() + m_pvar.capacity() + m_sinv.capacity()
-            + m_madRing.capacity() + m_scratch.capacity() + m_seg.capacity()
-            + m_err.capacity() + m_rhs.capacity() + m_solve.capacity()
+            + m_madRing.capacity() + m_scratch.capacity()
+            + m_fitWin.capacity() + m_fitR.capacity() + m_delta.capacity()
+            + m_corr.capacity()
+            + m_aarev.capacity() + m_rhs.capacity() + m_solve.capacity()
             + m_out.capacity()) * sizeof(double)
            + m_flag.capacity() + m_runs.capacity() * sizeof(int);
 }
@@ -801,6 +936,8 @@ void Channel::reset() {
     m_nruns = 0;
     m_aaValid = false;
     m_scale = 1e-6;
+    m_medHint = 0.0;
+    m_fitLen = 0;
     // m_out.size() is the ring's capacity, so this empties it without giving
     // the storage back - clear() would leave a zero-length ring.
     m_outHead = 0;
@@ -826,6 +963,7 @@ void Channel::fitModel(int from, int to) {
     const int n = to - from;
     if (n < 4 * order + 4) {
         setUnitModel();
+        m_fitLen = 0;
         return;
     }
 
@@ -861,7 +999,13 @@ void Channel::fitModel(int from, int to) {
     }
 
     m_ra.assign((size_t)order + 1, 0.0);
-    g_kernels->autocorr(&m_scratch[0], n, &m_ra[0], order);
+    if (m_fitLen != n || !updateAutocorr(n, order)) {
+        g_kernels->autocorr(&m_scratch[0], n, &m_ra[0], order);
+    }
+    // Kept, unridged, for the next pass to update rather than redo.
+    memcpy(&m_fitWin[(size_t)m_fitLead], &m_scratch[0], sizeof(double) * (size_t)n);
+    memcpy(&m_fitR[0], &m_ra[0], sizeof(double) * ((size_t)order + 1));
+    m_fitLen = n;
     if (!(m_ra[0] > 0.0)) {
         setUnitModel();
         return;
@@ -878,6 +1022,112 @@ void Channel::fitModel(int from, int to) {
     }
     for (int i = 0; i <= order; ++i) m_arev[(size_t)i] = m_a[(size_t)(order - i)];
     m_aaValid = false;
+}
+
+//! The autocorrelation of the tapered window in m_scratch, into m_ra, from the
+//! last fit's - m_fitWin and m_fitR - and the samples that differ between them.
+//!
+//! Every pass after the first fits the same window again, which differs from
+//! the last fit's only where that pass repaired it: a few dozen samples of
+//! some 1600 at the defaults. With w the old taper, w' the new and
+//! delta = w' - w,
+//!
+//!     r'[d] = r[d] + sum_p delta[p] * (w'[p+d] + w[p-d]),
+//!
+//! which over each stretch of changed samples is two filters of `order` + 1
+//! outputs, against the window's length for the full product. A quarter of the
+//! fits' time at the defaults; the sums are taken in a different order, so it
+//! differs from the full product in the last bits.
+//!
+//! False, leaving m_ra alone, where so much changed that the full product is
+//! as cheap.
+bool Channel::updateAutocorr(int n, int order) {
+    const double * w1 = &m_scratch[0];
+    const double * w0 = &m_fitWin[(size_t)m_fitLead];
+    double * delta = &m_delta[0];
+    int changed = 0;
+    for (int i = 0; i < n; ++i) {
+        delta[i] = w1[i] - w0[i];
+        changed += (delta[i] != 0.0);
+    }
+    if (changed > n / 4) return false;
+
+    double * r = &m_ra[0];
+    for (int d = 0; d <= order; ++d) r[d] = m_fitR[(size_t)d];
+    double * fwd = &m_corr[0];
+    double * bwd = &m_corr[(size_t)order + 1];
+    int i = 0;
+    while (i < n) {
+        if (delta[i] == 0.0) { ++i; continue; }
+        // A stretch of changes, with gaps of a few unchanged samples bridged:
+        // a zero tap costs less than another pair of filter calls.
+        const int s = i;
+        int e = i, gap = 0;
+        for (++i; i < n && gap < 8; ++i) {
+            if (delta[i] != 0.0) { e = i; gap = 0; } else ++gap;
+        }
+        i = e + 1;
+        const int len = e - s + 1;
+        // fwd[d] = sum_t delta[s+t] * w'[s+t+d], reading into the `order`
+        // zeros after w'. bwd[order-d] = sum_t delta[s+t] * w[s+t-d], reading
+        // into the m_fitLead zeros before w.
+        g_kernels->filter(delta + s, w1 + s, fwd, order + 1, len);
+        g_kernels->filter(delta + s, w0 + s - order, bwd, order + 1, len);
+        for (int d = 0; d <= order; ++d) r[d] += fwd[d] + bwd[order - d];
+    }
+    return true;
+}
+
+//! The median of the first `have` entries of the noise ring: the value
+//! nth_element over a copy of all of them would pick, and the same one bit for
+//! bit - an order statistic does not depend on how it is found.
+//!
+//! nth_element over the whole ring was a seventh of the run time. But from one
+//! block to the next the median moves little, so one branch-free pass keeps only
+//! the entries within a band either side of the last one and counts those below
+//! it, and nth_element then has a tenth as many to look at. Where the median has
+//! left the band, a second pass keeps the side it went to instead.
+double Channel::ringMedian(size_t have) {
+    const size_t mid = have / 2;
+    const double * v = &m_madRing[0];
+    m_scratch.resize(have);
+    double * keep = &m_scratch[0];
+    size_t n = 0, k = mid;
+
+    if (m_medHint > 0.0) {
+        const double lo = m_medHint * (1.0 - kMedianBand);
+        const double hi = m_medHint * (1.0 + kMedianBand);
+        size_t below = 0;
+        for (size_t i = 0; i < have; ++i) {
+            const double x = v[i];
+            keep[n] = x;
+            below += (size_t)(x < lo);
+            n += (size_t)((x >= lo) & (x <= hi));
+        }
+        if (mid < below) {
+            n = 0;
+            for (size_t i = 0; i < have; ++i) {
+                keep[n] = v[i];
+                n += (size_t)(v[i] < lo);
+            }
+        } else if (mid >= below + n) {
+            k = mid - below - n;
+            n = 0;
+            for (size_t i = 0; i < have; ++i) {
+                keep[n] = v[i];
+                n += (size_t)(v[i] > hi);
+            }
+        } else {
+            k = mid - below;
+        }
+    } else {
+        for (size_t i = 0; i < have; ++i) keep[i] = v[i];
+        n = have;
+    }
+
+    std::nth_element(keep, keep + k, keep + n);
+    m_medHint = keep[k];
+    return keep[k];
 }
 
 void Channel::detect(int from, int to, int pass) {
@@ -907,11 +1157,7 @@ void Channel::detect(int from, int to, int pass) {
         }
         const size_t have = m_madFull ? m_madRing.size() : (size_t)m_madPos;
         if (have >= 16) {
-            m_scratch.assign(m_madRing.begin(), m_madRing.begin() + (ptrdiff_t)have);
-            const size_t mid = have / 2;
-            std::nth_element(m_scratch.begin(), m_scratch.begin() + (ptrdiff_t)mid,
-                             m_scratch.end());
-            const double med = m_scratch[mid] * 1.4826;
+            const double med = ringMedian(have) * 1.4826;
             m_scale = dmax(med, 1e-12);
         }
     }
@@ -1010,45 +1256,43 @@ bool Channel::repairRun(int s, int e, bool again) {
     const int rows = L - order;
     if (rows <= m) return false;
 
-    // Prediction error of the segment with the unknown run zeroed - but only
-    // on the rows that touch the run. Every other row is a constant in the
-    // least-squares objective and drops out of the normal equations, so of the
-    // m + 5*order rows the window holds, the right hand side below reads
-    // m + order. The other 4*order were the larger part of every repair.
-    const int cs = s - lo0, ce = e - lo0;           // the run's columns
-    const int rLo = (cs - order > 0) ? (cs - order) : 0;
-    const int rHi = (ce < rows - 1) ? ce : (rows - 1);
-    // resize(), not assign(): only [rLo, rHi + order] is written or read.
-    m_seg.resize((size_t)L);
-    for (int t = rLo; t <= rHi + order; ++t) {
-        m_seg[(size_t)t] = (t >= cs && t <= ce) ? 0.0 : m_win[lo0 + t];
-    }
-    m_err.resize((size_t)rows);
-    if (rHi >= rLo) {
-        g_kernels->filter(&m_arev[0], &m_seg[(size_t)rLo], &m_err[(size_t)rLo],
-                          rHi - rLo + 1, order + 1);
-    }
-
-    // rhs[j] = -sum over the rows touching column c of a[order-(c-i)]*err[i]
-    m_rhs.assign((size_t)m, 0.0);
-    for (int j = 0; j < m; ++j) {
-        const int c = (s - lo0) + j;
-        const int r0 = (c - order > 0) ? (c - order) : 0;
-        const int r1 = (c < rows - 1) ? c : (rows - 1);
-        // a[order-(c-r)] for r = r0..r1 is a contiguous forward run.
-        m_rhs[(size_t)j] = (r1 < r0) ? 0.0
-            : -dot(&m_a[(size_t)(order - c + r0)], &m_err[(size_t)r0], r1 - r0 + 1);
-    }
-
     // G is symmetric banded Toeplitz with first column aa[0..order],
     // where aa is the autocorrelation of the AR coefficients. That holds
-    // exactly as long as ctx >= order, which it is.
+    // exactly as long as ctx >= order, which it is. m_a has `order` zeros
+    // after the model, which the wide autocorrelation reads.
     if (!m_aaValid) {
-        for (int d = 0; d <= order; ++d) {
-            m_aa[(size_t)d] = dot(&m_a[0], &m_a[(size_t)d], order + 1 - d);
-        }
+        g_kernels->autocorr(&m_a[0], order + 1, &m_aa[0], order);
         m_aa[0] *= 1.0 + 1e-9;
+        for (int d = 0; d <= order; ++d) m_aarev[(size_t)d] = m_aa[(size_t)(order - d)];
         m_aaValid = true;
+    }
+
+    // The right hand side is -A'A applied to the window with the run zeroed,
+    // on the run's columns: the prediction error of the m + order rows that
+    // touch the run, multiplied back through the model. It used to be built
+    // that way, a filter of m + order rows by order + 1 taps for every run,
+    // and that was the larger part of every repair. But A'A is the Toeplitz
+    // matrix of aa, so the same thing is
+    //
+    //     rhs[j] = -sum over known t within `order` of c of aa[|t - c|] * x[t]
+    //
+    // for column c = s + j: 2*order - m + 1 terms per sample, an eighth of the
+    // work for a click of a few samples. No row is clipped by the window, since
+    // ctx >= order. aa[0] carries the ridge, but lag 0 is the sample itself,
+    // which is never a known one. The sums run in a different order, so this
+    // differs from the filter in the last bits.
+    m_rhs.assign((size_t)m, 0.0);
+    const double * win = &m_win[0];
+    for (int j = 0; j < m; ++j) {
+        const int c = s + j;
+        double v = 0.0;
+        // t = c - order .. s - 1, where aa[c - t] runs backwards.
+        const int nl = s - (c - order);
+        if (nl > 0) v += dot(&m_aarev[0], win + (c - order), nl);
+        // t = e + 1 .. c + order.
+        const int nr = c + order - e;
+        if (nr > 0) v += dot(&m_aa[(size_t)(e + 1 - c)], win + e + 1, nr);
+        m_rhs[(size_t)j] = -v;
     }
 
     if (!solveBandedToeplitz(&m_aa[0], order, &m_rhs[0], m, m_solve)) return false;
@@ -1068,12 +1312,8 @@ bool Channel::repairRun(int s, int e, bool again) {
     // from m_win it compounded: on dense runs each repair read the last one
     // as context, could reach 1.5x it, and an ill-conditioned model (an MP3's
     // empty top octave) walked a side channel from 0.17 to 728 inside 4 ms.
-    double localMax = 0.0;
-    for (int t = lo0; t <= hi0; ++t) {
-        if (t >= s && t <= e) continue;
-        const double v = fabs(m_dry[t]);
-        if (v > localMax) localMax = v;
-    }
+    const double localMax = dmax(absMax(&m_dry[(size_t)lo0], s - lo0),
+                                 absMax(&m_dry[(size_t)(e + 1)], hi0 - e));
     const double limit = 1.5 * dmax(localMax, 1e-9);
 
     // Subtractive repair. A click ADDS to the music, so the damaged
@@ -1201,6 +1441,7 @@ void Channel::pushOne(double v) {
     memmove(&m_dry[0], &m_dry[(size_t)blk], sizeof(double) * keep);
     memmove(&m_flag[0], &m_flag[(size_t)blk], sizeof(uint8_t) * keep);
     m_fill -= blk;
+    m_fitLen = 0;                 // the next fit is of a different window
     m_silentUntil = (m_silentUntil > blk) ? (m_silentUntil - blk) : 0;
 }
 
