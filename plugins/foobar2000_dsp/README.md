@@ -287,9 +287,8 @@ mostly buys collateral damage. **Repair depth is the more effective lever**.
 Throughput: ~215× realtime at the defaults on a CPU with AVX2 and FMA, ~115×
 without; ~365× and ~215× at order 64. Measured end to end over 60 s of
 44.1 kHz mono shellac including file I/O — about half a percent of one core on
-a modern desktop. The 2014 MacBook Pro ran 24× realtime stereo, and an M1 88×
-mono with NEON, before the latest round of work, which made the x64 build
-1.6× faster at the defaults; neither has been measured since. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
+a modern desktop. A 2014 MacBook Pro, whose Haswell has both, runs it at 42×
+realtime stereo, and an M1 at 90× stereo with NEON. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
 Latency ~24 ms, reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
 must go in before the first block comes out, but the emitted stream is aligned
@@ -701,10 +700,12 @@ turbo against 2.4 and 2.9, so expect it somewhat below that column.
 The M1 column is measured too, on an M1 Mac mini: the arm64 half of the
 universal Release build, best of seven runs, on a third 60 s of shellac —
 Canaro's *Serenata* (1934), stereo. Runs agreed to within 3 %. The baseline
-figures are with `--no-neon`. NEON gains 2.6× at the defaults, more than AVX2
-does on either x64 machine. Order costs it a little more than it costs the
-Zen 4: 256 takes 2.7× as long as 128 there against 2.3×, and 2.8× against
-2.5× with the baseline kernels.
+figures are with `--no-neon`. Like the rest of the table it is the build
+before the round [below](#where-the-time-goes-and-what-was-done-about-it),
+which took the M1 to 90× at the defaults. NEON gains 2.6× at the defaults,
+more than AVX2 does on either x64 machine. Order costs it a little more than
+it costs the Zen 4: 256 takes 2.7× as long as 128 there against 2.3×, and
+2.8× against 2.5× with the baseline kernels.
 
 The last column of the second table is an estimate, not a measurement: the
 i5-4260U taken as roughly 3–4× slower per core than the machine above, and
@@ -849,6 +850,21 @@ Best of seven (five for SSE2), the same 60 s clip and machine as the first
 table; the "before" columns are a fresh run of the previous build, which
 reads a little above that table on the day.
 
+The same round on the 2014 MacBook Pro and the M1, stereo, best of seven on
+the *Serenata* clip of the M1 column above, the two builds run alternately:
+
+| order | MacBook Pro, AVX2, before | after | M1, NEON, before | after |
+| --- | --- | --- | --- | --- |
+| 32 | 64× | 81× | 171× | 261× |
+| 64 | 45× | 66× | 109× | 167× |
+| **128** (default) | 25.5× | **42×** | 54× | **90×** |
+| 256 | 10.5× | 20× | 20× | 37× |
+
+1.64× at the defaults on Haswell and 1.67× on the M1, against the Zen 4's
+1.6×; at order 256, 1.9× on both. The MacBook Pro was not idle (load average
+around 4), so its absolute figures are good to perhaps 10 %; the ratios less
+so affected, since the two builds took turns.
+
 * **The noise estimate's median** was `nth_element` over the whole 30 ms ring,
   1323 values every block: 14 % of the run time. The median moves little from
   block to block, so one branch-free pass now keeps only the values within
@@ -882,7 +898,10 @@ reads a little above that table on the day.
   so each unaligned load of `x` feeds up to four FMAs: 11 loads per 32
   multiply-adds instead of 36. Worth only 2–3 % on the Zen 4, which has three
   load ports; it is aimed at Haswell, which has two and pays double for a load
-  that straddles a cache line, and has not been measured there yet.
+  that straddles a cache line. There it is worth **5–11 %** end to end at
+  orders 64 to 256, growing with the order (best of fifteen, mono, against the
+  same build taking one tap at a time; 10–13 % by the median), so it stays.
+  The two differ in 0.004 % of output samples, by at most −156 dBFS.
 
 Apart from the median, the local-range scan and the Levinson update, these
 change the sums' order, so the output moves in the last bits — as the AVX2
