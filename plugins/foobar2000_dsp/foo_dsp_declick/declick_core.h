@@ -314,7 +314,13 @@ public:
     //! once at the start: feed `latency` up front and then go back to n in,
     //! n out, and the head start decays by a block per call until it arrives at
     //! a 512-sample delay, by way of one dropout where it runs out.
-    void prime() { drain(); }
+    //!
+    //! The zeros are marked as not audio - before they go in, since the last of
+    //! them completes the first block - so no repair reaches back into them and
+    //! they stay out of the noise estimate: the stream's first `latency`
+    //! samples are exactly silent, and the first real ones are judged against
+    //! real noise rather than against silence.
+    void prime() { m_silentUntil = m_fill + m_cfg.latency; drain(); }
 
     const Config & config() const { return m_cfg; }
 
@@ -351,6 +357,7 @@ private:
     std::vector<uint8_t> m_flag;  //!< parallel to m_win: repair mask
     std::vector<double> m_dry;    //!< untouched copy, for the dry/wet mix
     int    m_fill = 0;            //!< samples currently held in m_win
+    int    m_silentUntil = 0;     //!< m_win below this is prime()'s zeros
     int    m_pad = 0;
 
     std::vector<double> m_fwd, m_bwd, m_det;

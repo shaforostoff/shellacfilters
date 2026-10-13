@@ -807,6 +807,7 @@ void Channel::reset() {
     m_outCount = 0;
     m_repaired = 0;
     m_seen = 0;
+    m_silentUntil = 0;
     // Prime with `pad` zeros so the first real sample lands at window index
     // pad and nothing is dropped off the front of the stream.
     m_fill = m_pad;
@@ -897,8 +898,10 @@ void Channel::detect(int from, int to, int pass) {
     }
 
     if (pass == 0) {
-        // Refresh the robust noise estimate from this block's forward error.
-        for (int i = from; i < to; ++i) {
+        // Refresh the robust noise estimate from this block's forward error -
+        // but not from prime()'s zeros, or right after priming the median is
+        // zero and the first real samples read as one enormous click.
+        for (int i = (from > m_silentUntil) ? from : m_silentUntil; i < to; ++i) {
             m_madRing[(size_t)m_madPos] = fabs(m_fwd[i]);
             if (++m_madPos >= (int)m_madRing.size()) { m_madPos = 0; m_madFull = true; }
         }
@@ -924,6 +927,12 @@ void Channel::interpolate(int from, int to, int reach) {
     const double lo = m_cfg.thresholdLo;
     const int dip = m_cfg.dip;
     const double far = lo + m_cfg.dipFar * (hi - lo);
+
+    // Never into the zeros prime() fed: they are not audio, and the first
+    // onset after them reads as a click whose backward error reaches back
+    // into them - a repair there writes a pre-echo where the stream has to
+    // be silent.
+    if (from < m_silentUntil) from = m_silentUntil;
 
     int i = from;
     while (i < to) {
@@ -1192,6 +1201,7 @@ void Channel::pushOne(double v) {
     memmove(&m_dry[0], &m_dry[(size_t)blk], sizeof(double) * keep);
     memmove(&m_flag[0], &m_flag[(size_t)blk], sizeof(uint8_t) * keep);
     m_fill -= blk;
+    m_silentUntil = (m_silentUntil > blk) ? (m_silentUntil - blk) : 0;
 }
 
 template<typename Sample>
