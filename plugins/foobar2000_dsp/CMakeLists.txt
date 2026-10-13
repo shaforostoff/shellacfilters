@@ -1,11 +1,17 @@
 # ---------------------------------------------------------------------------
 # foobar2000 DSP components - Airwindows ports
 #
+# Windows:
 #   cmake -S . -B build/x86 -A Win32
 #   cmake --build build/x86 --config Release
 #
-# The foobar2000 SDK is fetched automatically the first time you configure.
-# See README.md.
+# macOS (declick, dehum and paraeq; decrackle is Windows only):
+#   cmake -S . -B build/mac -DCMAKE_BUILD_TYPE=Release
+#   cmake --build build/mac
+#
+# Or run scripts\build_release.ps1 or scripts/build_release_macos.sh, which do
+# every architecture the platform ships and package the result. The foobar2000
+# SDK is fetched automatically the first time you configure. See README.md.
 # ---------------------------------------------------------------------------
 
 cmake_minimum_required(VERSION 3.16)
@@ -21,8 +27,15 @@ project(airwindows_foobar2000_dsp
         DESCRIPTION "Airwindows DSP components for foobar2000"
         LANGUAGES CXX)
 
-if(NOT WIN32)
-    message(FATAL_ERROR "These components target the Windows build of foobar2000.")
+if(NOT WIN32 AND NOT APPLE)
+    message(FATAL_ERROR "These components target the Windows and macOS builds of foobar2000.")
+endif()
+
+# The SDK's macOS half is Objective-C and Objective-C++, so two more languages -
+# after project(), because that is what settles which platform this is.
+if(APPLE)
+    enable_language(OBJC)
+    enable_language(OBJCXX)
 endif()
 
 # --- options ---------------------------------------------------------------
@@ -35,8 +48,24 @@ set(FOO_DSP_ARCH "SSE2" CACHE STRING "Instruction set baseline: SSE2, AVX or AVX
 set_property(CACHE FOO_DSP_ARCH PROPERTY STRINGS SSE2 AVX AVX2)
 set(FOO_DSP_WIN32_WINNT "0x0601" CACHE STRING "Minimum Windows version (0x0601 = Windows 7)")
 
+# macOS 11 Big Sur, which is what foobar2000 for Mac itself requires and what
+# the SDK's own Xcode projects target. Set before any target is declared, so
+# every object in the build agrees.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version" FORCE)
+endif()
+
 # --- target architecture ---------------------------------------------------
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+# On Windows one configure is one architecture, chosen with -A. On macOS one
+# configure can be both at once - that is what a universal binary is - so the
+# answer there is a list rather than a word.
+if(APPLE)
+    if(CMAKE_OSX_ARCHITECTURES)
+        set(FOO_DSP_TARGET_ARCH "${CMAKE_OSX_ARCHITECTURES}")
+    else()
+        set(FOO_DSP_TARGET_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "[Aa][Rr][Mm]64")
         set(FOO_DSP_TARGET_ARCH "ARM64EC")
     else()
@@ -67,6 +96,8 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_OBJCXX_STANDARD 17)
+set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 if(FOO_DSP_STATIC_CRT)
@@ -128,14 +159,37 @@ if(MSVC)
     endif()
 endif()
 
+if(APPLE)
+    # ARC for every Objective-C object in the build, including the SDK's, which
+    # is what its own Xcode projects use. Getting this wrong is not a warning:
+    # a file compiled without ARC that hands an object to one compiled with it
+    # leaks or over-releases, and neither shows up until run time.
+    add_compile_options($<$<COMPILE_LANGUAGE:OBJC,OBJCXX>:-fobjc-arc>)
+    # A component's symbols are its own. The host resolves nothing for us -
+    # every SDK symbol is statically linked into the bundle - and three
+    # components from this tree loaded into one process would otherwise be able
+    # to see each other's copies of it.
+    add_compile_options(-fvisibility=hidden -fvisibility-inlines-hidden)
+    # Debug info in Release too, for the same reason the MSVC branch asks for a
+    # PDB there. scripts/build_release_macos.sh pulls it out into a .dSYM and
+    # strips the shipped binary, so it costs the component nothing on disk.
+    add_compile_options($<$<NOT:$<CONFIG:Debug>>:-g>)
+    # FOO_DSP_ARCH is not consulted: the x86_64 slice stays on the compiler's
+    # baseline, and the code that can use AVX picks it at run time.
+endif()
+
 if(FOO_DSP_LTO)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
 endif()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/fb2k_sdk.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/fb2k_component.cmake")
 
-add_subdirectory(foo_dsp_decrackle)
+# Decrackle has no macOS port.
+if(WIN32)
+    add_subdirectory(foo_dsp_decrackle)
+endif()
 add_subdirectory(foo_dsp_declick)
 add_subdirectory(foo_dsp_dehum)
 add_subdirectory(foo_dsp_paraeq)

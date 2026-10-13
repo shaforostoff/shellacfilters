@@ -50,12 +50,24 @@ public:
         return true;
     }
 
+#ifdef _WIN32
     static bool g_have_config_popup() { return true; }
 
     static void g_show_config_popup(const dsp_preset & data, HWND parent,
                                     dsp_preset_edit_callback & callback) {
         dehum_config_popup(data, parent, callback);
     }
+#else
+    // foobar2000 for Mac asks for a view controller to embed rather than
+    // running a modal dialog, and there is no Cocoa one yet - so the host is
+    // told there is nothing to show, and never calls the stub below. The SDK's
+    // entry template wants the method to exist all the same.
+    static bool g_have_config_popup() { return false; }
+
+    static service_ptr g_show_config_popup(fb2k::hwnd_t, dsp_preset_edit_callback_v2::ptr) {
+        throw pfc::exception_not_implemented();
+    }
+#endif
 
     // -- dsp_v3 --------------------------------------------------------------
 
