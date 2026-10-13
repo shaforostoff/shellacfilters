@@ -1017,11 +1017,14 @@ bool Channel::repairRun(int s, int e, bool again) {
         m_cfg.wienerAlpha > 0.0 && !m_pvar.empty() &&
         bandedInverseDiagonal(m_solve, order, m, m_sinv, &m_pvar[0]);
 
-    // Never let a repair leave the local dynamic range.
+    // Never let a repair leave the local dynamic range - of the input. Taken
+    // from m_win it compounded: on dense runs each repair read the last one
+    // as context, could reach 1.5x it, and an ill-conditioned model (an MP3's
+    // empty top octave) walked a side channel from 0.17 to 728 inside 4 ms.
     double localMax = 0.0;
     for (int t = lo0; t <= hi0; ++t) {
         if (t >= s && t <= e) continue;
-        const double v = fabs(m_win[t]);
+        const double v = fabs(m_dry[t]);
         if (v > localMax) localMax = v;
     }
     const double limit = 1.5 * dmax(localMax, 1e-9);
