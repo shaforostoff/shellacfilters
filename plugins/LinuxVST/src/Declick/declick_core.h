@@ -191,6 +191,48 @@ struct Config {
     //! -6.2 against -6.4, harm -15.5 against -13.9. Chosen by ear over 0.6.
     double softMin      = 0.5;
     double softSpan     = 3.5;
+
+    //! The body stage. Not user-facing; declick_cli sweeps it as --body,
+    //! --body-floor, --body-peak, --body-rate0 and --body-rate1.
+    //! Each crackle on a shellac transfer is a sharp core and a smooth bump
+    //! around it, 0.3-0.6 ms wide. The detector finds and repairs the core,
+    //! but an AR model predicts the bump as if it were music. Under a held note
+    //! the bumps come at ~750 a second, and in 1-2 kHz they are heard as a
+    //! "squirt" that the decrackled version removes. At that density they are
+    //! not events that could be detected one by one: they are a carpet about
+    //! 12 dB under the note in their band, as loud next to a repaired core as
+    //! away from one.
+    //! So the stage treats them as noise. In an STFT of the repaired audio
+    //! (N ~46 ms, hop N/4), a bin in bodyLo..bodyHi is cut by its non-tonal
+    //! share H^2 / (H^2 + P^2), never below bodyFloor. P is the median over
+    //! ~370 Hz of the same frame. H is the louder of the medians over the
+    //! frames before and the frames after, so that an onset or a release
+    //! counts as tonal. How much of that cut is applied is the key: the
+    //! number of runs per second that peak at bodyPeak sigma or more, over
+    //! 0.1 s, and then the minimum of that over the last 0.5 s. Crackle on a
+    //! surface is steady, and the bursts musical attacks fire come and go. The
+    //! cut ramps in from bodyRate0 to bodyRate1. Below bodyRate0 the stage
+    //! subtracts nothing, and the output is the repaired audio to the bit.
+    //! On the held note of Tanturi's *Cuatro compases* this takes 45% of what
+    //! the decrackled version takes from 1-2 kHz, against 8% without it. On
+    //! the Malvon master and clean D'Arienzo transfers the key never opens.
+    //! The floor was chosen by ear: at 0.5 (-6 dB) the squirt could still be
+    //! heard, and at 0.25 it could not. See the README.
+    //! It costs bodyLatency samples of latency, ~70 ms at 44.1 kHz. A host
+    //! that reads ahead does not hear that as delay.
+    int    body         = 1;
+    double bodyLo       = 500.0;
+    double bodyHi       = 3000.0;
+    double bodyFloor    = 0.25;
+    double bodyPeak     = 6.0;
+    double bodyRate0    = 20.0;    //!< strong runs per second
+    double bodyRate1    = 60.0;
+    double bodyRateWin  = 0.1;     //!< seconds
+    double bodyHold     = 0.5;     //!< seconds
+    int    bodyN        = 2048;    //!< from the sample rate alone
+    int    bodyLatency  = 0;       //!< bodyDelay(bodyN) if body, else 0
+    double rate         = 44100.0;   //!< the sample rate compute() was given
+
     int    pad          = 272;   //!< context needed either side of a block
     int    latency      = 784;
 
@@ -220,15 +262,21 @@ struct Config {
 
     void compute(const Params & p, double sampleRate);
 
+    //! The body stage's delay for transform length n: 1.5 n - 1, in whole
+    //! blocks. See compute().
+    static int bodyDelay(int n);
+
     //! True if `o` needs exactly the buffers this config already has, i.e. it
     //! can be swapped into a running Channel with retune() instead of
     //! configure(), which reallocates and therefore resets.
     //!
-    //! Only `order`, `maxRun` and `madWindow` size anything (`pad` and
-    //! `latency` are derived from the first two); thresholds, depth, wet,
-    //! delta and passes are read per block and can change under a live stream.
+    //! Only `order`, `maxRun`, `madWindow`, `body` and `bodyN` size anything
+    //! or set the latency (`pad` and `latency` are derived from them);
+    //! thresholds, depth, wet, delta and passes are read per block and can
+    //! change under a live stream.
     bool structurallyEquals(const Config & o) const {
-        return order == o.order && maxRun == o.maxRun && madWindow == o.madWindow;
+        return order == o.order && maxRun == o.maxRun && madWindow == o.madWindow
+            && body == o.body && bodyN == o.bodyN && rate == o.rate;
     }
 };
 
@@ -384,6 +432,16 @@ public:
 private:
     void pushOne(double v);
     void outPush(double v);
+    //! The dry/wet (or delta) mix of one finished sample, into the output ring.
+    void emitMixed(double y, double d);
+    //! One repaired sample and its dry counterpart, into the body stage.
+    void bodyPush(double y, double d);
+    //! The frame starting at stage sample `start` is complete: transform it,
+    //! and cut the one two hops before it.
+    void bodyHop(uint64_t start);
+    //! The key's strength, 0..1, from the strong-run rates of the last
+    //! Config::bodyHold seconds.
+    double bodyBeta() const;
     void growOut();               //!< only reachable by overrunning maxBlock
     void processBlock();          //!< repairs m_win[m_pad .. m_pad+kBlock)
     void detect(int from, int to, int pass);
@@ -462,6 +520,34 @@ private:
     std::vector<int> m_runs;
     std::vector<double> m_runGain;   //!< each run's repair gain, one per pair
     int    m_nruns = 0;
+
+    //! The body stage; see Config::body. Rings of repaired (m_bY) and dry
+    //! (m_bD) audio and of what it removes from them (m_bR), indexed by the
+    //! stage's sample count m_bT. All sized in configure() from bodyN, which
+    //! depends on the sample rate alone.
+    enum { kBodyFrames = 5 };     //!< the cut frame, two either side
+    int    m_bN = 0, m_bH = 0;
+    size_t m_bMask = 0;           //!< ring size - 1
+    uint64_t m_bT = 0;            //!< samples into the stage
+    int    m_bK0 = 0, m_bK1 = 0;  //!< the band, as bins
+    int    m_bM0 = 0, m_bM1 = 0;  //!< bins whose magnitudes are kept
+    int    m_bHalf = 0;           //!< half-width of the median over frequency
+    int    m_bHist = 0;           //!< consecutive frames transformed, to 5
+    int    m_bSlot = 0;           //!< where the next frame goes in the rings
+    double m_bNorm = 1.0;         //!< sum of the squared window over the hops
+    std::vector<double> m_bY, m_bD, m_bR;
+    std::vector<double> m_bWin;            //!< periodic Hann
+    std::vector<double> m_bRe, m_bIm;      //!< FFT work, N/2 points
+    std::vector<double> m_bTwRe, m_bTwIm;  //!< N's twiddles, for unpacking
+    std::vector<double> m_bStRe, m_bStIm;  //!< N/2's, stage by stage
+    std::vector<int>    m_bRev;            //!< bit reversal of N/2
+    std::vector<double> m_bMag;            //!< kBodyFrames x (m_bM1-m_bM0+1)
+    std::vector<double> m_bXRe, m_bXIm;    //!< kBodyFrames x (m_bK1-m_bK0+1)
+    std::vector<double> m_bMed;            //!< median scratch
+    //! Strong runs per repair block, and the rate over bodyRateWin, as rings.
+    std::vector<int>    m_bCount;
+    std::vector<double> m_bRate;
+    int    m_bCountPos = 0, m_bRatePos = 0, m_bRateHave = 0, m_bStrong = 0;
 
     std::vector<double> m_madRing; //!< |forward residual| history
     int    m_madPos = 0;

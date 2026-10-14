@@ -46,7 +46,12 @@ void usage() {
         "  --dip-far <0..1>  How far above the floor it must be beyond them (default 0.5)\n"
         "  --dip-peak <x>    Only runs that peak this many sigma or more may (default 6)\n"
         "  --soft-min <0..1>  Share of a run at the trigger that is repaired (default 0.5)\n"
-        "  --soft-span <x>    Sigma above the trigger where repair is full (default 3.5, 0 off)\n");
+        "  --soft-span <x>    Sigma above the trigger where repair is full (default 3.5, 0 off)\n"
+        "  --body <0|1>       The crackle-body stage (default 1)\n"
+        "  --body-floor <0..1>  Deepest cut of a bin, as a gain (default 0.25)\n"
+        "  --body-peak <x>    Sigma a run must peak at to count towards its key (default 6)\n"
+        "  --body-rate0 <x>   Strong runs per second where the key starts to open (default 20)\n"
+        "  --body-rate1 <x>   ... and where it is fully open (default 60)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -73,6 +78,8 @@ int main(int argc, char ** argv) {
     float dipPeak = -1.0f;
     float softMin = -1.0f;
     float softSpan = -1.0f;
+    float body = -1.0f, bodyFloor = -1.0f, bodyPeak = -1.0f;
+    float bodyRate0 = -1.0f, bodyRate1 = -1.0f;
 
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
@@ -95,6 +102,11 @@ int main(int argc, char ** argv) {
         else if (a == "--dip-peak") dipPeak = v;
         else if (a == "--soft-min") softMin = v;
         else if (a == "--soft-span") softSpan = v;
+        else if (a == "--body") body = v;
+        else if (a == "--body-floor") bodyFloor = v;
+        else if (a == "--body-peak") bodyPeak = v;
+        else if (a == "--body-rate0") bodyRate0 = v;
+        else if (a == "--body-rate1") bodyRate1 = v;
         else if (a == "-s") params.sensitivity = v;
         else if (a == "-e") params.extent = v;
         else if (a == "-l") params.maxLengthMs = v;
@@ -117,6 +129,12 @@ int main(int argc, char ** argv) {
     const size_t frames = audio.frames();
 
     declick::Config cfg;
+    // Before compute(): whether the body stage runs sets the latency.
+    if (body >= 0.0f) cfg.body = (int)body;
+    if (bodyFloor >= 0.0f) cfg.bodyFloor = bodyFloor;
+    if (bodyPeak >= 0.0f) cfg.bodyPeak = bodyPeak;
+    if (bodyRate0 >= 0.0f) cfg.bodyRate0 = bodyRate0;
+    if (bodyRate1 >= 0.0f) cfg.bodyRate1 = bodyRate1;
     cfg.compute(params, (double)audio.sampleRate);
     if (alpha >= 0.0f) cfg.wienerAlpha = alpha;
     if (wmax >= 0.0f) cfg.wienerMax = wmax;
