@@ -173,9 +173,8 @@ buffers.
 - On **x86 Windows** it is worth 1–2% on Haswell, measured above: the 16-byte
   heap left the window or the residuals 4 doubles off a line. The Zen 4 has
   not been measured. This part is implemented as `CacheAlignedAlloc` in
-  `declick_core.h`, over `_aligned_malloc` / `posix_memalign` rather than
-  C++17 aligned new, because the VST2 builds are C++14. Apple builds keep
-  `std::vector<double>`.
+  `declick_core.h`, over C++17 aligned new. Apple builds keep
+  `std::vector<double>`, which also keeps their Xcode projects at C++11.
 - **Aligning the allocation alone is not enough**, because of
   `maxRun + 2·order` above. A fix that holds at every setting needs both:
   - a 64-byte allocator on the window and residual buffers, e.g.

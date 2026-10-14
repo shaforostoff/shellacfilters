@@ -128,7 +128,8 @@ done
 #                               comparisons in vst_host_verify are what say the
 #                               ports are running the same DSP.
 
-std="-std=c++14"
+# C++17 for declick_core.h, which allocates its filter buffers with aligned new.
+std="-std=c++17"
 common="-O2 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -DVST_FORCE_DEPRECATED"
 warn="-Wall -Wextra"
 # The wrapper follows the Airwindows house pattern - a four character code as an

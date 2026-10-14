@@ -83,10 +83,11 @@ numbers moving once they are set.
 
 from `plugins/foobar2000_dsp`. The Windows one compiles with `cl.exe` directly
 rather than through each plug-in's `VSTProject.vcxproj`, because those ask for
-toolset v140 and Windows SDK 8.1 and expect the SDK at a path that is not in
-this tree. The `.vcxproj`, `.sln` and `.def` files are left exactly as
-Airwindows ships them, so the documented "drag the folder into VSTProject and
-press build" route still works for anyone who does have the real SDK.
+Windows SDK 8.1 and expect the SDK at a path that is not in this tree. The
+`.vcxproj`, `.sln` and `.def` files are as Airwindows ships them apart from
+toolset v141 in place of v140 and C++17 (Visual Studio 2017 is the oldest
+supported), so the documented "drag the folder into VSTProject and press build"
+route still works for anyone who does have the real SDK.
 
 The Linux one drives `g++` over `plugins/LinuxVST/src/{Declick,Dehum}` for the
 same reason: `plugins/LinuxVST/CMakeLists.txt` wants Steinberg's sources in

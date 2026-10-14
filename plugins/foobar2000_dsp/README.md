@@ -2744,18 +2744,21 @@ A plug-in that never calls `setEditor()` is exactly the plug-in it was before,
 which is why Declick and Dehum still assert that no editor is claimed.
 
 The build does not go through each plug-in's `VSTProject.vcxproj`. Those ask for
-toolset v140 and Windows SDK 8.1 and expect the SDK at a path outside this tree,
-so `build_winvst.ps1` drives `cl.exe` directly and the `.vcxproj`, `.sln` and
-`.def` files are left exactly as Airwindows ships them — the documented "drag the
-folder into VSTProject and press build" route still works for anyone who does
-have the real SDK.
+Windows SDK 8.1 and expect the SDK at a path outside this tree, so
+`build_winvst.ps1` drives `cl.exe` directly. The `.vcxproj`, `.sln` and `.def`
+files are as Airwindows ships them apart from two settings, toolset v141 in
+place of v140 and C++17: Visual Studio 2017 is the oldest one supported, and
+`declick_core.h` uses aligned `new`. The documented "drag the folder into
+VSTProject and press build" route still works for anyone who does have the real
+SDK.
 
 `build_linuxvst.sh` avoids `plugins/LinuxVST/CMakeLists.txt` for the same
 reason. That project builds all five hundred plug-ins and wants Steinberg's
 sources in `LinuxVST/include/vstsdk`, so it is left alone and keeps working for
 anyone who has them — including for these two, which are registered in it with
 `add_airwindows_plugin(Declick)` and `add_airwindows_plugin(Dehum)` like every
-other plug-in there.
+other plug-in there. The one change to it is that Declick builds as C++17
+rather than the project's C++14, for the same aligned `new`.
 
 #### The part to be suspicious of
 

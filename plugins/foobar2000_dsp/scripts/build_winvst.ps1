@@ -17,12 +17,14 @@
 
     Two things about this script are worth knowing before reading it.
 
-    It does not use each plug-in's VSTProject.vcxproj. Those ask for platform
-    toolset v140 and Windows SDK 8.1, and they reference Steinberg's vst2.x
-    sources at a path that is not in this repository. Rather than rewrite
-    Airwindows' project files - which are what the documented "drag the folder
-    into VSTProject and press build" route needs, and which are left exactly as
-    shipped - this drives cl.exe directly.
+    It does not use each plug-in's VSTProject.vcxproj. Those ask for Windows
+    SDK 8.1 and reference Steinberg's vst2.x sources at a path that is not in
+    this repository. Rather than rewrite Airwindows' project files - which are
+    what the documented "drag the folder into VSTProject and press build" route
+    needs - this drives cl.exe directly. Ours differ from the Airwindows ones
+    in two settings only: toolset v141 rather than v140, since Visual Studio
+    2017 is the oldest supported, and C++17, which declick_core.h needs for
+    aligned new.
 
     It links plugins/WinVST/vst2_shim, a clean-room implementation of the VST2
     ABI, in place of the SDK. Read plugins/WinVST/vst2_shim/README.md for what
@@ -190,7 +192,7 @@ $commonDefines = @(
     '/D', 'VST_FORCE_DEPRECATED'
 )
 $commonFlags = @('/nologo', '/c', '/W3', '/EHsc', '/O2', '/Ot', '/Oi', '/MT',
-                 '/GS', '/Gy', '/fp:precise', '/std:c++14')
+                 '/GS', '/Gy', '/fp:precise', '/std:c++17')
 
 function Get-ArchFlags {
     param([Parameter(Mandatory)] [string] $TargetArch)
