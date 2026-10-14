@@ -289,12 +289,18 @@ without; ~365× and ~215× at order 64. Measured end to end over 60 s of
 44.1 kHz mono shellac including file I/O — about half a percent of one core on
 a modern desktop. A 2014 MacBook Pro, whose Haswell has both, runs it at 42×
 realtime stereo, and an M1 at 90× stereo with NEON. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
-Latency ~24 ms, reported to foobar2000 so visualisations stay in sync. Note
+Those figures predate the [body stage](#the-body-of-dense-crackle-the-body-stage).
+Where its key is shut it costs little: ~4% on that clip, measured interleaved.
+Where crackle is dense enough to open it, it adds ~40% to the AVX2 time and
+~20% to the SSE2 time. On Tanturi's *Cuatro compases*, with the key open 72% of
+the time, that is 185× → 132× and 99× → 83× realtime.
+Latency ~94 ms (4144 samples at 44.1 kHz, ~70 ms of it the body stage),
+reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
 must go in before the first block comes out, but the emitted stream is aligned
 with the input. The component reads ahead rather than holding the output back —
 it feeds every chunk in and emits whatever the pipeline has finished — so what
-those 24 ms describe is how far ahead of the listener the decoder is running,
+those 94 ms describe is how far ahead of the listener the decoder is running,
 which is exactly what `get_latency()` exists to tell the core.
 
 **Nothing is carried from one track to the next.** Every record has its own
@@ -1076,6 +1082,131 @@ Tried and dropped:
 * **More Extent** for thumps. A thump's tail is a decaying resonance, which is
   exactly what an AR model predicts well, so the residual detector cannot see
   it whatever the hysteresis. Thumps need a mechanism of their own.
+* **The body of dense crackle.** On the held first note of Tanturi's *Cuatro
+  compases* (1942) the transfer "squirts": by ear, splicing bands of the
+  commercial decrackle into our output put it in 1–2 kHz. There each crackle
+  is a smooth bump, 0.3–0.6 ms wide and up to ±0.1, around a sharp core of
+  a few samples. We find and repair the core; the bump stays. Two thirds of
+  what the commercial version takes from that band lies within 0.25 ms of a
+  run we already repair, but only 8 % of it is in what we take. Four ways at
+  the bump, all in Python against the commercial decrackle, the Malvon master
+  and the clean D'Arienzo:
+  * *Residual detection*, raw, band-limited to 0.3–3 kHz or integrated over
+    0.5–2 ms. On the ten largest bumps it scores no higher than the
+    commercial output's own 99.9th percentile on the same note: an order-128
+    model predicts something that smooth.
+  * *A time-frequency suppressor* that cuts a bin back to the louder of the
+    medians before and after it. At a fifth of the commercial removal it
+    took −26 to −28 dB from the clean records. The bumps sit only 12 dB
+    under the note in their band.
+  * *A pitch predictor*, one period either side. The chord is only 0.86
+    periodic and beats, and only the largest bump stood out.
+  * *Repairing the run and a Gaussian-derivative bump jointly*, keeping the
+    bump when it cuts the residual by 25 noise variances or more. Bump and
+    music cannot be told apart for the same reason: the master went from
+    −38.6 to −21.8 dB and the D'Arienzo from −47.3 to −20.4, on bumps
+    bigger than the music around them. Capping the bump at the click's size
+    accepts nothing, the real ones included: at 0.79 s the bump peaks at
+    0.14 around a core discrepancy of 0.0013.
+  Widening every run by 3–22 samples, the obvious shortcut, took the master
+  to between −33 and −17 dB and the MP3 from 2.1 to up to 15.7 clicks/s left.
+  Like thumps, the bump needs a model that sees further than a few
+  milliseconds. One that does is described next.
+
+### The body of dense crackle: the body stage
+
+**Why every per-click approach failed.** Our output's 1–2 kHz band during
+the *Cuatro* note is no louder within 0.5 ms of a repaired run than 3 ms or
+more from one (−0.6 to −1.3 dB). Clean records are *louder* near runs, where
+those runs sit on attacks. A time-domain version of the median suppressor,
+with a 0.3 ms band envelope against the louder of the medians before and
+after, puts the commercial version's 15 largest events only 1.0–3.5× above
+their neighbourhood. The Malvon master and the clean D'Arienzo reach 2.9× at
+p99.9. At ~750 bodies a second the neighbourhood *is* bodies. They are a
+carpet about 12 dB under the note in its band, and the cores say where the
+carpet is, not when each body happens.
+
+Two other leads also closed:
+
+* The body is not a fixed response to the core. A ±1.5 ms least-squares FIR
+  from the original's >4 kHz band explains 1–2.5% of the commercial 1–2 kHz
+  removal.
+* A sinusoidal model of the held note over 46–186 ms fits it to only −10…−16
+  dB.
+
+**What does work is to treat the carpet as noise.** Across 0.1 s frames of
+60 of the 170 sample-aligned commercial pairs, the commercial version's
+0.5–3 kHz removal tracks the crackle-to-music ratio. Within a song it
+correlates 0.73 with what our own repair takes from that band. It correlates
+only 0.15 with the rate of strong runs. Overall it takes 3–5 dB more than we
+do at every level.
+
+**The stage** (`Config::body`). An STFT runs on the repaired signal: N
+2048, about 46 ms at any rate, with hop N/4. In 0.5–3 kHz it cuts each bin
+by its non-tonal share, P²/(H²+P²), and never by more than 12 dB.
+
+* **P** is the median over ~370 Hz of the same frame.
+* **H** is the louder of the medians over the frames before and the frames
+  after, so an onset or a release counts as tonal.
+* **The key** sets how much of that cut is applied. It counts runs per second
+  that peak at 6σ or more, over 0.1 s, and takes the *minimum* of that over
+  the last 0.5 s. The surface's crackle is steady, and the bursts that
+  attacks fire come and go. The key opens from 20/s and is fully open at
+  60/s.
+* **What it outputs.** It computes only what it removes, and subtracts it.
+  So where the key is shut, the output is the repaired audio to the bit, a
+  constant delay later.
+
+| | Cuatro note: shared / left | Malvon master | clean D'Arienzo | *El Marne* | *El irresistible* |
+|---|---|---|---|---|---|
+| without the stage | 8% / 0.98 | −38.6 dB | −48.1 dB | −29.9 dB | 4.88/s |
+| with it (C++, causal key) | 40% / 0.99 | −38.6, bit-identical | −48.1, bit-identical | −29.9, bit-identical | 4.83/s |
+| Python prototype, centred key | 45% / 1.03 | −38.6 | −48.1 | −29.9 | 4.83/s |
+| prototype, key without the 0.5 s minimum | 33% / 0.92 | −31.1 | −45.7 | −23.1 | 4.75/s |
+
+How the columns are scored:
+
+* **Shared** is how much of the commercial version's 1–2 kHz removal ours
+  reproduces. **Left** is the 1–2 kHz distance to the commercial output,
+  relative to the original's.
+* Removal from the clean records is over 30–90 s of each. *El irresistible*
+  is scored in clicks per second left above 8σ in the whitened output (this
+  counter reads higher than the one in [Dense crackle](#dense-crackle)).
+* The previous best "shared", the joint bump fit, was 28%, at −21.8 dB on
+  the master.
+
+Run on whole songs, the C++ stage takes −21.7, −19.8 and −32.3 dB of the
+0.5–3 kHz band from *Cuatro compases*, *Que solo estoy* and *Aleli*. The
+prototype took −22.2, −20.3 and −32.0 dB, and the removals correlate 0.81,
+0.90 and 0.70.
+
+**Chosen by ear.** The test was the prototype at floors of −12 and −6 dB on
+those three songs. At −6 dB the squirt could still be heard by careful
+listening. At −12 dB it was gone, and the stage's removed files held no music
+to the ear. That held even on *Que solo estoy*, where the key is open 91% of
+the time and the stage takes 8 dB more of the band than the commercial
+version does.
+
+**Latency.** A sample's removal is final once the frame two hops after the
+last one covering it has arrived, 1.5 N − 1 samples later. The stage delays
+every sample by that, rounded up to whole 512-sample blocks: 3072 samples at
+44.1 kHz. Whole blocks because `latency` has to be exact in both directions
+of the streaming contract, and a stage fed a block at a time can only keep
+both with a delay of whole blocks. Hosts that read ahead do not hear it:
+foobar2000, and VirtualDJ's buffer plug-in. A VST or AU declares it, and the
+host compensates for it.
+
+**Cost.** Done naïvely, with full complex FFTs at hop N/8, the stage cost
+1.5× the whole AR core. It is now down to the figures given under
+[Declick parameters](#declick-parameters). These are the changes:
+
+* **Hop N/4.** The removal it gives correlates 0.995 with hop N/8's.
+* **Packed transforms.** The real frames go through N/2-point complex
+  transforms, and only the band's bins are unpacked.
+* **Faster butterflies.** Each FFT stage has its own contiguous twiddles,
+  and the first two stages need no multiplies.
+* **Nothing while shut.** The stage does no transforms at all while the key
+  is shut.
 
 ---
 
@@ -2015,8 +2146,8 @@ wrong pre-roll makes the core zero-fill mid-stream. Around it, the things an AU
 has to get right that a VST does not:
 
 * `GetLatency()` and `GetTailTime()` are **seconds**, not samples, and both have
-  to come back out as `cfg.latency` at the rate in force — 1072 samples at the
-  shipping default, 784 after dropping to order 32, 1280 at 96 kHz;
+  to come back out as `cfg.latency` at the rate in force — 4144 samples at the
+  shipping default, 3856 after dropping to order 32, 7424 at 96 kHz;
 * `PropertyChanged(kAudioUnitProperty_Latency)` is what an AU says instead of
   `audioMasterIOChanged`, so it must fire **exactly once** for Max repair or
   Model order and **never** for the other five, for Dehum's seven, or across a
@@ -2685,7 +2816,7 @@ and a compiler would not:
 | `resvd1`, `resvd2`, `future[56]` | left zeroed, as the host expects |
 | the deprecated `process` | a no-op function, not a null pointer, because a host old enough to call it will not check first |
 | opcode routing | all seven parameter names arrive at the right index; displays and labels stay inside `kVstMaxParamStrLen` in a buffer bigger than promised |
-| the latency contract | Declick declares 1072 samples at 44.1 kHz with `effGetTailSize` matching, and calls `audioMasterIOChanged` twice for the two structural parameters; Dehum declares 0 and calls it **never** |
+| the latency contract | Declick declares 4144 samples at 44.1 kHz with `effGetTailSize` matching, and calls `audioMasterIOChanged` twice for the two structural parameters; Dehum declares 0 and calls it **never** |
 | `main` | exported as well as `VSTPluginMain`, for hosts that predate the rename, and reaching the same plug-in when called. On Windows the `.def` makes them one address and that is asserted too; the `.so` gets a forwarder instead, because there is no `.def` to alias with |
 | `effClose` | 24 open/close cycles do not accumulate private bytes. This is a contract, not a nicety: the host frees nothing, so a shim that forgets the `delete` leaks the whole instance on every plug-in scan, and Dehum carries ~400 kB of analysis state per channel |
 
@@ -2862,6 +2993,12 @@ constant on the way past, those being three hand-written copies of one number.
 * **Declick has not been evaluated on stereo vinyl**, only on mono 78s. It
   should work — the detector is per-channel and format-agnostic — but the
   thresholds were tuned on shellac.
+* **The body stage reaches about 40% of what a commercial decrackler takes from
+  1–2 kHz under a held note, and its key is causal.** The *squirt* is gone by
+  ear, but the key needs about 0.1 s of crackle history. It opens a little
+  later at the start of a stream than the centred key the prototype used
+  (45%). On a record whose crackle is too sparse to open the key, the bodies
+  stay — see [The body stage](#the-body-of-dense-crackle-the-body-stage).
 * **Declick's audio thread can still allocate in one case:** a caller pushing
   more than `Config::maxBlock` — 16384 samples — between pulls. That grows the
   output ring once, and then never again. Neither wrapper comes near it.

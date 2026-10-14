@@ -583,6 +583,66 @@ const Kernels kNeonKernels = { filterNeon, autocorrNeon, "neon" };
 
 #endif // DECLICK_NEON
 
+//! In-place radix-2 complex FFT of n points (n >= 4), for the body stage.
+//! rev is the bit reversal of 0..n-1. st holds each stage's twiddles end to
+//! end, cos and sin of 2 pi k / len for k < len/2 at st[len/2 - 1 + k], so a
+//! stage reads them in order and the butterfly loop is a straight run the
+//! compiler can vectorise. The first two stages need no multiplies and get
+//! loops of their own. Forward is e^-i; the inverse is not scaled.
+void fftRadix2(double * re, double * im, int n, const int * rev,
+               const double * stRe, const double * stIm, bool inverse) {
+    for (int i = 0; i < n; ++i) {
+        const int j = rev[i];
+        if (j > i) {
+            double t = re[i]; re[i] = re[j]; re[j] = t;
+            t = im[i]; im[i] = im[j]; im[j] = t;
+        }
+    }
+    for (int i = 0; i < n; i += 2) {
+        const double ar = re[i], ai = im[i], br = re[i + 1], bi = im[i + 1];
+        re[i] = ar + br; im[i] = ai + bi;
+        re[i + 1] = ar - br; im[i + 1] = ai - bi;
+    }
+    for (int i = 0; i < n; i += 4) {
+        double ar = re[i], ai = im[i], br = re[i + 2], bi = im[i + 2];
+        re[i] = ar + br; im[i] = ai + bi;
+        re[i + 2] = ar - br; im[i + 2] = ai - bi;
+        // The second butterfly's twiddle is -i forward, +i inverse.
+        ar = re[i + 1]; ai = im[i + 1];
+        const double xr = re[i + 3], xi = im[i + 3];
+        const double tr = inverse ? -xi : xi;
+        const double ti = inverse ? xr : -xr;
+        re[i + 1] = ar + tr; im[i + 1] = ai + ti;
+        re[i + 3] = ar - tr; im[i + 3] = ai - ti;
+    }
+    for (int len = 8; len <= n; len <<= 1) {
+        const int half = len >> 1;
+        const double * wr = stRe + half - 1;
+        const double * ws = stIm + half - 1;
+        const double sgn = inverse ? 1.0 : -1.0;
+        for (int i = 0; i < n; i += len) {
+            double * ar = re + i;
+            double * ai = im + i;
+            double * br = re + i + half;
+            double * bi = im + i + half;
+            for (int k = 0; k < half; ++k) {
+                const double c = wr[k], s = sgn * ws[k];
+                const double tr = c * br[k] - s * bi[k];
+                const double ti = c * bi[k] + s * br[k];
+                br[k] = ar[k] - tr;
+                bi[k] = ai[k] - ti;
+                ar[k] += tr;
+                ai[k] += ti;
+            }
+        }
+    }
+}
+
+//! Median of three.
+inline double median3(double a, double b, double c) {
+    return dmax(dmin(a, b), dmin(dmax(a, b), c));
+}
+
 const Kernels * pickKernels(bool allowWide) {
 #if DECLICK_AVX2
     if (allowWide && cpuHasAvx2Fma()) return &kAvx2Kernels;
@@ -626,6 +686,11 @@ bool Params::operator==(const Params & o) const {
 
 // ---------------------------------------------------------------------------
 
+int Config::bodyDelay(int n) {
+    const int b = (int)kBlock;
+    return b * ((n + n / 2 - 1 + b - 1) / b);
+}
+
 void Config::compute(const Params & pIn, double sampleRate) {
     Params p = pIn;
     p.sanitize();
@@ -661,7 +726,26 @@ void Config::compute(const Params & pIn, double sampleRate) {
     // interpolation window, which itself needs at least `order` on each side
     // for the normal equations to stay Toeplitz.
     pad = maxRun + 3 * order;
-    latency = pad + (int)kBlock;
+
+    // The body stage's transform spans ~46 ms at any rate: the power of two
+    // nearest 2048 * rate / 44.1 kHz. A sample is final once the frame two
+    // hops (N/2) after the last one covering it has arrived, 1.5 N - 1 samples
+    // later, and the stage delays every sample by the same amount, rounded up
+    // to whole blocks. Whole blocks because `latency` is held to two things:
+    // exactly that many samples go in before the first comes out, and that
+    // many zeros run every real sample out. With output arriving from the
+    // repair a block at a time, a delay of whole blocks is the only kind that
+    // keeps both.
+    rate = sampleRate;
+    {
+        const double want = 2048.0 * sampleRate / 44100.0;
+        int n = 2048;
+        while (n < 16384 && want >= 1.5 * (double)n) n *= 2;
+        while (n > 256 && want <= 0.75 * (double)n) n /= 2;
+        bodyN = n;
+    }
+    bodyLatency = body ? bodyDelay(bodyN) : 0;
+    latency = pad + (int)kBlock + bodyLatency;
 
     // The envelope the buffers are sized from. Same clamps as maxRun above, but
     // at Params::sanitize()'s 20 ms ceiling and kMaxOrder, so no parameter
@@ -897,6 +981,87 @@ void Channel::configure(const Config & cfg) {
     m_rhs.reserve(bm + 1);                    // m
     m_solve.reserve((bm + 1) * (bo + 1));     // n * (band+1)
 
+    // The body stage, sized from bodyN alone - so from the sample rate - and
+    // allocated whether or not it is on, like the rest of the envelope.
+    {
+        const int N = cfg.bodyN;
+        const int H = N / 4;
+        m_bN = N;
+        m_bH = H;
+        // Rings, a power of two that holds the delay and the sample being
+        // pushed - the oldest frame being cut starts inside that. Sized from
+        // N, not from whether the stage is on, like the rest of the envelope.
+        size_t ring = 1;
+        while (ring < (size_t)Config::bodyDelay(N) + 1) ring <<= 1;
+        m_bMask = ring - 1;
+        const double binHz = cfg.rate / (double)N;
+        m_bHalf = (int)floor(8.0 * (double)N / 2048.0 + 0.5);
+        if (m_bHalf < 1) m_bHalf = 1;
+        m_bK0 = (int)ceil(cfg.bodyLo / binHz);
+        m_bK1 = (int)floor(cfg.bodyHi / binHz);
+        if (m_bK0 < m_bHalf + 1) m_bK0 = m_bHalf + 1;
+        // Below N/4, so a bin and the mirror the packed inverse folds it onto
+        // never meet; that is 11 kHz at 44.1 kHz.
+        if (m_bK1 > N / 4 - m_bHalf - 1) m_bK1 = N / 4 - m_bHalf - 1;
+        if (m_bK1 < m_bK0) m_bK1 = m_bK0 - 1;            // an empty band: no cut
+        m_bM0 = m_bK0 - m_bHalf;
+        m_bM1 = m_bK1 + m_bHalf;
+        const int nb = (m_bM1 >= m_bM0) ? (m_bM1 - m_bM0 + 1) : 0;
+        const int nk = (m_bK1 >= m_bK0) ? (m_bK1 - m_bK0 + 1) : 0;
+
+        m_bY.assign(ring, 0.0);
+        m_bD.assign(ring, 0.0);
+        m_bR.assign(ring, 0.0);
+        m_bWin.assign((size_t)N, 0.0);
+        // The transforms are of N real samples, packed two to a complex one:
+        // N/2 points, with the twiddles of N for unpacking.
+        m_bRe.assign((size_t)(N / 2), 0.0);
+        m_bIm.assign((size_t)(N / 2), 0.0);
+        m_bTwRe.assign((size_t)(N / 2), 0.0);
+        m_bTwIm.assign((size_t)(N / 2), 0.0);
+        m_bStRe.assign((size_t)(N / 2), 0.0);
+        m_bStIm.assign((size_t)(N / 2), 0.0);
+        m_bRev.assign((size_t)(N / 2), 0);
+        m_bMag.assign((size_t)kBodyFrames * (size_t)nb, 0.0);
+        m_bXRe.assign((size_t)kBodyFrames * (size_t)nk, 0.0);
+        m_bXIm.assign((size_t)kBodyFrames * (size_t)nk, 0.0);
+        m_bMed.assign((size_t)(2 * m_bHalf + 1), 0.0);
+
+        const double twoPi = 6.283185307179586;
+        for (int i = 0; i < N; ++i) {            // periodic Hann, as scipy's
+            m_bWin[(size_t)i] = 0.5 - 0.5 * cos(twoPi * (double)i / (double)N);
+        }
+        double norm = 0.0;                       // the same at every sample
+        for (int i = 0; i < N; i += H) norm += m_bWin[(size_t)i] * m_bWin[(size_t)i];
+        m_bNorm = (norm > 0.0) ? norm : 1.0;
+        for (int k = 0; k < N / 2; ++k) {
+            m_bTwRe[(size_t)k] = cos(twoPi * (double)k / (double)N);
+            m_bTwIm[(size_t)k] = sin(twoPi * (double)k / (double)N);
+        }
+        for (int half = 1; half < N / 2; half <<= 1) {
+            for (int k = 0; k < half; ++k) {
+                const double a = twoPi * (double)k / (double)(2 * half);
+                m_bStRe[(size_t)(half - 1 + k)] = cos(a);
+                m_bStIm[(size_t)(half - 1 + k)] = sin(a);
+            }
+        }
+        int bits = 0;
+        while ((1 << bits) < N / 2) ++bits;
+        for (int i = 0; i < N / 2; ++i) {
+            int r = 0;
+            for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
+            m_bRev[(size_t)i] = r;
+        }
+
+        const double blockSec = (double)kBlock / cfg.rate;
+        int nRate = (int)floor(cfg.bodyRateWin / blockSec + 0.5);
+        int nHold = (int)floor(cfg.bodyHold / blockSec + 0.5);
+        if (nRate < 1) nRate = 1;
+        if (nHold < 1) nHold = 1;
+        m_bCount.assign((size_t)nRate, 0);
+        m_bRate.assign((size_t)nHold, 0.0);
+    }
+
     // The output ring. Between one pull and the next a caller can push maxBlock
     // samples, which emit at most maxBlock + kBlock, on top of the up to kBlock
     // already waiting.
@@ -914,8 +1079,14 @@ size_t Channel::heapBytes() const {
             + m_fitWin.capacity() + m_fitR.capacity() + m_delta.capacity()
             + m_corr.capacity() + m_runGain.capacity()
             + m_aarev.capacity() + m_rhs.capacity() + m_solve.capacity()
-            + m_out.capacity()) * sizeof(double)
-           + m_flag.capacity() + m_runs.capacity() * sizeof(int);
+            + m_out.capacity()
+            + m_bY.capacity() + m_bD.capacity() + m_bR.capacity() + m_bWin.capacity()
+            + m_bRe.capacity() + m_bIm.capacity() + m_bTwRe.capacity() + m_bTwIm.capacity()
+            + m_bStRe.capacity() + m_bStIm.capacity()
+            + m_bMag.capacity() + m_bXRe.capacity() + m_bXIm.capacity()
+            + m_bMed.capacity() + m_bRate.capacity()) * sizeof(double)
+           + m_flag.capacity() + m_runs.capacity() * sizeof(int)
+           + (m_bRev.capacity() + m_bCount.capacity()) * sizeof(int);
 }
 
 bool Channel::retune(const Config & cfg) {
@@ -946,6 +1117,18 @@ void Channel::reset() {
     m_repaired = 0;
     m_seen = 0;
     m_silentUntil = 0;
+    std::fill(m_bY.begin(), m_bY.end(), 0.0);
+    std::fill(m_bD.begin(), m_bD.end(), 0.0);
+    std::fill(m_bR.begin(), m_bR.end(), 0.0);
+    std::fill(m_bCount.begin(), m_bCount.end(), 0);
+    std::fill(m_bRate.begin(), m_bRate.end(), 0.0);
+    m_bT = 0;
+    m_bHist = 0;
+    m_bSlot = 0;
+    m_bCountPos = 0;
+    m_bRatePos = 0;
+    m_bRateHave = 0;
+    m_bStrong = 0;
     // Prime with `pad` zeros so the first real sample lands at window index
     // pad and nothing is dropped off the front of the stream.
     m_fill = m_pad;
@@ -1242,6 +1425,7 @@ void Channel::interpolate(int from, int to, int reach) {
             ok = repairRun(s, e, false, gain);
         }
         i = e + 1;
+        if (ok && peak >= m_cfg.bodyPeak) ++m_bStrong;   // the body stage's key
         if (ok && m_cfg.rerepair > 0 &&
             m_nruns + 2 <= (int)m_runs.size()) {
             m_runGain[(size_t)(m_nruns / 2)] = gain;
@@ -1427,23 +1611,24 @@ void Channel::pushOne(double v) {
 
     if (m_fill < capacity) return;
 
+    m_bStrong = 0;
     processBlock();
 
-    const double wet = m_cfg.wet;
-    const double dry = 1.0 - wet;
-    if (m_cfg.delta) {
-        // d - (wet * y + dry * d): what the mix below takes out.
-        for (int i = 0; i < blk; ++i) {
-            const double y = m_win[(size_t)(m_pad + i)];
-            const double d = m_dry[(size_t)(m_pad + i)];
-            outPush(wet * (d - y));
-        }
-    } else {
-        for (int i = 0; i < blk; ++i) {
-            const double y = m_win[(size_t)(m_pad + i)];
-            const double d = m_dry[(size_t)(m_pad + i)];
-            outPush(wet * y + dry * d);
-        }
+    // The body stage's key: strong runs in this block, their rate over the
+    // last bodyRateWin seconds, and the history of that rate.
+    if (!m_bCount.empty()) {
+        m_bCount[(size_t)m_bCountPos] = m_bStrong;
+        if (++m_bCountPos >= (int)m_bCount.size()) m_bCountPos = 0;
+        int sum = 0;
+        for (size_t k = 0; k < m_bCount.size(); ++k) sum += m_bCount[k];
+        m_bRate[(size_t)m_bRatePos] =
+            (double)sum * m_cfg.rate / ((double)m_bCount.size() * (double)blk);
+        if (++m_bRatePos >= (int)m_bRate.size()) m_bRatePos = 0;
+        if (m_bRateHave < (int)m_bRate.size()) ++m_bRateHave;
+    }
+
+    for (int i = 0; i < blk; ++i) {
+        bodyPush(m_win[(size_t)(m_pad + i)], m_dry[(size_t)(m_pad + i)]);
     }
 
     // Slide along by one block, keeping the repairs that reached past its end.
@@ -1454,6 +1639,165 @@ void Channel::pushOne(double v) {
     m_fill -= blk;
     m_fitLen = 0;                 // the next fit is of a different window
     m_silentUntil = (m_silentUntil > blk) ? (m_silentUntil - blk) : 0;
+}
+
+void Channel::emitMixed(double y, double d) {
+    const double wet = m_cfg.wet;
+    if (m_cfg.delta) {
+        outPush(wet * (d - y));             // d - (wet * y + dry * d)
+    } else {
+        outPush(wet * y + (1.0 - wet) * d);
+    }
+}
+
+//! Every sample comes out Config::bodyLatency samples after it went in. The
+//! removal for it is final by then: the last frame covering it is cut when
+//! the frame two hops later arrives.
+void Channel::bodyPush(double y, double d) {
+    if (!m_cfg.body) {
+        emitMixed(y, d);
+        return;
+    }
+    const uint64_t t = m_bT++;
+    const size_t i = (size_t)t & m_bMask;
+    m_bY[i] = y;
+    m_bD[i] = d;
+    m_bR[i] = 0.0;              // no frame has reached it yet
+    const uint64_t N = (uint64_t)m_bN;
+    if (t + 1 >= N && (t + 1 - N) % (uint64_t)m_bH == 0) bodyHop(t + 1 - N);
+    const uint64_t D = (uint64_t)m_cfg.bodyLatency;
+    if (t >= D) {
+        const size_t u = (size_t)(t - D) & m_bMask;
+        emitMixed(m_bY[u] - m_bR[u], m_bD[u]);
+    }
+}
+
+double Channel::bodyBeta() const {
+    // A stream's first half second has less history than the hold, and the
+    // ring's zeros would keep the key shut through it - often the opening
+    // note of a record. So it is the minimum over what has been seen, once
+    // that is a whole rate window; the counts themselves start empty.
+    if (m_bRateHave < (int)m_bCount.size()) return 0.0;
+    double key = kAbsurd;
+    for (int i = 0; i < m_bRateHave; ++i) {
+        int k = m_bRatePos - 1 - i;
+        if (k < 0) k += (int)m_bRate.size();
+        key = dmin(key, m_bRate[(size_t)k]);
+    }
+    const double span = m_cfg.bodyRate1 - m_cfg.bodyRate0;
+    if (!(span > 0.0)) return key >= m_cfg.bodyRate1 ? 1.0 : 0.0;
+    return dmin(dmax((key - m_cfg.bodyRate0) / span, 0.0), 1.0);
+}
+
+//! The newest frame starts at sample `start` of the stage's input, and the
+//! one cut here two hops before it. The cut frame's median over
+//! time needs the two frames either side, which is why the newest is
+//! transformed now and the old one cut: the rings hold all five.
+//!
+//! The N real samples are transformed as N/2 complex ones, even samples in the
+//! real part and odd in the imaginary, and only the bins the cut reads are
+//! unpacked. Back the other way the band and its mirror are packed into N/2
+//! points the same way.
+//!
+//! Only the band is touched, and only what is taken out is transformed back,
+//! so where the key is shut the output is the input to the bit.
+void Channel::bodyHop(uint64_t start) {
+    const int N = m_bN, H = m_bH, M = N / 2;
+    const size_t mask = m_bMask;
+    const int nb = m_bM1 - m_bM0 + 1;
+    const int nk = m_bK1 - m_bK0 + 1;
+    const double beta = (nk > 0) ? bodyBeta() : 0.0;
+    const double * twRe = &m_bTwRe[0];
+    const double * twIm = &m_bTwIm[0];
+
+    if (beta <= 0.0) {
+        m_bHist = 0;           // the history has a hole; start it again
+    } else {
+        // The newest frame.
+        double * re = &m_bRe[0];
+        double * im = &m_bIm[0];
+        const double * y = &m_bY[0];
+        const double * win = &m_bWin[0];
+        for (int i = 0; i < M; ++i) {
+            const size_t at = (size_t)(start + 2 * (uint64_t)i);
+            re[i] = y[at & mask] * win[2 * i];
+            im[i] = y[(at + 1) & mask] * win[2 * i + 1];
+        }
+        fftRadix2(re, im, M, &m_bRev[0], &m_bStRe[0], &m_bStIm[0], false);
+        // X[k] = E + e^(-2 pi i k / N) O, with E and O the transforms of the
+        // even and odd samples: (Z[k] + Z*[M-k]) / 2 and (Z[k] - Z*[M-k]) / 2i.
+        const int slot = m_bSlot;
+        double * mag = &m_bMag[(size_t)slot * (size_t)nb];
+        double * xr = &m_bXRe[(size_t)slot * (size_t)nk];
+        double * xi = &m_bXIm[(size_t)slot * (size_t)nk];
+        for (int k = m_bM0; k <= m_bM1; ++k) {
+            const double zr = re[k], zi = im[k];
+            const double cr = re[M - k], ci = -im[M - k];
+            const double er = 0.5 * (zr + cr), ei = 0.5 * (zi + ci);
+            const double our = 0.5 * (zi - ci), oui = -0.5 * (zr - cr);
+            const double c = twRe[k], sn = twIm[k];
+            const double vr = er + c * our + sn * oui;
+            const double vi = ei + c * oui - sn * our;
+            mag[k - m_bM0] = sqrt(vr * vr + vi * vi);
+            if (k >= m_bK0 && k <= m_bK1) { xr[k - m_bK0] = vr; xi[k - m_bK0] = vi; }
+        }
+        m_bSlot = (slot + 1) % (int)kBodyFrames;
+        if (m_bHist < (int)kBodyFrames) ++m_bHist;
+
+        if (m_bHist >= (int)kBodyFrames) {
+            // Frame j - q lives at (slot - q) mod 5; the one cut is q = 2.
+            const double * f[kBodyFrames];
+            for (int q = 0; q < (int)kBodyFrames; ++q) {
+                const int sl = (slot - q + (int)kBodyFrames) % (int)kBodyFrames;
+                f[q] = &m_bMag[(size_t)sl * (size_t)nb];
+            }
+            const int cs = (slot - 2 + (int)kBodyFrames) % (int)kBodyFrames;
+            const double * cr = &m_bXRe[(size_t)cs * (size_t)nk];
+            const double * ci = &m_bXIm[(size_t)cs * (size_t)nk];
+            const double cap = 1.0 - m_cfg.bodyFloor;
+            const int w = 2 * m_bHalf + 1;
+            for (int i = 0; i < M; ++i) { re[i] = 0.0; im[i] = 0.0; }
+            bool any = false;
+            for (int k = m_bK0; k <= m_bK1; ++k) {
+                const int b = k - m_bM0;
+                // Tonal: the louder of the medians before and after.
+                const double h = dmax(median3(f[4][b], f[3][b], f[2][b]),
+                                      median3(f[2][b], f[1][b], f[0][b]));
+                // Non-tonal: the median across ~370 Hz of the frame cut.
+                double * m = &m_bMed[0];
+                for (int t = 0; t < w; ++t) m[t] = f[2][b - m_bHalf + t];
+                std::nth_element(m, m + m_bHalf, m + w);
+                const double p = m[m_bHalf];
+                const double h2 = h * h, p2 = p * p;
+                double cut = p2 / (h2 + p2 + 1e-30);
+                if (cut > cap) cut = cap;
+                cut *= beta;
+                if (!(cut > 0.0)) continue;
+                // Packed for the inverse: bin k takes X + i X e^(2 pi i k/N),
+                // and its mirror M - k the conjugates of both.
+                const double vr = cut * cr[k - m_bK0], vi = cut * ci[k - m_bK0];
+                const double c = twRe[k], sn = twIm[k];
+                const double ur = vr * c - vi * sn, ui = vr * sn + vi * c;
+                re[k] += vr - ui;
+                im[k] += vi + ur;
+                re[M - k] += vr + ui;
+                im[M - k] += ur - vi;
+                any = true;
+            }
+            if (any) {
+                fftRadix2(re, im, M, &m_bRev[0], &m_bStRe[0], &m_bStIm[0], true);
+                const double g = 1.0 / ((double)N * m_bNorm);
+                double * r = &m_bR[0];
+                const uint64_t from = start - 2 * (uint64_t)H;
+                for (int i = 0; i < M; ++i) {
+                    const size_t at = (size_t)(from + 2 * (uint64_t)i);
+                    r[at & mask]       += re[i] * win[2 * i] * g;
+                    r[(at + 1) & mask] += im[i] * win[2 * i + 1] * g;
+                }
+            }
+        }
+    }
+
 }
 
 template<typename Sample>
