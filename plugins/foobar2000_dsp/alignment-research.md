@@ -1,9 +1,11 @@
 # Buffer alignment in declick — research note
 
-Status as of 2026-10-14: **measured, not acted on.** A 64-byte aligned
-container would buy nothing on macOS and a few percent on x86 Windows, and
-only together with a window offset; nothing has been changed. Measured
-against `b76351e07`.
+Status as of 2026-10-14: **the allocator part is in, the window lead is
+not.** Measured first on macOS against `b76351e07`, then on Windows x64
+(see [Windows x64 on Haswell](#windows-x64-on-haswell)): there the gain was
+1–2% end to end, so `m_win`, `m_dry`, `m_fwd` and `m_bwd` now use
+`CacheAlignedAlloc` everywhere but Apple, whose malloc aligns them already.
+The lead in front of the window is still not done.
 
 ## The question
 
@@ -125,14 +127,55 @@ That is 6.8% by the best run and 3.7% by the median. The full sweep over all
 eight offsets was too noisy at this load to rank them: the fastest offset
 differed between orders and between best and median.
 
+### Windows x64 on Haswell
+
+An i7-4750HQ under Windows 10, x64 Release with the shipped SSE2 baseline
+(AVX2 kernels picked at run time), about 20% background load. Two mono
+44.1 kHz shellac transfers of about 160 s each: Federico/Vidal *Para que te
+quiero tanto* (1945) and Biagi *Golgota*. `declick_cli` end to end, builds
+alternating.
+
+Where the heap put the hot buffers at order 128, in doubles past a line:
+
+| clip | `m_win[pad - order]` | `m_fwd[pad]`, `m_bwd[pad]` |
+| --- | --- | --- |
+| Federico | 4 | 0 |
+| Biagi | 0 | 4 |
+
+Federico at orders 64 and 256 matched the order 128 row. So the phase depends
+on the heap's state rather than on the settings. Every buffer was 0 or 4
+doubles off a line, never 2 or 6, and at most one group of buffers was off at
+a time.
+
+The sweep allocator over offsets 0–4 and 6, 15 rounds at order 128, gave
+offset 0 as the only one ahead of stock on both clips (by 1.3% and 1.1% at
+best), with 3 and 6 about 1% behind on Biagi. The order 256 sweep was too
+noisy to use.
+
+`CacheAlignedAlloc` on `m_win`, `m_dry`, `m_fwd` and `m_bwd`, against
+`5b8d331e5` (output bit-identical):
+
+| clip | order | rounds | best | median |
+| --- | --- | --- | --- | --- |
+| Federico | 128 | 25 | −1.5% | −1.8% |
+| Biagi | 128 | 25 | −1.8% | −1.6% |
+| Federico | 256 | 21 | −1.2% | −0.8% |
+| Biagi | 256 | 21 | −1.0% | −0.8% |
+
+This is less than the macOS Haswell figures above suggested, probably because
+the Windows heap only ever produced half-line offsets, and only on half the
+buffers.
+
 ## Conclusion
 
 - On **macOS** an aligned container changes nothing. The buffers are already
   aligned, and the M1 would not care if they weren't.
-- On **x86 Windows** it is probably worth a few percent on Intel: the 16-byte
-  heap leaves the window 0–6 doubles off a line. Across the four kernel runs,
-  offsets 2, 4 and 6 cost about 2–7%, with one outlier at 12.7%. Not
-  measured on Windows or on the Zen 4.
+- On **x86 Windows** it is worth 1–2% on Haswell, measured above: the 16-byte
+  heap left the window or the residuals 4 doubles off a line. The Zen 4 has
+  not been measured. This part is implemented as `CacheAlignedAlloc` in
+  `declick_core.h`, over `_aligned_malloc` / `posix_memalign` rather than
+  C++17 aligned new, because the VST2 builds are C++14. Apple builds keep
+  `std::vector<double>`.
 - **Aligning the allocation alone is not enough**, because of
   `maxRun + 2·order` above. A fix that holds at every setting needs both:
   - a 64-byte allocator on the window and residual buffers, e.g.
@@ -144,7 +187,7 @@ differed between orders and between best and median.
     `order` doubles later, so both line up only when order is a multiple of 8;
     the forward and backward outputs share a phase with each other.
 
-If this is picked up: implement both parts, check the outputs are identical,
-and measure where the gain is expected — Windows x64 on Intel, and the Zen 4.
-On the Haswell, check the change does not regress; it cannot show a gain there
-at the defaults, because they are already aligned on macOS.
+The lead is the part still open. It only matters away from the defaults (a
+Max repair other than 4 ms, an order that is not a multiple of 8, or
+176.4 kHz), and at most it would recover the same 1–2%, so it has not been
+worth the extra index arithmetic.

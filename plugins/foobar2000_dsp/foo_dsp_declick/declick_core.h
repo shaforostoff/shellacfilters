@@ -29,6 +29,14 @@
 
 #include <vector>
 
+#if defined(_WIN32)
+#include <malloc.h>
+#include <new>
+#elif !defined(__APPLE__)
+#include <stdlib.h>
+#include <new>
+#endif
+
 namespace declick {
 
 enum {
@@ -256,6 +264,50 @@ private:
 #endif
 };
 
+//! Allocator that starts every block on a 64-byte cache line, for the buffers
+//! the residual filters read and write. The Windows heap and glibc only
+//! promise 16 bytes, and on Haswell under Windows x64 the window landed 4
+//! doubles off a line, or the residuals did, depending on the heap's state.
+//! With them on a line, declick ran 1-2% faster end to end there at orders
+//! 128 and 256, and the output did not change.
+//!
+//! macOS malloc serves these sizes from a zone with a 512-byte quantum, so they
+//! are on a line already and Apple builds keep the plain std::vector.
+//!
+//! That only lines up the hot reads while maxRun + 2*order is a multiple of 8,
+//! which the defaults are at every rate but 176.4 kHz; see
+//! alignment-research.md for the lead in front of the window that would hold
+//! it at any setting, and why it was not worth it.
+//!
+//! _aligned_malloc / posix_memalign rather than C++17 aligned new: the VST2
+//! builds of this file are C++14.
+#if !defined(__APPLE__)
+template <class T> struct CacheAlignedAlloc {
+    typedef T value_type;
+    CacheAlignedAlloc() {}
+    template <class U> CacheAlignedAlloc(const CacheAlignedAlloc<U> &) {}
+    T * allocate(size_t n) {
+        void * p = NULL;
+#if defined(_WIN32)
+        p = _aligned_malloc(n * sizeof(T), 64);
+#else
+        if (posix_memalign(&p, 64, n * sizeof(T)) != 0) p = NULL;
+#endif
+        if (!p) throw std::bad_alloc();
+        return (T *)p;
+    }
+    void deallocate(T * p, size_t) {
+#if defined(_WIN32)
+        _aligned_free(p);
+#else
+        free(p);
+#endif
+    }
+    template <class U> bool operator==(const CacheAlignedAlloc<U> &) const { return true; }
+    template <class U> bool operator!=(const CacheAlignedAlloc<U> &) const { return false; }
+};
+#endif
+
 //! One independent channel of processing.
 class Channel {
 public:
@@ -374,14 +426,23 @@ private:
 
     Config m_cfg;
 
-    std::vector<double> m_win;    //!< sliding window of input/repaired audio
+    //! The window and the two residuals are what the filters stream through,
+    //! and m_dry is read alongside m_win; see CacheAlignedAlloc.
+#if defined(__APPLE__)
+    typedef std::vector<double> AlignedBuf;
+#else
+    typedef std::vector<double, CacheAlignedAlloc<double> > AlignedBuf;
+#endif
+
+    AlignedBuf m_win;             //!< sliding window of input/repaired audio
     std::vector<uint8_t> m_flag;  //!< parallel to m_win: repair mask
-    std::vector<double> m_dry;    //!< untouched copy, for the dry/wet mix
+    AlignedBuf m_dry;             //!< untouched copy, for the dry/wet mix
     int    m_fill = 0;            //!< samples currently held in m_win
     int    m_silentUntil = 0;     //!< m_win below this is prime()'s zeros
     int    m_pad = 0;
 
-    std::vector<double> m_fwd, m_bwd, m_det;
+    AlignedBuf m_fwd, m_bwd;
+    std::vector<double> m_det;
     std::vector<double> m_a, m_ra;
     //! m_a reversed. The forward residual and the interpolation residual both
     //! want sum_k a[k]*x[i-k], which walks one array backwards; holding the
