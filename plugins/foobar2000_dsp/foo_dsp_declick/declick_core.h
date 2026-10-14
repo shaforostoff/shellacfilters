@@ -27,15 +27,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <new>
 #include <vector>
-
-#if defined(_WIN32)
-#include <malloc.h>
-#include <new>
-#elif !defined(__APPLE__)
-#include <stdlib.h>
-#include <new>
-#endif
 
 namespace declick {
 
@@ -272,36 +265,24 @@ private:
 //! 128 and 256, and the output did not change.
 //!
 //! macOS malloc serves these sizes from a zone with a 512-byte quantum, so they
-//! are on a line already and Apple builds keep the plain std::vector.
+//! are on a line already and Apple builds keep the plain std::vector. That is
+//! also what lets the Xcode projects stay C++11: this needs C++17 aligned new,
+//! which every other build of this file now compiles with.
 //!
 //! That only lines up the hot reads while maxRun + 2*order is a multiple of 8,
 //! which the defaults are at every rate but 176.4 kHz; see
 //! alignment-research.md for the lead in front of the window that would hold
 //! it at any setting, and why it was not worth it.
-//!
-//! _aligned_malloc / posix_memalign rather than C++17 aligned new: the VST2
-//! builds of this file are C++14.
 #if !defined(__APPLE__)
 template <class T> struct CacheAlignedAlloc {
     typedef T value_type;
     CacheAlignedAlloc() {}
     template <class U> CacheAlignedAlloc(const CacheAlignedAlloc<U> &) {}
     T * allocate(size_t n) {
-        void * p = NULL;
-#if defined(_WIN32)
-        p = _aligned_malloc(n * sizeof(T), 64);
-#else
-        if (posix_memalign(&p, 64, n * sizeof(T)) != 0) p = NULL;
-#endif
-        if (!p) throw std::bad_alloc();
-        return (T *)p;
+        return (T *)::operator new(n * sizeof(T), std::align_val_t(64));
     }
     void deallocate(T * p, size_t) {
-#if defined(_WIN32)
-        _aligned_free(p);
-#else
-        free(p);
-#endif
+        ::operator delete(p, std::align_val_t(64));
     }
     template <class U> bool operator==(const CacheAlignedAlloc<U> &) const { return true; }
     template <class U> bool operator!=(const CacheAlignedAlloc<U> &) const { return false; }

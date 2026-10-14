@@ -159,6 +159,9 @@ add_airwindows_plugin(Deckwrecka)
 add_airwindows_plugin(DeBess)
 add_airwindows_plugin(DeBez)
 add_airwindows_plugin(Declick)
+# Declick's core allocates its filter buffers with C++17 aligned new; every
+# other plug-in here stays at the project's C++14.
+set_target_properties(Declick PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_airwindows_plugin(DeCrackle)
 add_airwindows_plugin(DeEss)
 add_airwindows_plugin(DeHiss)
