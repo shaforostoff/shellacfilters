@@ -287,13 +287,31 @@ mostly buys collateral damage. **Repair depth is the more effective lever**.
 Throughput: ~205× realtime at the defaults on a CPU with AVX2 and FMA, ~110×
 without; ~365× and ~215× at order 64. Measured end to end over 60 s of
 44.1 kHz mono shellac including file I/O — about half a percent of one core on
-a modern desktop. A 2014 MacBook Pro, whose Haswell has both, runs it at 42×
-realtime stereo, and an M1 at 90× stereo with NEON. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
+a modern desktop. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
 Those figures predate the [body stage](#the-body-of-dense-crackle-the-body-stage).
 Where its key is shut it costs little: ~4% on that clip, measured interleaved.
 Where crackle is dense enough to open it, it adds ~40% to the AVX2 time and
 ~20% to the SSE2 time. On Tanturi's *Cuatro compases*, with the key open 72% of
 the time, that is 185× → 132× and 99× → 83× realtime.
+
+On the Macs, with the body stage included, the three builds taking turns:
+
+| | M1, NEON | M1, baseline | 2014 MacBook Pro, AVX2 | MacBook Pro, SSE2 |
+| --- | --- | --- | --- | --- |
+| *Serenata*, 60 s stereo, before soft repair (`5c43b45b9`) | 90× | 32× | 52× | 26× |
+| … with soft repair, before the body stage (`072857cd0`) | 85× | 32× | 50× | 25× |
+| … with the body stage | **83×** | 31× | **47×** | 24× |
+| *Cuatro compases*, 154 s mono 48 kHz, before the body stage | 136× | 54× | 78× | 41× |
+| … with the body stage | **100×** | 47× | **54×** | 34× |
+
+That is order 128, best of seven on the M1 and best of nine on the MacBook
+Pro. The M1's runs agreed to its timer's 10 ms. The MacBook Pro was not idle,
+and its medians are up to 25 % lower. With the key open the stage adds 36 %
+to NEON and 15 % to the M1's baseline, and 44 % and 22 % on the Haswell.
+With it shut, on *Serenata*, it costs 0–5 % on the M1 at orders 32–256. On
+the Haswell a separate fifteen-round run put that at 12 %, 9 % and 6 % at
+orders 32, 64 and 128. That is a fixed cost per sample, so it weighs more
+the cheaper the core is.
 Latency ~94 ms (4144 samples at 44.1 kHz, ~70 ms of it the body stage),
 reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
@@ -1228,7 +1246,21 @@ Add *Dehum (line detection)* to the chain and press **Configure selected**.
 Latency is **zero**: the detector reads the signal but does not sit in the path,
 so the component processes in place and needs no FIFO. Throughput is **320×
 realtime** on x64 and 310× on x86, measured end to end over 177 s of 44.1 kHz
-mono including file I/O. Memory is **410 kB per channel** at 44.1 kHz, 387 kB at
+mono including file I/O. On the Macs, over the same 177 s (*La tablada*):
+
+| | M1 | 2014 MacBook Pro |
+| --- | --- | --- |
+| mono, defaults | 656× | 233× |
+| **stereo, defaults** | **328×** | **112×** |
+| stereo, base probe kernel (`--no-avx`) | — | 101× |
+| stereo, 8 harmonics, search to 500 Hz | 138× | 61× |
+
+The M1 is best of seven, its runs within 1 % of each other bar one outlier. The
+MacBook Pro, a Haswell i5-4258U, is best of fifteen on a machine that was not
+idle, and its medians run 5–10 % lower. The AVX probe kernel is x86 only, so
+the M1 runs the base one. AVX is worth 11 % on the Haswell. The heaviest
+setting, all eight harmonics over the widest search, costs 1.8–2.4× the
+defaults. Memory is **410 kB per channel** at 44.1 kHz, 387 kB at
 96 kHz and 196 kB at 192 kHz, fixed at `configure()` and independent of the
 parameters.
 
@@ -1873,6 +1905,29 @@ is meaningful because the difference signal *is* the repair, whereas summing a
 dry path across an EQ combs. Retargeting every stage to unity and the trim to
 0 dB reaches the same place silently, and the signal is a real equaliser curve
 at every instant of the transition.
+
+### What it costs to run
+
+There is no command-line tool for the equaliser, so this is measured in
+process. The harness puts 177 s of 44.1 kHz stereo (*La tablada*), as floats
+the way foobar2000 hands them over, through `Channel::process` in place,
+1024 frames at a time. Best of fifteen on the M1 and of twenty-five on the
+2014 MacBook Pro:
+
+| | M1 | MacBook Pro | M1, ns/sample | MacBook Pro, ns/sample |
+| --- | --- | --- | --- | --- |
+| flat (the defaults) | 17 000× | 6 400× | 0.65 | 1.8 |
+| two shelves in use | 2 400× | 1 200× | 4.7 | 9.3 |
+| all six stages in use | 2 200× | 930× | 5.2 | 12.2 |
+| **always gliding** | **920×** | **400×** | 12.3 | 28.2 |
+
+"Always gliding" retargets every block, so the glide never settles and every
+stage runs its per-sample coefficient step. That is a knob being dragged
+without pause, and it is the worst case. 128-frame blocks measure the same to
+within the noise. Even the worst case is 0.25 % of a Haswell core for stereo.
+The settled cases are where an equaliser spends its life, and there the
+skipped stages show: a flat equaliser is almost free, and four bands and the
+high-pass cost at most a third more than two shelves.
 
 ### Drawing the curve cheaply
 
