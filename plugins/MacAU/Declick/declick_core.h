@@ -533,7 +533,6 @@ private:
     //! a 64-bit divide every sample was a third of the stage's cost on
     //! Haswell with the key shut.
     uint64_t m_bNextHop = 0;
-    int    m_bSwaps = 0;          //!< pairs in m_bRev
     int    m_bK0 = 0, m_bK1 = 0;  //!< the band, as bins
     int    m_bM0 = 0, m_bM1 = 0;  //!< bins whose magnitudes are kept
     int    m_bHalf = 0;           //!< half-width of the median over frequency
@@ -545,7 +544,7 @@ private:
     std::vector<double> m_bRe, m_bIm;      //!< FFT work, N/2 points
     std::vector<double> m_bTwRe, m_bTwIm;  //!< N's twiddles, for unpacking
     std::vector<double> m_bStRe, m_bStIm;  //!< N/2's, stage by stage
-    std::vector<int>    m_bRev;            //!< bit reversal of N/2, as swap pairs
+    std::vector<int>    m_bRev;            //!< bit reversal of N/2
     std::vector<double> m_bMag;            //!< kBodyFrames x (m_bM1-m_bM0+1)
     std::vector<double> m_bXRe, m_bXIm;    //!< kBodyFrames x (m_bK1-m_bK0+1)
     std::vector<double> m_bMed;            //!< the median's window, kept sorted

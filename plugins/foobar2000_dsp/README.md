@@ -300,14 +300,17 @@ On the Macs, with the body stage included, the three builds taking turns:
 | --- | --- | --- | --- | --- |
 | *Serenata*, 60 s stereo, before soft repair (`5c43b45b9`) | 90× | 32× | 52× | 26× |
 | … with soft repair, before the body stage (`072857cd0`) | 85× | 32× | 50× | 25× |
-| … with the body stage | **83×** | 31× | **47×** | 24× |
-| *Cuatro compases*, 154 s mono 48 kHz, before the body stage | 136× | 54× | 78× | 41× |
-| … with the body stage | **100×** | 47× | **54×** | 34× |
+| … with the body stage | **83×** | 31× | **48×** | 24× |
+| *Cuatro compases*, 154 s mono 48 kHz, before the body stage | 136× | 54× | 80× | 42× |
+| … with the body stage as first committed | 100× | 47× | 54× | 34× |
+| … after its [speed-ups](#the-body-of-dense-crackle-the-body-stage) | **116×** | 50× | **67×** | 37× |
 
-That is order 128, best of seven on the M1 and best of nine on the MacBook
-Pro. The M1's runs agreed to its timer's 10 ms. The MacBook Pro was not idle,
-and its medians are up to 25 % lower. With the key open the stage adds 36 %
-to NEON and 15 % to the M1's baseline, and 44 % and 22 % on the Haswell.
+That is order 128, best of seven on the M1 and best of nine to eleven on
+the MacBook Pro. The M1's runs agreed to its timer's 10 ms. The MacBook Pro
+was not always idle, and its medians are up to 25 % lower. With the key open
+the stage now adds 17 % to NEON and 7 % to the M1's baseline, and 19 % and
+15 % on the Haswell. It added 37 %, 14 %, 47 % and 24 % as first committed.
+The ~40 % above is the Zen 4's, from before the speed-ups.
 With it shut, on *Serenata*, it costs 0–5 % on the M1 at orders 32–256. On
 the Haswell a separate fifteen-round run put that at 12 %, 9 % and 6 % at
 orders 32, 64 and 128. That is a fixed cost per sample, so it weighs more
@@ -1230,8 +1233,10 @@ host compensates for it.
   one bin a step, so it is now kept sorted with one value displaced, as in
   Dehum's detector. That took the median from 56 % of the open stage's time
   on the M1 and 41 % on the Haswell to a fifth of what it was.
-* **Bit reversal without a branch.** Swapping where `rev[i] > i` mispredicts
-  on half the points. The swaps are now a list of pairs.
+* **No bit-reversal pass.** Swapping where `rev[i] > i` mispredicts on half
+  the points. The swaps were first made a list of pairs. Now the callers
+  write each frame, and the inverse's band, straight into bit-reversed
+  positions as they fill them, so there is no permuting pass at all.
 * **No divide per sample.** Finding the next hop was a 64-bit modulo of the
   sample count, on every sample whether the key was open or not: cheap on the
   M1, a third of the shut stage's cost on the Haswell. It is a countdown now.
@@ -1240,6 +1245,27 @@ Those three are bit-exact. On *Cuatro compases*, the stage's cost over the core
 went from +37 % to +20 % with NEON on the M1 (+14 % → +8 % baseline), and from
 +47 % to +34 % with AVX2 on the Haswell (+23 % → +16 % SSE2). With the key shut,
 *Serenata* at order 32 on the Haswell went from +10.7 % to +8.9 %.
+
+* **Two stages a pass.** After that the FFTs were most of the open stage,
+  and on the Haswell they ran at about 6 cycles a butterfly, three times
+  what its store port allows: they were bound by passes over the arrays,
+  not by arithmetic. The first two stages now go together, without
+  multiplies, and the rest in pairs: each group of four points goes through
+  both stages while it is in registers. The twiddles all come from the table
+  and every butterfly is the radix-2 one, so this is bit-exact too. A true
+  radix-4 would derive half the second stage's twiddles as −i times the
+  others and save a quarter of the multiplies, but it would round differently,
+  and multiplies are not what the FFT is short of.
+* **An AVX2 pass.** The paired pass is a kernel like the filters, picked
+  when the module loads. With AVX2 it does four groups at a time, using
+  multiplies and adds in the scalar order and no FMA, so it gives the same
+  bits as the scalar pass. NEON uses the scalar pass, which the compiler
+  vectorises two wide.
+
+With those two, *Cuatro* costs +17 % over the core on the M1 (+7 %
+baseline) and **+19 %** on the Haswell with AVX2 (+15 % SSE2). Output is
+byte-identical to the body stage as first committed, at every order, sample
+rate and kernel tried, with the key forced open.
 
 ---
 
