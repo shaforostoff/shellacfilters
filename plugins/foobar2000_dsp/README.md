@@ -1225,6 +1225,21 @@ host compensates for it.
   and the first two stages need no multiplies.
 * **Nothing while shut.** The stage does no transforms at all while the key
   is shut.
+* **A sliding median.** The non-tonal estimate is a median of 17 bins for
+  each of the band's 118, and it ran `nth_element` on each. The window moves
+  one bin a step, so it is now kept sorted with one value displaced, as in
+  Dehum's detector. That took the median from 56 % of the open stage's time
+  on the M1 and 41 % on the Haswell to a fifth of what it was.
+* **Bit reversal without a branch.** Swapping where `rev[i] > i` mispredicts
+  on half the points. The swaps are now a list of pairs.
+* **No divide per sample.** Finding the next hop was a 64-bit modulo of the
+  sample count, on every sample whether the key was open or not: cheap on the
+  M1, a third of the shut stage's cost on the Haswell. It is a countdown now.
+
+Those three are bit-exact. On *Cuatro compases*, the stage's cost over the core
+went from +37 % to +20 % with NEON on the M1 (+14 % → +8 % baseline), and from
++47 % to +34 % with AVX2 on the Haswell (+23 % → +16 % SSE2). With the key shut,
+*Serenata* at order 32 on the Haswell went from +10.7 % to +8.9 %.
 
 ---
 
