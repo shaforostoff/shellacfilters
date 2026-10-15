@@ -584,19 +584,19 @@ const Kernels kNeonKernels = { filterNeon, autocorrNeon, "neon" };
 #endif // DECLICK_NEON
 
 //! In-place radix-2 complex FFT of n points (n >= 4), for the body stage.
-//! rev is the bit reversal of 0..n-1. st holds each stage's twiddles end to
+//! swaps holds the bit reversal of 0..n-1 as nswaps pairs (i, j), i < j,
+//! end to end: walking every i and swapping where rev[i] > i mispredicts on
+//! half of them. st holds each stage's twiddles end to
 //! end, cos and sin of 2 pi k / len for k < len/2 at st[len/2 - 1 + k], so a
 //! stage reads them in order and the butterfly loop is a straight run the
 //! compiler can vectorise. The first two stages need no multiplies and get
 //! loops of their own. Forward is e^-i; the inverse is not scaled.
-void fftRadix2(double * re, double * im, int n, const int * rev,
+void fftRadix2(double * re, double * im, int n, const int * swaps, int nswaps,
                const double * stRe, const double * stIm, bool inverse) {
-    for (int i = 0; i < n; ++i) {
-        const int j = rev[i];
-        if (j > i) {
-            double t = re[i]; re[i] = re[j]; re[j] = t;
-            t = im[i]; im[i] = im[j]; im[j] = t;
-        }
+    for (int p = 0; p < nswaps; ++p) {
+        const int i = swaps[2 * p], j = swaps[2 * p + 1];
+        double t = re[i]; re[i] = re[j]; re[j] = t;
+        t = im[i]; im[i] = im[j]; im[j] = t;
     }
     for (int i = 0; i < n; i += 2) {
         const double ar = re[i], ai = im[i], br = re[i + 1], bi = im[i + 1];
@@ -1047,10 +1047,17 @@ void Channel::configure(const Config & cfg) {
         }
         int bits = 0;
         while ((1 << bits) < N / 2) ++bits;
+        // As swap pairs. A pair takes two slots and only i < rev(i) makes
+        // one, so they fit in the N/2 that the plain table would.
+        m_bSwaps = 0;
         for (int i = 0; i < N / 2; ++i) {
             int r = 0;
             for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
-            m_bRev[(size_t)i] = r;
+            if (r > i) {
+                m_bRev[(size_t)(2 * m_bSwaps)] = i;
+                m_bRev[(size_t)(2 * m_bSwaps + 1)] = r;
+                ++m_bSwaps;
+            }
         }
 
         const double blockSec = (double)kBlock / cfg.rate;
@@ -1123,6 +1130,7 @@ void Channel::reset() {
     std::fill(m_bCount.begin(), m_bCount.end(), 0);
     std::fill(m_bRate.begin(), m_bRate.end(), 0.0);
     m_bT = 0;
+    m_bNextHop = (uint64_t)m_bN;
     m_bHist = 0;
     m_bSlot = 0;
     m_bCountPos = 0;
@@ -1664,7 +1672,10 @@ void Channel::bodyPush(double y, double d) {
     m_bD[i] = d;
     m_bR[i] = 0.0;              // no frame has reached it yet
     const uint64_t N = (uint64_t)m_bN;
-    if (t + 1 >= N && (t + 1 - N) % (uint64_t)m_bH == 0) bodyHop(t + 1 - N);
+    if (t + 1 == m_bNextHop) {
+        m_bNextHop += (uint64_t)m_bH;
+        bodyHop(t + 1 - N);
+    }
     const uint64_t D = (uint64_t)m_cfg.bodyLatency;
     if (t >= D) {
         const size_t u = (size_t)(t - D) & m_bMask;
@@ -1723,7 +1734,7 @@ void Channel::bodyHop(uint64_t start) {
             re[i] = y[at & mask] * win[2 * i];
             im[i] = y[(at + 1) & mask] * win[2 * i + 1];
         }
-        fftRadix2(re, im, M, &m_bRev[0], &m_bStRe[0], &m_bStIm[0], false);
+        fftRadix2(re, im, M, &m_bRev[0], m_bSwaps, &m_bStRe[0], &m_bStIm[0], false);
         // X[k] = E + e^(-2 pi i k / N) O, with E and O the transforms of the
         // even and odd samples: (Z[k] + Z*[M-k]) / 2 and (Z[k] - Z*[M-k]) / 2i.
         const int slot = m_bSlot;
@@ -1763,10 +1774,29 @@ void Channel::bodyHop(uint64_t start) {
                 // Tonal: the louder of the medians before and after.
                 const double h = dmax(median3(f[4][b], f[3][b], f[2][b]),
                                       median3(f[2][b], f[1][b], f[0][b]));
-                // Non-tonal: the median across ~370 Hz of the frame cut.
+                // Non-tonal: the median across ~370 Hz of the frame cut. The
+                // window slides one bin a step, so it is kept sorted and one
+                // value displaced - the same median a fresh selection finds,
+                // for a quarter of the time. The scan for the value leaving
+                // compares magnitudes exactly: they are the window's own copies,
+                // and it is bounded, so a NaN that never compares equal costs
+                // a wrong median rather than a walk off the end.
                 double * m = &m_bMed[0];
-                for (int t = 0; t < w; ++t) m[t] = f[2][b - m_bHalf + t];
-                std::nth_element(m, m + m_bHalf, m + w);
+                if (k == m_bK0) {
+                    for (int t = 0; t < w; ++t) m[t] = f[2][b - m_bHalf + t];
+                    std::sort(m, m + w);
+                } else {
+                    const double out = f[2][b - 1 - m_bHalf];
+                    const double in  = f[2][b + m_bHalf];
+                    int j = 0;
+                    while (j < w - 1 && m[j] != out) ++j;
+                    if (in >= out) {
+                        while (j + 1 < w && m[j + 1] < in) { m[j] = m[j + 1]; ++j; }
+                    } else {
+                        while (j > 0 && m[j - 1] > in) { m[j] = m[j - 1]; --j; }
+                    }
+                    m[j] = in;
+                }
                 const double p = m[m_bHalf];
                 const double h2 = h * h, p2 = p * p;
                 double cut = p2 / (h2 + p2 + 1e-30);
@@ -1785,7 +1815,7 @@ void Channel::bodyHop(uint64_t start) {
                 any = true;
             }
             if (any) {
-                fftRadix2(re, im, M, &m_bRev[0], &m_bStRe[0], &m_bStIm[0], true);
+                fftRadix2(re, im, M, &m_bRev[0], m_bSwaps, &m_bStRe[0], &m_bStIm[0], true);
                 const double g = 1.0 / ((double)N * m_bNorm);
                 double * r = &m_bR[0];
                 const uint64_t from = start - 2 * (uint64_t)H;
