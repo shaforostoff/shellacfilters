@@ -215,10 +215,15 @@ inline bool finite(double v) { return v > -kAbsurd && v < kAbsurd; }
 typedef void (*FilterFn)(const double * h, const double * x, double * out,
                          int count, int taps);
 typedef void (*AutocorrFn)(const double * x, int n, double * r, int maxLag);
+//! Two radix-2 stages of the body stage's FFT, half-lengths h and 2h, in one
+//! sweep over the n points; h >= 4. sgn is -1 forward, +1 inverse.
+typedef void (*FftPairFn)(double * re, double * im, int n, int h,
+                          const double * stRe, const double * stIm, double sgn);
 
 struct Kernels {
     FilterFn    filter;
     AutocorrFn  autocorr;
+    FftPairFn   fftPair;
     const char * name;
 };
 
@@ -231,8 +236,57 @@ void autocorrBase(const double * x, int n, double * r, int maxLag) {
     for (int d = 0; d <= maxLag; ++d) r[d] = dot(x + d, x, n - d);
 }
 
+//! Each group of four points k, k+h, k+2h, k+3h goes through both stages
+//! while it is in registers: (0,1) and (2,3) by the stage of length 2h, then
+//! (0,2) and (1,3) by the stage of length 4h. Half the passes over the arrays
+//! that one stage at a time makes, and the FFT is bound by those, not by its
+//! multiplies. Every twiddle comes from the table and every butterfly is the
+//! radix-2 one, operation for operation, so the result is what two radix-2
+//! passes give, bit for bit; deriving the second stage's odd twiddles as
+//! -i times the even ones would save multiplies but round differently.
+void fftPairBase(double * re, double * im, int n, int h,
+                 const double * stRe, const double * stIm, double sgn) {
+    const double * w1r = stRe + h - 1;
+    const double * w1i = stIm + h - 1;
+    const double * w2r = stRe + 2 * h - 1;
+    const double * w2i = stIm + 2 * h - 1;
+    const double * w3r = w2r + h;
+    const double * w3i = w2i + h;
+    for (int i = 0; i < n; i += 4 * h) {
+        double * r0 = re + i;
+        double * r1 = r0 + h;
+        double * r2 = r1 + h;
+        double * r3 = r2 + h;
+        double * i0 = im + i;
+        double * i1 = i0 + h;
+        double * i2 = i1 + h;
+        double * i3 = i2 + h;
+        for (int k = 0; k < h; ++k) {
+            const double c1 = w1r[k], s1 = sgn * w1i[k];
+            double tr = c1 * r1[k] - s1 * i1[k];
+            double ti = c1 * i1[k] + s1 * r1[k];
+            const double y1r = r0[k] - tr, y1i = i0[k] - ti;
+            const double y0r = r0[k] + tr, y0i = i0[k] + ti;
+            tr = c1 * r3[k] - s1 * i3[k];
+            ti = c1 * i3[k] + s1 * r3[k];
+            const double y3r = r2[k] - tr, y3i = i2[k] - ti;
+            const double y2r = r2[k] + tr, y2i = i2[k] + ti;
+            const double c2 = w2r[k], s2 = sgn * w2i[k];
+            tr = c2 * y2r - s2 * y2i;
+            ti = c2 * y2i + s2 * y2r;
+            r2[k] = y0r - tr; i2[k] = y0i - ti;
+            r0[k] = y0r + tr; i0[k] = y0i + ti;
+            const double c3 = w3r[k], s3 = sgn * w3i[k];
+            tr = c3 * y3r - s3 * y3i;
+            ti = c3 * y3i + s3 * y3r;
+            r3[k] = y1r - tr; i3[k] = y1i - ti;
+            r1[k] = y1r + tr; i1[k] = y1i + ti;
+        }
+    }
+}
+
 const Kernels kBaseKernels = {
-    filterBase, autocorrBase, DECLICK_SSE2 ? "sse2" : "scalar"
+    filterBase, autocorrBase, fftPairBase, DECLICK_SSE2 ? "sse2" : "scalar"
 };
 
 #if DECLICK_AVX2
@@ -410,7 +464,69 @@ DECLICK_AVX2_FN void autocorrAvx2(const double * x, int n, double * r, int maxLa
     filterAvx2(x, x, r, maxLag + 1, n);
 }
 
-const Kernels kAvx2Kernels = { filterAvx2, autocorrAvx2, "avx2" };
+//! fftPairBase four groups at a time. Multiplies and adds, no FMA, in the
+//! scalar version's order, so it gives the same bits; h >= 4, so k runs in
+//! whole vectors.
+DECLICK_AVX2_FN void fftPairAvx2(double * re, double * im, int n, int h,
+                                 const double * stRe, const double * stIm,
+                                 double sgn) {
+    const __m256d vs = _mm256_set1_pd(sgn);
+    const double * w1r = stRe + h - 1;
+    const double * w1i = stIm + h - 1;
+    const double * w2r = stRe + 2 * h - 1;
+    const double * w2i = stIm + 2 * h - 1;
+    const double * w3r = w2r + h;
+    const double * w3i = w2i + h;
+    for (int i = 0; i < n; i += 4 * h) {
+        double * r0 = re + i;
+        double * r1 = r0 + h;
+        double * r2 = r1 + h;
+        double * r3 = r2 + h;
+        double * i0 = im + i;
+        double * i1 = i0 + h;
+        double * i2 = i1 + h;
+        double * i3 = i2 + h;
+        for (int k = 0; k < h; k += 4) {
+            const __m256d c1 = _mm256_loadu_pd(w1r + k);
+            const __m256d s1 = _mm256_mul_pd(vs, _mm256_loadu_pd(w1i + k));
+            __m256d xr = _mm256_loadu_pd(r1 + k);
+            __m256d xi = _mm256_loadu_pd(i1 + k);
+            __m256d tr = _mm256_sub_pd(_mm256_mul_pd(c1, xr), _mm256_mul_pd(s1, xi));
+            __m256d ti = _mm256_add_pd(_mm256_mul_pd(c1, xi), _mm256_mul_pd(s1, xr));
+            __m256d ar = _mm256_loadu_pd(r0 + k);
+            __m256d ai = _mm256_loadu_pd(i0 + k);
+            const __m256d y1r = _mm256_sub_pd(ar, tr), y1i = _mm256_sub_pd(ai, ti);
+            const __m256d y0r = _mm256_add_pd(ar, tr), y0i = _mm256_add_pd(ai, ti);
+            xr = _mm256_loadu_pd(r3 + k);
+            xi = _mm256_loadu_pd(i3 + k);
+            tr = _mm256_sub_pd(_mm256_mul_pd(c1, xr), _mm256_mul_pd(s1, xi));
+            ti = _mm256_add_pd(_mm256_mul_pd(c1, xi), _mm256_mul_pd(s1, xr));
+            ar = _mm256_loadu_pd(r2 + k);
+            ai = _mm256_loadu_pd(i2 + k);
+            const __m256d y3r = _mm256_sub_pd(ar, tr), y3i = _mm256_sub_pd(ai, ti);
+            const __m256d y2r = _mm256_add_pd(ar, tr), y2i = _mm256_add_pd(ai, ti);
+            const __m256d c2 = _mm256_loadu_pd(w2r + k);
+            const __m256d s2 = _mm256_mul_pd(vs, _mm256_loadu_pd(w2i + k));
+            tr = _mm256_sub_pd(_mm256_mul_pd(c2, y2r), _mm256_mul_pd(s2, y2i));
+            ti = _mm256_add_pd(_mm256_mul_pd(c2, y2i), _mm256_mul_pd(s2, y2r));
+            _mm256_storeu_pd(r2 + k, _mm256_sub_pd(y0r, tr));
+            _mm256_storeu_pd(i2 + k, _mm256_sub_pd(y0i, ti));
+            _mm256_storeu_pd(r0 + k, _mm256_add_pd(y0r, tr));
+            _mm256_storeu_pd(i0 + k, _mm256_add_pd(y0i, ti));
+            const __m256d c3 = _mm256_loadu_pd(w3r + k);
+            const __m256d s3 = _mm256_mul_pd(vs, _mm256_loadu_pd(w3i + k));
+            tr = _mm256_sub_pd(_mm256_mul_pd(c3, y3r), _mm256_mul_pd(s3, y3i));
+            ti = _mm256_add_pd(_mm256_mul_pd(c3, y3i), _mm256_mul_pd(s3, y3r));
+            _mm256_storeu_pd(r3 + k, _mm256_sub_pd(y1r, tr));
+            _mm256_storeu_pd(i3 + k, _mm256_sub_pd(y1i, ti));
+            _mm256_storeu_pd(r1 + k, _mm256_add_pd(y1r, tr));
+            _mm256_storeu_pd(i1 + k, _mm256_add_pd(y1i, ti));
+        }
+    }
+    _mm256_zeroupper();
+}
+
+const Kernels kAvx2Kernels = { filterAvx2, autocorrAvx2, fftPairAvx2, "avx2" };
 
 //! AVX2 and FMA in the CPU, and YMM state saved by the OS.
 bool cpuHasAvx2Fma() {
@@ -579,47 +695,42 @@ void autocorrNeon(const double * x, int n, double * r, int maxLag) {
     filterNeon(x, x, r, maxLag + 1, n);
 }
 
-const Kernels kNeonKernels = { filterNeon, autocorrNeon, "neon" };
+// The scalar FFT pass vectorises as it stands, two doubles to a register.
+const Kernels kNeonKernels = { filterNeon, autocorrNeon, fftPairBase, "neon" };
 
 #endif // DECLICK_NEON
 
 //! In-place radix-2 complex FFT of n points (n >= 4), for the body stage.
-//! swaps holds the bit reversal of 0..n-1 as nswaps pairs (i, j), i < j,
-//! end to end: walking every i and swapping where rev[i] > i mispredicts on
-//! half of them. st holds each stage's twiddles end to
-//! end, cos and sin of 2 pi k / len for k < len/2 at st[len/2 - 1 + k], so a
-//! stage reads them in order and the butterfly loop is a straight run the
-//! compiler can vectorise. The first two stages need no multiplies and get
-//! loops of their own. Forward is e^-i; the inverse is not scaled.
-void fftRadix2(double * re, double * im, int n, const int * swaps, int nswaps,
-               const double * stRe, const double * stIm, bool inverse) {
-    for (int p = 0; p < nswaps; ++p) {
-        const int i = swaps[2 * p], j = swaps[2 * p + 1];
-        double t = re[i]; re[i] = re[j]; re[j] = t;
-        t = im[i]; im[i] = im[j]; im[j] = t;
-    }
-    for (int i = 0; i < n; i += 2) {
-        const double ar = re[i], ai = im[i], br = re[i + 1], bi = im[i + 1];
-        re[i] = ar + br; im[i] = ai + bi;
-        re[i + 1] = ar - br; im[i + 1] = ai - bi;
-    }
+//! The input must already be in bit-reversed order: the callers write it
+//! there, through the bit reversal table, as they fill it, which saves the
+//! permuting pass. st holds each stage's twiddles end to end, cos and sin of
+//! 2 pi k / len for k < len/2 at st[len/2 - 1 + k], so a stage reads them in
+//! order. The first two stages need no multiplies and go together in one
+//! pass; the rest go two at a time through pair, a stage on its own first
+//! when their count is odd. Forward is e^-i; the inverse is not scaled.
+void fftRadix2(double * re, double * im, int n, const double * stRe,
+               const double * stIm, bool inverse, FftPairFn pair) {
     for (int i = 0; i < n; i += 4) {
-        double ar = re[i], ai = im[i], br = re[i + 2], bi = im[i + 2];
-        re[i] = ar + br; im[i] = ai + bi;
-        re[i + 2] = ar - br; im[i + 2] = ai - bi;
+        const double a0r = re[i] + re[i + 1], a0i = im[i] + im[i + 1];
+        const double a1r = re[i] - re[i + 1], a1i = im[i] - im[i + 1];
+        const double a2r = re[i + 2] + re[i + 3], a2i = im[i + 2] + im[i + 3];
+        const double a3r = re[i + 2] - re[i + 3], a3i = im[i + 2] - im[i + 3];
+        re[i] = a0r + a2r; im[i] = a0i + a2i;
+        re[i + 2] = a0r - a2r; im[i + 2] = a0i - a2i;
         // The second butterfly's twiddle is -i forward, +i inverse.
-        ar = re[i + 1]; ai = im[i + 1];
-        const double xr = re[i + 3], xi = im[i + 3];
-        const double tr = inverse ? -xi : xi;
-        const double ti = inverse ? xr : -xr;
-        re[i + 1] = ar + tr; im[i + 1] = ai + ti;
-        re[i + 3] = ar - tr; im[i + 3] = ai - ti;
+        const double tr = inverse ? -a3i : a3i;
+        const double ti = inverse ? a3r : -a3r;
+        re[i + 1] = a1r + tr; im[i + 1] = a1i + ti;
+        re[i + 3] = a1r - tr; im[i + 3] = a1i - ti;
     }
-    for (int len = 8; len <= n; len <<= 1) {
+    const double sgn = inverse ? 1.0 : -1.0;
+    int stages = 0;
+    for (int len = 8; len <= n; len <<= 1) ++stages;
+    int len = 8;
+    if (stages & 1) {
         const int half = len >> 1;
         const double * wr = stRe + half - 1;
         const double * ws = stIm + half - 1;
-        const double sgn = inverse ? 1.0 : -1.0;
         for (int i = 0; i < n; i += len) {
             double * ar = re + i;
             double * ai = im + i;
@@ -635,7 +746,9 @@ void fftRadix2(double * re, double * im, int n, const int * swaps, int nswaps,
                 ai[k] += ti;
             }
         }
+        len <<= 1;
     }
+    for (; len <= n; len <<= 2) pair(re, im, n, len >> 1, stRe, stIm, sgn);
 }
 
 //! Median of three.
@@ -1047,17 +1160,10 @@ void Channel::configure(const Config & cfg) {
         }
         int bits = 0;
         while ((1 << bits) < N / 2) ++bits;
-        // As swap pairs. A pair takes two slots and only i < rev(i) makes
-        // one, so they fit in the N/2 that the plain table would.
-        m_bSwaps = 0;
         for (int i = 0; i < N / 2; ++i) {
             int r = 0;
             for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
-            if (r > i) {
-                m_bRev[(size_t)(2 * m_bSwaps)] = i;
-                m_bRev[(size_t)(2 * m_bSwaps + 1)] = r;
-                ++m_bSwaps;
-            }
+            m_bRev[(size_t)i] = r;
         }
 
         const double blockSec = (double)kBlock / cfg.rate;
@@ -1729,12 +1835,13 @@ void Channel::bodyHop(uint64_t start) {
         double * im = &m_bIm[0];
         const double * y = &m_bY[0];
         const double * win = &m_bWin[0];
+        const int * rev = &m_bRev[0];
         for (int i = 0; i < M; ++i) {
             const size_t at = (size_t)(start + 2 * (uint64_t)i);
-            re[i] = y[at & mask] * win[2 * i];
-            im[i] = y[(at + 1) & mask] * win[2 * i + 1];
+            re[rev[i]] = y[at & mask] * win[2 * i];
+            im[rev[i]] = y[(at + 1) & mask] * win[2 * i + 1];
         }
-        fftRadix2(re, im, M, &m_bRev[0], m_bSwaps, &m_bStRe[0], &m_bStIm[0], false);
+        fftRadix2(re, im, M, &m_bStRe[0], &m_bStIm[0], false, g_kernels->fftPair);
         // X[k] = E + e^(-2 pi i k / N) O, with E and O the transforms of the
         // even and odd samples: (Z[k] + Z*[M-k]) / 2 and (Z[k] - Z*[M-k]) / 2i.
         const int slot = m_bSlot;
@@ -1808,14 +1915,15 @@ void Channel::bodyHop(uint64_t start) {
                 const double vr = cut * cr[k - m_bK0], vi = cut * ci[k - m_bK0];
                 const double c = twRe[k], sn = twIm[k];
                 const double ur = vr * c - vi * sn, ui = vr * sn + vi * c;
-                re[k] += vr - ui;
-                im[k] += vi + ur;
-                re[M - k] += vr + ui;
-                im[M - k] += ur - vi;
+                const int kr = rev[k], mr = rev[M - k];  // see fftRadix2
+                re[kr] += vr - ui;
+                im[kr] += vi + ur;
+                re[mr] += vr + ui;
+                im[mr] += ur - vi;
                 any = true;
             }
             if (any) {
-                fftRadix2(re, im, M, &m_bRev[0], m_bSwaps, &m_bStRe[0], &m_bStIm[0], true);
+                fftRadix2(re, im, M, &m_bStRe[0], &m_bStIm[0], true, g_kernels->fftPair);
                 const double g = 1.0 / ((double)N * m_bNorm);
                 double * r = &m_bR[0];
                 const uint64_t from = start - 2 * (uint64_t)H;
