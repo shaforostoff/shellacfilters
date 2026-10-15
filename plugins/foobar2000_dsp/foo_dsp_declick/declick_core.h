@@ -211,7 +211,10 @@ struct Config {
     //! number of runs per second that peak at bodyPeak sigma or more, over
     //! 0.1 s, and then the minimum of that over the last 0.5 s. Crackle on a
     //! surface is steady, and the bursts musical attacks fire come and go. The
-    //! cut ramps in from bodyRate0 to bodyRate1. Below bodyRate0 the stage
+    //! cut ramps in from bodyRate0 to bodyRate1, and once open it is held for
+    //! bodyRelease seconds: at 0.1 s the count is a handful of runs, and its
+    //! minimum dips below bodyRate0 under crackle that has not changed, which
+    //! let the squirt back in patches. Where the key never opens the stage
     //! subtracts nothing, and the output is the repaired audio to the bit.
     //! On the held note of Tanturi's *Cuatro compases* this takes 45% of what
     //! the commercial version takes from 1-2 kHz, against 8% without it. On
@@ -229,6 +232,7 @@ struct Config {
     double bodyRate1    = 60.0;
     double bodyRateWin  = 0.1;     //!< seconds
     double bodyHold     = 0.5;     //!< seconds
+    double bodyRelease  = 2.0;     //!< seconds
     int    bodyN        = 2048;    //!< from the sample rate alone
     int    bodyLatency  = 0;       //!< bodyDelay(bodyN) if body, else 0
     double rate         = 44100.0;   //!< the sample rate compute() was given
@@ -440,7 +444,10 @@ private:
     //! and cut the one two hops before it.
     void bodyHop(uint64_t start);
     //! The key's strength, 0..1, from the strong-run rates of the last
-    //! Config::bodyHold seconds.
+    //! Config::bodyHold seconds, as of the latest repair block.
+    double bodyKey() const;
+    //! The key as the stage applies it: the strongest of the last
+    //! Config::bodyRelease seconds of bodyKey().
     double bodyBeta() const;
     void growOut();               //!< only reachable by overrunning maxBlock
     void processBlock();          //!< repairs m_win[m_pad .. m_pad+kBlock)
@@ -551,7 +558,9 @@ private:
     //! Strong runs per repair block, and the rate over bodyRateWin, as rings.
     std::vector<int>    m_bCount;
     std::vector<double> m_bRate;
+    std::vector<double> m_bKey;   //!< bodyKey() per block, over bodyRelease
     int    m_bCountPos = 0, m_bRatePos = 0, m_bRateHave = 0, m_bStrong = 0;
+    int    m_bKeyPos = 0;
 
     std::vector<double> m_madRing; //!< |forward residual| history
     int    m_madPos = 0;
