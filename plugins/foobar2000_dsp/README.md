@@ -290,9 +290,12 @@ without; ~365× and ~215× at order 64. Measured end to end over 60 s of
 a modern desktop. See [Where the time goes](#where-the-time-goes-and-what-was-done-about-it).
 Those figures predate the [body stage](#the-body-of-dense-crackle-the-body-stage).
 Where its key is shut it costs little: ~4% on that clip, measured interleaved.
-Where crackle is dense enough to open it, it adds ~40% to the AVX2 time and
-~20% to the SSE2 time. On Tanturi's *Cuatro compases*, with the key open 72% of
-the time, that is 185× → 132× and 99× → 83× realtime.
+Where crackle is dense enough to open it, it adds ~20% to the AVX2 time and
+~12% to the SSE2 time. On Tanturi's *Cuatro compases* the key is open almost
+throughout: the stage changes 98% of the song's 512-sample blocks, against 78%
+before the key was [held for 2 s](#the-body-of-dense-crackle-the-body-stage).
+There that is 184× → 154× and 97× → 87× realtime, best of seven runs
+interleaved. Before the stage's speed-ups it was 185× → 132× and 99× → 83×.
 
 On the Macs, with the body stage included, the three builds taking turns:
 
@@ -310,7 +313,8 @@ the MacBook Pro. The M1's runs agreed to its timer's 10 ms. The MacBook Pro
 was not always idle, and its medians are up to 25 % lower. With the key open
 the stage now adds 17 % to NEON and 7 % to the M1's baseline, and 19 % and
 15 % on the Haswell. It added 37 %, 14 %, 47 % and 24 % as first committed.
-The ~40 % above is the Zen 4's, from before the speed-ups.
+These Mac figures predate the key's 2 s release, which costs *Cuatro* about
+2 % more on the Zen 4 because the key is open on more of it.
 With it shut, on *Serenata*, it costs 0–5 % on the M1 at orders 32–256. On
 the Haswell a separate fifteen-round run put that at 12 %, 9 % and 6 % at
 orders 32, 64 and 128. That is a fixed cost per sample, so it weighs more
@@ -1174,6 +1178,15 @@ by its non-tonal share, P²/(H²+P²), and never by more than 12 dB.
   the last 0.5 s. The surface's crackle is steady, and the bursts that
   attacks fire come and go. The key opens from 20/s and is fully open at
   60/s.
+* **The release.** Once open, the key is held for 2 s
+  (`Config::bodyRelease`): the stage applies the strongest key of the last
+  2 s. Over 0.1 s the count is a handful of runs, so its minimum dips below
+  20/s under crackle that has not changed. On *Cuatro compases* the key
+  flickered about 59 times a minute and was 41% open on average, and the
+  squirt came back in patches, heard at 1:05–1:08. Held for 2 s it is 86%
+  open and changes state about 7 times a minute; on *Que solo estoy* it went
+  from 68% to 98%. A record whose crackle never opens the key is untouched by
+  this. `declick_cli --body-release 0` gives the stage without it, bit for bit.
 * **What it outputs.** It computes only what it removes, and subtracts it.
   So where the key is shut, the output is the repaired audio to the bit, a
   constant delay later.
@@ -1181,7 +1194,8 @@ by its non-tonal share, P²/(H²+P²), and never by more than 12 dB.
 | | Cuatro note: shared / left | Malvon master | clean D'Arienzo | *El Marne* | *El irresistible* |
 |---|---|---|---|---|---|
 | without the stage | 8% / 0.98 | −38.6 dB | −48.1 dB | −29.9 dB | 4.88/s |
-| with it (C++, causal key) | 40% / 0.99 | −38.6, bit-identical | −48.1, bit-identical | −29.9, bit-identical | 4.83/s |
+| with it (C++, causal key), key held 2 s | **45% / 1.04** | −38.6, bit-identical | −48.1, bit-identical | −29.9, bit-identical | 4.80/s |
+| … key not held (`--body-release 0`) | 40% / 0.99 | −38.6, bit-identical | −48.1, bit-identical | −29.9, bit-identical | 4.83/s |
 | Python prototype, centred key | 45% / 1.03 | −38.6 | −48.1 | −29.9 | 4.83/s |
 | prototype, key without the 0.5 s minimum | 33% / 0.92 | −31.1 | −45.7 | −23.1 | 4.75/s |
 
@@ -1196,7 +1210,7 @@ How the columns are scored:
 * The previous best "shared", the joint bump fit, was 28%, at −21.8 dB on
   the master.
 
-Run on whole songs, the C++ stage takes −21.7, −19.8 and −32.3 dB of the
+Run on whole songs before the release, the C++ stage took −21.7, −19.8 and −32.3 dB of the
 0.5–3 kHz band from *Cuatro compases*, *Que solo estoy* and *Aleli*. The
 prototype took −22.2, −20.3 and −32.0 dB, and the removals correlate 0.81,
 0.90 and 0.70.
@@ -1266,6 +1280,11 @@ With those two, *Cuatro* costs +17 % over the core on the M1 (+7 %
 baseline) and **+19 %** on the Haswell with AVX2 (+15 % SSE2). Output is
 byte-identical to the body stage as first committed, at every order, sample
 rate and kernel tried, with the key forced open.
+
+The 2 s release keeps the key open on more of *Cuatro*, and the stage costs
+more there for it. On the Zen 4, alternating the two in two runs of seven and
+nine rounds, the stage cost +18–19 % over the core with AVX2 without the
+release and +20–22 % with it, and +10 % and +12 % with SSE2.
 
 ---
 
@@ -3089,11 +3108,12 @@ constant on the way past, those being three hand-written copies of one number.
 * **Declick has not been evaluated on stereo vinyl**, only on mono 78s. It
   should work — the detector is per-channel and format-agnostic — but the
   thresholds were tuned on shellac.
-* **The body stage reaches about 40% of what the decrackled version takes from
+* **The body stage reaches about 45% of what the decrackled version takes from
   1–2 kHz under a held note, and its key is causal.** The *squirt* is gone by
   ear, but the key needs about 0.1 s of crackle history. It opens a little
-  later at the start of a stream than the centred key the prototype used
-  (45%). On a record whose crackle is too sparse to open the key, the bodies
+  later at the start of a stream than the centred key the prototype used.
+  Without its 2 s release it flickered under steady crackle and reached 40%.
+  On a record whose crackle is too sparse to open the key, the bodies
   stay — see [The body stage](#the-body-of-dense-crackle-the-body-stage).
 * **Declick's audio thread can still allocate in one case:** a caller pushing
   more than `Config::maxBlock` — 16384 samples — between pulls. That grows the

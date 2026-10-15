@@ -1169,10 +1169,13 @@ void Channel::configure(const Config & cfg) {
         const double blockSec = (double)kBlock / cfg.rate;
         int nRate = (int)floor(cfg.bodyRateWin / blockSec + 0.5);
         int nHold = (int)floor(cfg.bodyHold / blockSec + 0.5);
+        int nRelease = (int)floor(cfg.bodyRelease / blockSec + 0.5);
         if (nRate < 1) nRate = 1;
         if (nHold < 1) nHold = 1;
+        if (nRelease < 1) nRelease = 1;
         m_bCount.assign((size_t)nRate, 0);
         m_bRate.assign((size_t)nHold, 0.0);
+        m_bKey.assign((size_t)nRelease, 0.0);
     }
 
     // The output ring. Between one pull and the next a caller can push maxBlock
@@ -1197,7 +1200,7 @@ size_t Channel::heapBytes() const {
             + m_bRe.capacity() + m_bIm.capacity() + m_bTwRe.capacity() + m_bTwIm.capacity()
             + m_bStRe.capacity() + m_bStIm.capacity()
             + m_bMag.capacity() + m_bXRe.capacity() + m_bXIm.capacity()
-            + m_bMed.capacity() + m_bRate.capacity()) * sizeof(double)
+            + m_bMed.capacity() + m_bRate.capacity() + m_bKey.capacity()) * sizeof(double)
            + m_flag.capacity() + m_runs.capacity() * sizeof(int)
            + (m_bRev.capacity() + m_bCount.capacity()) * sizeof(int);
 }
@@ -1235,6 +1238,7 @@ void Channel::reset() {
     std::fill(m_bR.begin(), m_bR.end(), 0.0);
     std::fill(m_bCount.begin(), m_bCount.end(), 0);
     std::fill(m_bRate.begin(), m_bRate.end(), 0.0);
+    std::fill(m_bKey.begin(), m_bKey.end(), 0.0);
     m_bT = 0;
     m_bNextHop = (uint64_t)m_bN;
     m_bHist = 0;
@@ -1243,6 +1247,7 @@ void Channel::reset() {
     m_bRatePos = 0;
     m_bRateHave = 0;
     m_bStrong = 0;
+    m_bKeyPos = 0;
     // Prime with `pad` zeros so the first real sample lands at window index
     // pad and nothing is dropped off the front of the stream.
     m_fill = m_pad;
@@ -1729,7 +1734,7 @@ void Channel::pushOne(double v) {
     processBlock();
 
     // The body stage's key: strong runs in this block, their rate over the
-    // last bodyRateWin seconds, and the history of that rate.
+    // last bodyRateWin seconds, the history of that rate, and of the key.
     if (!m_bCount.empty()) {
         m_bCount[(size_t)m_bCountPos] = m_bStrong;
         if (++m_bCountPos >= (int)m_bCount.size()) m_bCountPos = 0;
@@ -1739,6 +1744,8 @@ void Channel::pushOne(double v) {
             (double)sum * m_cfg.rate / ((double)m_bCount.size() * (double)blk);
         if (++m_bRatePos >= (int)m_bRate.size()) m_bRatePos = 0;
         if (m_bRateHave < (int)m_bRate.size()) ++m_bRateHave;
+        m_bKey[(size_t)m_bKeyPos] = bodyKey();
+        if (++m_bKeyPos >= (int)m_bKey.size()) m_bKeyPos = 0;
     }
 
     for (int i = 0; i < blk; ++i) {
@@ -1790,6 +1797,12 @@ void Channel::bodyPush(double y, double d) {
 }
 
 double Channel::bodyBeta() const {
+    double beta = 0.0;
+    for (size_t k = 0; k < m_bKey.size(); ++k) beta = dmax(beta, m_bKey[k]);
+    return beta;
+}
+
+double Channel::bodyKey() const {
     // A stream's first half second has less history than the hold, and the
     // ring's zeros would keep the key shut through it - often the opening
     // note of a record. So it is the minimum over what has been seen, once

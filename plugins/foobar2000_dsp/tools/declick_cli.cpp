@@ -51,7 +51,8 @@ void usage() {
         "  --body-floor <0..1>  Deepest cut of a bin, as a gain (default 0.25)\n"
         "  --body-peak <x>    Sigma a run must peak at to count towards its key (default 6)\n"
         "  --body-rate0 <x>   Strong runs per second where the key starts to open (default 20)\n"
-        "  --body-rate1 <x>   ... and where it is fully open (default 60)\n");
+        "  --body-rate1 <x>   ... and where it is fully open (default 60)\n"
+        "  --body-release <s> Seconds the key stays open after it last was (default 2)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -79,8 +80,7 @@ int main(int argc, char ** argv) {
     float softMin = -1.0f;
     float softSpan = -1.0f;
     float body = -1.0f, bodyFloor = -1.0f, bodyPeak = -1.0f;
-    float bodyRate0 = -1.0f, bodyRate1 = -1.0f;
-
+    float bodyRate0 = -1.0f, bodyRate1 = -1.0f, bodyRelease = -1.0f;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--delta") { delta = true; continue; }
@@ -107,7 +107,7 @@ int main(int argc, char ** argv) {
         else if (a == "--body-peak") bodyPeak = v;
         else if (a == "--body-rate0") bodyRate0 = v;
         else if (a == "--body-rate1") bodyRate1 = v;
-        else if (a == "-s") params.sensitivity = v;
+        else if (a == "--body-release") bodyRelease = v;        else if (a == "-s") params.sensitivity = v;
         else if (a == "-e") params.extent = v;
         else if (a == "-l") params.maxLengthMs = v;
         else if (a == "-p") params.passes = (int)v;
@@ -135,7 +135,7 @@ int main(int argc, char ** argv) {
     if (bodyPeak >= 0.0f) cfg.bodyPeak = bodyPeak;
     if (bodyRate0 >= 0.0f) cfg.bodyRate0 = bodyRate0;
     if (bodyRate1 >= 0.0f) cfg.bodyRate1 = bodyRate1;
-    cfg.compute(params, (double)audio.sampleRate);
+    if (bodyRelease >= 0.0f) cfg.bodyRelease = bodyRelease;    cfg.compute(params, (double)audio.sampleRate);
     if (alpha >= 0.0f) cfg.wienerAlpha = alpha;
     if (wmax >= 0.0f) cfg.wienerMax = wmax;
     if (rerepair >= 0.0f) cfg.rerepair = (int)rerepair;
