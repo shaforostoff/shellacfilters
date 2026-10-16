@@ -219,11 +219,22 @@ typedef void (*AutocorrFn)(const double * x, int n, double * r, int maxLag);
 //! sweep over the n points; h >= 4. sgn is -1 forward, +1 inverse.
 typedef void (*FftPairFn)(double * re, double * im, int n, int h,
                           const double * stRe, const double * stIm, double sgn);
+//! One radix-2 stage of half-length h over the n points; h >= 4. The FFT
+//! needs it alone when its stage count is odd, which at the fine stage's 128
+//! points it is. sgn is -1 forward, +1 inverse.
+typedef void (*FftOneFn)(double * re, double * im, int n, int h,
+                         const double * stRe, const double * stIm, double sgn);
+//! `count` sorted windows of `n` values laid end to end: in each, replace
+//! out[b] with in[b], keeping it sorted. See sortedReplace().
+typedef void (*SortedRowFn)(double * rows, int n, int count,
+                            const double * out, const double * in);
 
 struct Kernels {
     FilterFn    filter;
     AutocorrFn  autocorr;
     FftPairFn   fftPair;
+    FftOneFn    fftOne;
+    SortedRowFn sortedRow;
     const char * name;
 };
 
@@ -285,8 +296,175 @@ void fftPairBase(double * re, double * im, int n, int h,
     }
 }
 
+//! Two window places at a time: each takes its neighbour `d` away where the
+//! block moves over it, and keeps what it has where it does not. Reading one
+//! place past the window at either end is why the windows carry a pad.
+inline void sortedStep2(double * m, int i, int a, int b, int d) {
+#if DECLICK_SSE2
+    const __m128i idx = _mm_set_epi32(0, i + 1, 0, i);
+    // a <= i <= b, spread from the 32-bit result over the whole 64-bit lane.
+    __m128i act = _mm_andnot_si128(_mm_cmpgt_epi32(_mm_set1_epi32(a), idx),
+                                   _mm_cmpgt_epi32(_mm_set1_epi32(b + 1), idx));
+    act = _mm_shuffle_epi32(act, _MM_SHUFFLE(2, 2, 0, 0));
+    const __m128d cur = _mm_loadu_pd(m);
+    const __m128d nxt = _mm_loadu_pd(m + d);
+    _mm_storeu_pd(m, _mm_or_pd(_mm_and_pd(_mm_castsi128_pd(act), nxt),
+                               _mm_andnot_pd(_mm_castsi128_pd(act), cur)));
+#elif DECLICK_NEON
+    // 64-bit lanes throughout: vbslq_f64 selects bit by bit, so a mask
+    // widened from 32 bits without its sign would take half of each double
+    // from either side.
+    const int64x2_t idx = { i, i + 1 };
+    const uint64x2_t act = vandq_u64(vcgeq_s64(idx, vdupq_n_s64(a)),
+                                     vcleq_s64(idx, vdupq_n_s64(b)));
+    vst1q_f64(m, vbslq_f64(act, vld1q_f64(m + d), vld1q_f64(m)));
+#else
+    (void)m; (void)i; (void)a; (void)b; (void)d;
+#endif
+}
+
+//! The q quantile of n sorted values, as numpy's default (linear) finds it:
+//! the values at floor and ceil of q (n - 1), interpolated.
+double sortedQuantile(const double * v, int n, double q) {
+    const double pos = q * (double)(n - 1);
+    int lo = (int)floor(pos);
+    if (lo < 0) lo = 0;
+    if (lo > n - 1) lo = n - 1;
+    const double frac = pos - (double)lo;
+    if (!(frac > 0.0) || lo + 1 >= n) return v[lo];
+    return v[lo] + frac * (v[lo + 1] - v[lo]);
+}
+
+//! Where `out` leaves a sorted window of n values and `in` goes in: `out` is
+//! at the number of values below it (the first of any equal to it), and `in`
+//! at the number below it among the others. A count, not a search. A NaN
+//! counts below nothing, so it costs a wrong quantile, not a write outside
+//! the window.
+inline void sortedRanks(const double * m, int n, double out, double in,
+                        int & jo, int & ji) {
+    jo = 0; ji = 0;
+#if DECLICK_SSE2
+    if ((n & 1) == 0) {
+        const __m128d vo = _mm_set1_pd(out), vi = _mm_set1_pd(in);
+        __m128i co = _mm_setzero_si128(), ci = _mm_setzero_si128();
+        for (int i = 0; i < n; i += 2) {
+            const __m128d v = _mm_loadu_pd(m + i);
+            co = _mm_sub_epi64(co, _mm_castpd_si128(_mm_cmplt_pd(v, vo)));
+            ci = _mm_sub_epi64(ci, _mm_castpd_si128(_mm_cmplt_pd(v, vi)));
+        }
+        co = _mm_add_epi64(co, _mm_unpackhi_epi64(co, co));
+        ci = _mm_add_epi64(ci, _mm_unpackhi_epi64(ci, ci));
+        jo = _mm_cvtsi128_si32(co);
+        ji = _mm_cvtsi128_si32(ci);
+    } else
+#endif
+    for (int i = 0; i < n; ++i) {
+        jo += (m[i] < out);
+        ji += (m[i] < in);
+    }
+    ji -= (out < in);               // `out` itself is not among the others
+    if (jo > n - 1) jo = n - 1;     // only if `out` was not there after all
+    if (ji > n - 1) ji = n - 1;
+    if (ji < 0) ji = 0;
+}
+
+//! The places that move when `out` at rank jo leaves and `in` goes in at ji,
+//! and which way: up by one over jo .. ji - 1, or down by one over
+//! ji + 1 .. jo. Equal ranks leave an empty range either way.
+inline void sortedMove(double * m, int n, int jo, int ji, double in) {
+    // Going with the move - up from the bottom, down from the top - every
+    // place is read before the step that writes it.
+    const int up = (ji >= jo);
+    const int d  = up ? 1 : -1;
+    const int a  = up ? jo : ji + 1;
+    const int b  = up ? ji - 1 : jo;
+#if DECLICK_SSE2 || DECLICK_NEON
+    {
+        int i = up ? 0 : n - 2;
+        for (int c = 0; c + 2 <= n; c += 2, i += 2 * d) sortedStep2(m + i, i, a, b, d);
+        if (n & 1) {                     // the odd place left, last either way
+            const int t = up ? n - 1 : 0;
+            m[t] = (t >= a && t <= b) ? m[t + d] : m[t];
+        }
+    }
+#else
+    {
+        int i = up ? 0 : n - 1;
+        for (int c = 0; c < n; ++c, i += d)
+            m[i] = (i >= a && i <= b) ? m[i + d] : m[i];
+    }
+#endif
+    m[ji] = in;
+}
+
+//! In a sorted window of n values, replace `out` - which must be one of them,
+//! as it is the window's own copy - with `in`, keeping it sorted.
+//!
+//! Doing the move as the loop it reads as - `for (i = jo; i < ji; ++i)
+//! m[i] = m[i + 1]` and its mirror - cost 74 cycles a window on a Haswell and
+//! was a third of the fine stage: the trip count is one or two and depends on
+//! the data, so each of the two loop guards mispredicted about half the time.
+//! So the whole window runs instead, every step predicated: a few more moves,
+//! no branches, and the pass vectorises. Which places move is a comparison
+//! against the ranks, so the values written are the ones the loops wrote, in
+//! the same places.
+//!
+//! The vector paths load one place either side of the window and discard it,
+//! so every window the fine stage keeps has a pad either side - see
+//! m_fSorted.
+void sortedReplace(double * m, int n, double out, double in) {
+    int jo, ji;
+    sortedRanks(m, n, out, in, jo, ji);
+    sortedMove(m, n, jo, ji, in);
+}
+
+//! A row of windows. The ranks for a tile of them are counted first and the
+//! moves made after: a window's ranks reach its own move through a
+//! vector-to-register-to-vector round trip and nothing in that window can
+//! start until they do, so one window at a time the row costs that latency
+//! rather than its work. Counting the next window covers it.
+void sortedRowBase(double * rows, int n, int count,
+                   const double * out, const double * in) {
+    enum { kTile = 16 };
+    int jo[kTile], ji[kTile];
+    for (int b0 = 0; b0 < count; b0 += (int)kTile) {
+        const int nt = (count - b0 < (int)kTile) ? count - b0 : (int)kTile;
+        for (int t = 0; t < nt; ++t)
+            sortedRanks(rows + (size_t)(b0 + t) * (size_t)n, n,
+                        out[b0 + t], in[b0 + t], jo[t], ji[t]);
+        for (int t = 0; t < nt; ++t)
+            sortedMove(rows + (size_t)(b0 + t) * (size_t)n, n,
+                       jo[t], ji[t], in[b0 + t]);
+    }
+}
+
+//! The odd stage out, when the FFT has one. The loop fftRadix2() used to
+//! carry here, moved so that a wide kernel can take it: at 128 points it is
+//! the whole of one of the five stages and it was the only scalar one left.
+void fftOneBase(double * re, double * im, int n, int h,
+                const double * stRe, const double * stIm, double sgn) {
+    const double * wr = stRe + h - 1;
+    const double * ws = stIm + h - 1;
+    for (int i = 0; i < n; i += 2 * h) {
+        double * ar = re + i;
+        double * ai = im + i;
+        double * br = ar + h;
+        double * bi = ai + h;
+        for (int k = 0; k < h; ++k) {
+            const double c = wr[k], sn = sgn * ws[k];
+            const double tr = c * br[k] - sn * bi[k];
+            const double ti = c * bi[k] + sn * br[k];
+            br[k] = ar[k] - tr;
+            bi[k] = ai[k] - ti;
+            ar[k] += tr;
+            ai[k] += ti;
+        }
+    }
+}
+
 const Kernels kBaseKernels = {
-    filterBase, autocorrBase, fftPairBase, DECLICK_SSE2 ? "sse2" : "scalar"
+    filterBase, autocorrBase, fftPairBase, fftOneBase, sortedRowBase,
+    DECLICK_SSE2 ? "sse2" : "scalar"
 };
 
 #if DECLICK_AVX2
@@ -526,7 +704,97 @@ DECLICK_AVX2_FN void fftPairAvx2(double * re, double * im, int n, int h,
     _mm256_zeroupper();
 }
 
-const Kernels kAvx2Kernels = { filterAvx2, autocorrAvx2, fftPairAvx2, "avx2" };
+//! sortedReplace() over a row of windows, four places at a time. The ranks
+//! come from the same count, widened; the move is the same predicated pass.
+//!
+//! Each window's ranks reach its own move through a vector-to-register-to-
+//! vector round trip, and nothing in that window can start until they do: one
+//! window at a time, that latency - not the work - was what the row cost, 71
+//! cycles a window on a Haswell against the dozen its uops take. So the ranks
+//! for a tile of windows are counted first and the moves made after, and each
+//! window's latency is covered by the next window's counting.
+DECLICK_AVX2_FN void sortedRowAvx2(double * rows, int n, int count,
+                                   const double * out, const double * in) {
+    if ((n & 3) != 0) { sortedRowBase(rows, n, count, out, in); return; }
+    enum { kTile = 16 };
+    const __m256i lane = _mm256_setr_epi64x(0, 1, 2, 3);
+    int jo[kTile], ji[kTile];
+    for (int b0 = 0; b0 < count; b0 += (int)kTile) {
+        const int nt = (count - b0 < (int)kTile) ? count - b0 : (int)kTile;
+        for (int t = 0; t < nt; ++t) {
+            const double * m = rows + (size_t)(b0 + t) * (size_t)n;
+            const __m256d vo = _mm256_set1_pd(out[b0 + t]);
+            const __m256d vi = _mm256_set1_pd(in[b0 + t]);
+            __m256i co = _mm256_setzero_si256(), ci = _mm256_setzero_si256();
+            for (int i = 0; i < n; i += 4) {
+                const __m256d v = _mm256_loadu_pd(m + i);
+                co = _mm256_sub_epi64(co, _mm256_castpd_si256(_mm256_cmp_pd(v, vo, _CMP_LT_OQ)));
+                ci = _mm256_sub_epi64(ci, _mm256_castpd_si256(_mm256_cmp_pd(v, vi, _CMP_LT_OQ)));
+            }
+            __m128i h = _mm_add_epi64(_mm256_castsi256_si128(co), _mm256_extracti128_si256(co, 1));
+            int a = _mm_cvtsi128_si32(_mm_add_epi64(h, _mm_unpackhi_epi64(h, h)));
+            h = _mm_add_epi64(_mm256_castsi256_si128(ci), _mm256_extracti128_si256(ci, 1));
+            int b = _mm_cvtsi128_si32(_mm_add_epi64(h, _mm_unpackhi_epi64(h, h)));
+            b -= (out[b0 + t] < in[b0 + t]);
+            if (a > n - 1) a = n - 1;
+            if (b > n - 1) b = n - 1;
+            if (b < 0) b = 0;
+            jo[t] = a; ji[t] = b;
+        }
+        for (int t = 0; t < nt; ++t) {
+            double * m = rows + (size_t)(b0 + t) * (size_t)n;
+            const int up = (ji[t] >= jo[t]);
+            const int d  = up ? 1 : -1;
+            const __m256i va  = _mm256_set1_epi64x(up ? jo[t] : ji[t] + 1);
+            const __m256i vb1 = _mm256_set1_epi64x((up ? ji[t] - 1 : jo[t]) + 1);
+            int i = up ? 0 : n - 4;
+            for (int c = 0; c < n; c += 4, i += 4 * d) {
+                const __m256i k = _mm256_add_epi64(lane, _mm256_set1_epi64x(i));
+                const __m256i act = _mm256_andnot_si256(_mm256_cmpgt_epi64(va, k),
+                                                        _mm256_cmpgt_epi64(vb1, k));
+                _mm256_storeu_pd(m + i, _mm256_blendv_pd(_mm256_loadu_pd(m + i),
+                                                         _mm256_loadu_pd(m + i + d),
+                                                         _mm256_castsi256_pd(act)));
+            }
+            _mm_store_sd(m + ji[t], _mm_load_sd(in + b0 + t));
+        }
+    }
+    _mm256_zeroupper();
+}
+
+//! fftPairAvx2()'s butterfly, one stage of it. Multiply and add, never FMA:
+//! the result has to be the scalar kernel's to the bit.
+DECLICK_AVX2_FN void fftOneAvx2(double * re, double * im, int n, int h,
+                                const double * stRe, const double * stIm, double sgn) {
+    if ((h & 3) != 0) { fftOneBase(re, im, n, h, stRe, stIm, sgn); return; }
+    const __m256d vs = _mm256_set1_pd(sgn);
+    const double * wr = stRe + h - 1;
+    const double * ws = stIm + h - 1;
+    for (int i = 0; i < n; i += 2 * h) {
+        double * ar = re + i;
+        double * ai = im + i;
+        double * br = ar + h;
+        double * bi = ai + h;
+        for (int k = 0; k < h; k += 4) {
+            const __m256d c = _mm256_loadu_pd(wr + k);
+            const __m256d sn = _mm256_mul_pd(vs, _mm256_loadu_pd(ws + k));
+            const __m256d xr = _mm256_loadu_pd(br + k);
+            const __m256d xi = _mm256_loadu_pd(bi + k);
+            const __m256d tr = _mm256_sub_pd(_mm256_mul_pd(c, xr), _mm256_mul_pd(sn, xi));
+            const __m256d ti = _mm256_add_pd(_mm256_mul_pd(c, xi), _mm256_mul_pd(sn, xr));
+            const __m256d yr = _mm256_loadu_pd(ar + k);
+            const __m256d yi = _mm256_loadu_pd(ai + k);
+            _mm256_storeu_pd(br + k, _mm256_sub_pd(yr, tr));
+            _mm256_storeu_pd(bi + k, _mm256_sub_pd(yi, ti));
+            _mm256_storeu_pd(ar + k, _mm256_add_pd(yr, tr));
+            _mm256_storeu_pd(ai + k, _mm256_add_pd(yi, ti));
+        }
+    }
+    _mm256_zeroupper();
+}
+
+const Kernels kAvx2Kernels = { filterAvx2, autocorrAvx2, fftPairAvx2, fftOneAvx2,
+                               sortedRowAvx2, "avx2" };
 
 //! AVX2 and FMA in the CPU, and YMM state saved by the OS.
 bool cpuHasAvx2Fma() {
@@ -696,7 +964,8 @@ void autocorrNeon(const double * x, int n, double * r, int maxLag) {
 }
 
 // The scalar FFT pass vectorises as it stands, two doubles to a register.
-const Kernels kNeonKernels = { filterNeon, autocorrNeon, fftPairBase, "neon" };
+const Kernels kNeonKernels = { filterNeon, autocorrNeon, fftPairBase, fftOneBase,
+                               sortedRowBase, "neon" };
 
 #endif // DECLICK_NEON
 
@@ -706,10 +975,10 @@ const Kernels kNeonKernels = { filterNeon, autocorrNeon, fftPairBase, "neon" };
 //! permuting pass. st holds each stage's twiddles end to end, cos and sin of
 //! 2 pi k / len for k < len/2 at st[len/2 - 1 + k], so a stage reads them in
 //! order. The first two stages need no multiplies and go together in one
-//! pass; the rest go two at a time through pair, a stage on its own first
-//! when their count is odd. Forward is e^-i; the inverse is not scaled.
+//! pass; the rest go two at a time through pair, a stage on its own through
+//! one first when their count is odd. Forward is e^-i; the inverse is not scaled.
 void fftRadix2(double * re, double * im, int n, const double * stRe,
-               const double * stIm, bool inverse, FftPairFn pair) {
+               const double * stIm, bool inverse, FftPairFn pair, FftOneFn one) {
     for (int i = 0; i < n; i += 4) {
         const double a0r = re[i] + re[i + 1], a0i = im[i] + im[i + 1];
         const double a1r = re[i] - re[i + 1], a1i = im[i] - im[i + 1];
@@ -728,24 +997,7 @@ void fftRadix2(double * re, double * im, int n, const double * stRe,
     for (int len = 8; len <= n; len <<= 1) ++stages;
     int len = 8;
     if (stages & 1) {
-        const int half = len >> 1;
-        const double * wr = stRe + half - 1;
-        const double * ws = stIm + half - 1;
-        for (int i = 0; i < n; i += len) {
-            double * ar = re + i;
-            double * ai = im + i;
-            double * br = re + i + half;
-            double * bi = im + i + half;
-            for (int k = 0; k < half; ++k) {
-                const double c = wr[k], s = sgn * ws[k];
-                const double tr = c * br[k] - s * bi[k];
-                const double ti = c * bi[k] + s * br[k];
-                br[k] = ar[k] - tr;
-                bi[k] = ai[k] - ti;
-                ar[k] += tr;
-                ai[k] += ti;
-            }
-        }
+        one(re, im, n, len >> 1, stRe, stIm, sgn);
         len <<= 1;
     }
     for (; len <= n; len <<= 2) pair(re, im, n, len >> 1, stRe, stIm, sgn);
@@ -1165,7 +1417,9 @@ void Channel::configure(const Config & cfg) {
         m_bMag.assign((size_t)kBodyFrames * (size_t)nb, 0.0);
         m_bXRe.assign((size_t)kBodyFrames * (size_t)nk, 0.0);
         m_bXIm.assign((size_t)kBodyFrames * (size_t)nk, 0.0);
-        m_bMed.assign((size_t)(2 * m_bHalf + 1), 0.0);
+        // One place of pad either side: sortedReplace()'s vector paths load
+        // one past each end of the window and discard it.
+        m_bMed.assign((size_t)(2 * m_bHalf + 1) + 2, 0.0);
 
         const double twoPi = 6.283185307179586;
         for (int i = 0; i < N; ++i) {            // periodic Hann, as scipy's
@@ -1242,7 +1496,9 @@ void Channel::configure(const Config & cfg) {
         m_fMag.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
         m_fXRe.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
         m_fXIm.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
-        m_fSorted.assign((size_t)m_fNb * (size_t)cfg.fineM, 0.0);
+        // One place of pad either side of the windows: the vector paths of
+        // sortedReplace() load one past each end and discard it.
+        m_fSorted.assign((size_t)m_fNb * (size_t)cfg.fineM + 2, 0.0);
         m_fQ.assign((size_t)m_fQSlots * (size_t)m_fNb, 0.0);
         m_fE.assign((size_t)m_fESlots, 0.0);
         m_fSeg.assign((size_t)(2 * m_fW + 1), 0.0);
@@ -1961,7 +2217,7 @@ void Channel::bodyHop(uint64_t start) {
             re[rev[i]] = y[at & mask] * win[2 * i];
             im[rev[i]] = y[(at + 1) & mask] * win[2 * i + 1];
         }
-        fftRadix2(re, im, M, &m_bStRe[0], &m_bStIm[0], false, g_kernels->fftPair);
+        fftRadix2(re, im, M, &m_bStRe[0], &m_bStIm[0], false, g_kernels->fftPair, g_kernels->fftOne);
         // X[k] = E + e^(-2 pi i k / N) O, with E and O the transforms of the
         // even and odd samples: (Z[k] + Z*[M-k]) / 2 and (Z[k] - Z*[M-k]) / 2i.
         const int slot = m_bSlot;
@@ -1994,7 +2250,10 @@ void Channel::bodyHop(uint64_t start) {
             const double * ci = &m_bXIm[(size_t)cs * (size_t)nk];
             const double cap = 1.0 - m_cfg.bodyFloor;
             const int w = 2 * m_bHalf + 1;
-            for (int i = 0; i < M; ++i) { re[i] = 0.0; im[i] = 0.0; }
+            // memset, not a loop: a zero double is all zero bits, and this
+            // is a thousand of them a hop.
+            memset(re, 0, (size_t)M * sizeof(double));
+            memset(im, 0, (size_t)M * sizeof(double));
             bool any = false;
             for (int k = m_bK0; k <= m_bK1; ++k) {
                 const int b = k - m_bM0;
@@ -2004,25 +2263,15 @@ void Channel::bodyHop(uint64_t start) {
                 // Non-tonal: the median across ~370 Hz of the frame cut. The
                 // window slides one bin a step, so it is kept sorted and one
                 // value displaced - the same median a fresh selection finds,
-                // for a quarter of the time. The scan for the value leaving
-                // compares magnitudes exactly: they are the window's own copies,
-                // and it is bounded, so a NaN that never compares equal costs
-                // a wrong median rather than a walk off the end.
-                double * m = &m_bMed[0];
+                // for a quarter of the time. sortedReplace() finds where the
+                // value leaving sits by counting what is below it, which is
+                // exact: the window holds its own copies of these magnitudes.
+                double * m = &m_bMed[1];        // a pad either side
                 if (k == m_bK0) {
                     for (int t = 0; t < w; ++t) m[t] = f[2][b - m_bHalf + t];
                     std::sort(m, m + w);
                 } else {
-                    const double out = f[2][b - 1 - m_bHalf];
-                    const double in  = f[2][b + m_bHalf];
-                    int j = 0;
-                    while (j < w - 1 && m[j] != out) ++j;
-                    if (in >= out) {
-                        while (j + 1 < w && m[j + 1] < in) { m[j] = m[j + 1]; ++j; }
-                    } else {
-                        while (j > 0 && m[j - 1] > in) { m[j] = m[j - 1]; --j; }
-                    }
-                    m[j] = in;
+                    sortedReplace(m, w, f[2][b - 1 - m_bHalf], f[2][b + m_bHalf]);
                 }
                 const double p = m[m_bHalf];
                 const double h2 = h * h, p2 = p * p;
@@ -2043,7 +2292,7 @@ void Channel::bodyHop(uint64_t start) {
                 any = true;
             }
             if (any) {
-                fftRadix2(re, im, M, &m_bStRe[0], &m_bStIm[0], true, g_kernels->fftPair);
+                fftRadix2(re, im, M, &m_bStRe[0], &m_bStIm[0], true, g_kernels->fftPair, g_kernels->fftOne);
                 const double g = 1.0 / ((double)N * m_bNorm);
                 double * r = &m_bR[0];
                 const uint64_t from = start - 2 * (uint64_t)H;
@@ -2056,55 +2305,6 @@ void Channel::bodyHop(uint64_t start) {
         }
     }
 
-}
-
-//! The q quantile of n sorted values, as numpy's default (linear) finds it:
-//! the values at floor and ceil of q (n - 1), interpolated.
-static double sortedQuantile(const double * v, int n, double q) {
-    const double pos = q * (double)(n - 1);
-    int lo = (int)floor(pos);
-    if (lo < 0) lo = 0;
-    if (lo > n - 1) lo = n - 1;
-    const double frac = pos - (double)lo;
-    if (!(frac > 0.0) || lo + 1 >= n) return v[lo];
-    return v[lo] + frac * (v[lo + 1] - v[lo]);
-}
-
-//! In a sorted window of n values, replace `out` - which must be one of them,
-//! as it is the window's own copy - with `in`, keeping it sorted. Where each
-//! goes is a count, not a search: `out` is at the number of values below it
-//! (the first of any equal to it), and `in` goes in at the number below it
-//! among the others. Scanning and shifting a step at a time instead
-//! mispredicted, and was most of the stage's cost. A NaN counts below
-//! nothing, so it costs a wrong quantile, not a write outside the window.
-static void sortedReplace(double * m, int n, double out, double in) {
-    int jo = 0, ji = 0;
-#if DECLICK_SSE2
-    if ((n & 1) == 0) {
-        const __m128d vo = _mm_set1_pd(out), vi = _mm_set1_pd(in);
-        __m128i co = _mm_setzero_si128(), ci = _mm_setzero_si128();
-        for (int i = 0; i < n; i += 2) {
-            const __m128d v = _mm_loadu_pd(m + i);
-            co = _mm_sub_epi64(co, _mm_castpd_si128(_mm_cmplt_pd(v, vo)));
-            ci = _mm_sub_epi64(ci, _mm_castpd_si128(_mm_cmplt_pd(v, vi)));
-        }
-        co = _mm_add_epi64(co, _mm_unpackhi_epi64(co, co));
-        ci = _mm_add_epi64(ci, _mm_unpackhi_epi64(ci, ci));
-        jo = _mm_cvtsi128_si32(co);
-        ji = _mm_cvtsi128_si32(ci);
-    } else
-#endif
-    for (int i = 0; i < n; ++i) {
-        jo += (m[i] < out);
-        ji += (m[i] < in);
-    }
-    ji -= (out < in);               // `out` itself is not among the others
-    if (jo > n - 1) jo = n - 1;     // only if `out` was not there after all
-    if (ji > n - 1) ji = n - 1;
-    if (ji < 0) ji = 0;
-    for (int i = jo; i < ji; ++i) m[i] = m[i + 1];
-    for (int i = jo; i > ji; --i) m[i] = m[i - 1];
-    m[ji] = in;
 }
 
 //! The newest frame starts at sample `start` of the stage's input, and the
@@ -2140,7 +2340,7 @@ void Channel::fineHop(uint64_t start) {
         re[rev[i]] = y[(size_t)(start + (uint64_t)i) & mask] * win[i];
         im[rev[i]] = 0.0;
     }
-    fftRadix2(re, im, N, &m_fStRe[0], &m_fStIm[0], false, g_kernels->fftPair);
+    fftRadix2(re, im, N, &m_fStRe[0], &m_fStIm[0], false, g_kernels->fftPair, g_kernels->fftOne);
     const uint64_t f = m_fFrame++;
     const size_t nbs = (size_t)nb;
     const size_t sl = (size_t)(f % (uint64_t)S) * nbs;
@@ -2168,7 +2368,7 @@ void Channel::fineHop(uint64_t start) {
     const double q = m_cfg.fineQ;
     const uint64_t QS = (uint64_t)m_fQSlots;
     const double * mag = &m_fMag[sl];
-    double * srt = &m_fSorted[0];
+    double * srt = &m_fSorted[1];       // one place of pad either side
     double * qNew = &m_fQ[(size_t)(f % QS) * nbs];
     if (m_fHist == Mf) {
         for (int j = 0; j < Mf; ++j) {
@@ -2182,11 +2382,9 @@ void Channel::fineHop(uint64_t start) {
         }
     } else {
         const double * gone = &m_fMag[(size_t)((f - (uint64_t)Mf) % (uint64_t)S) * nbs];
-        for (int b = 0; b < nb; ++b) {
-            double * w = srt + (size_t)b * (size_t)Mf;
-            sortedReplace(w, Mf, gone[b], mag[b]);
-            qNew[b] = sortedQuantile(w, Mf, q);
-        }
+        g_kernels->sortedRow(srt, Mf, nb, gone, mag);
+        for (int b = 0; b < nb; ++b)
+            qNew[b] = sortedQuantile(srt + (size_t)b * (size_t)Mf, Mf, q);
     }
     if (m_fHist < 2 * D + 1) return;
 
@@ -2209,9 +2407,17 @@ void Channel::fineHop(uint64_t start) {
         const int n = 2 * W + 1;
         double * seg = &m_fSeg[0];
         double mean = 0.0;
+        // The window is consecutive in the ring, so one remainder finds its
+        // start and the rest step. m_fESlots is not a power of two, and the
+        // remainder of a uint64 by it is a hardware divide: at ~25 cycles and
+        // one per frame of the window, that was the largest single cost in
+        // the guard, and most of its 100 cycles a sample.
+        const double * eRing = &m_fE[0];
+        size_t ei = (size_t)((c - (uint64_t)W) % (uint64_t)m_fESlots);
         for (int i = 0; i < n; ++i) {
-            seg[i] = m_fE[(size_t)((c - (uint64_t)W + (uint64_t)i) % (uint64_t)m_fESlots)];
+            seg[i] = eRing[ei];
             mean += seg[i];
+            if (++ei == (size_t)m_fESlots) ei = 0;
         }
         mean /= (double)n;
         double den = 0.0;
@@ -2229,7 +2435,8 @@ void Channel::fineHop(uint64_t start) {
     }
 
     const double alpha = m_cfg.fineAlpha, floorG = m_cfg.fineFloor;
-    for (int i = 0; i < N; ++i) { re[i] = 0.0; im[i] = 0.0; }
+    memset(re, 0, (size_t)N * sizeof(double));
+    memset(im, 0, (size_t)N * sizeof(double));
     bool any = false;
     for (int b = 0; b < nb; ++b) {
         const double h = dmax(qBefore[b], qAfter[b]);
@@ -2252,7 +2459,7 @@ void Channel::fineHop(uint64_t start) {
         any = true;
     }
     if (!any) return;
-    fftRadix2(re, im, N, &m_fStRe[0], &m_fStIm[0], true, g_kernels->fftPair);
+    fftRadix2(re, im, N, &m_fStRe[0], &m_fStIm[0], true, g_kernels->fftPair, g_kernels->fftOne);
     const double g = 1.0 / ((double)N * m_fNorm);
     double * r = &m_bR[0];
     const uint64_t from = start - (uint64_t)D * (uint64_t)H;
