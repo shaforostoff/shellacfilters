@@ -1314,6 +1314,7 @@ void Channel::configure(const Config & cfg) {
 
     m_win.assign(need, 0.0);
     m_dry.assign(need, 0.0);
+    m_full.assign(need, 0.0);
     m_flag.assign(need, 0);
     m_fwd.assign(need, 0.0);
     m_bwd.assign(need, 0.0);
@@ -1545,7 +1546,7 @@ void Channel::configure(const Config & cfg) {
 }
 
 size_t Channel::heapBytes() const {
-    return (m_win.capacity() + m_dry.capacity() + m_fwd.capacity()
+    return (m_win.capacity() + m_dry.capacity() + m_full.capacity() + m_fwd.capacity()
             + m_bwd.capacity() + m_det.capacity() + m_a.capacity()
             + m_ra.capacity() + m_aa.capacity() + m_pvar.capacity() + m_sinv.capacity()
             + m_madRing.capacity() + m_scratch.capacity()
@@ -1580,6 +1581,7 @@ bool Channel::retune(const Config & cfg) {
 void Channel::reset() {
     std::fill(m_win.begin(), m_win.end(), 0.0);
     std::fill(m_dry.begin(), m_dry.end(), 0.0);
+    std::fill(m_full.begin(), m_full.end(), 0.0);
     std::fill(m_flag.begin(), m_flag.end(), (uint8_t)0);
     std::fill(m_madRing.begin(), m_madRing.end(), 0.0);
     m_madPos = 0;
@@ -1960,8 +1962,10 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
     // ctx >= order. aa[0] carries the ridge, but lag 0 is the sample itself,
     // which is never a known one. The sums run in a different order, so this
     // differs from the filter in the last bits.
+    // The known samples come from m_full, not m_win: a neighbour's half
+    // repair is no context to solve against. See m_full.
     m_rhs.assign((size_t)m, 0.0);
-    const double * win = &m_win[0];
+    const double * win = &m_full[0];
     for (int j = 0; j < m; ++j) {
         const int c = s + j;
         double v = 0.0;
@@ -2018,6 +2022,7 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
         // A re-repair subtracts from what was actually there, not from the
         // earlier repair - which stays put if this one cannot be done.
         const double x = again ? m_dry[s + j] : m_win[s + j];
+        const double xf = again ? m_dry[s + j] : m_full[s + j];
         const double dj = x - v;
 
         // The Wiener gain reduces to 1 wherever the discrepancy dwarfs the
@@ -2031,6 +2036,7 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
         }
         if (w > wcap) w = wcap;
         w += depth * (1.0 - w);   // at depth 1 this is outright replacement
+        if (w > 0.0) m_full[s + j] = xf - w * (xf - v);
         w *= gain;
 
         if (w > 0.0) {
@@ -2091,6 +2097,7 @@ void Channel::pushOne(double v) {
     if (!finite(v)) v = 0.0;
     m_win[(size_t)m_fill] = v;
     m_dry[(size_t)m_fill] = v;
+    m_full[(size_t)m_fill] = v;
     m_flag[(size_t)m_fill] = 0;
     ++m_fill;
     ++m_seen;
@@ -2124,6 +2131,7 @@ void Channel::pushOne(double v) {
     const size_t keep = (size_t)(m_fill - blk);
     memmove(&m_win[0], &m_win[(size_t)blk], sizeof(double) * keep);
     memmove(&m_dry[0], &m_dry[(size_t)blk], sizeof(double) * keep);
+    memmove(&m_full[0], &m_full[(size_t)blk], sizeof(double) * keep);
     memmove(&m_flag[0], &m_flag[(size_t)blk], sizeof(uint8_t) * keep);
     m_fill -= blk;
     m_fitLen = 0;                 // the next fit is of a different window
