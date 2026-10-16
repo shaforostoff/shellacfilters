@@ -616,7 +616,9 @@ private:
     std::vector<int>    m_bRev;            //!< bit reversal of N/2
     std::vector<double> m_bMag;            //!< kBodyFrames x (m_bM1-m_bM0+1)
     std::vector<double> m_bXRe, m_bXIm;    //!< kBodyFrames x (m_bK1-m_bK0+1)
-    std::vector<double> m_bMed;            //!< the median's window, kept sorted
+    //! The median's window, kept sorted, with one place of pad either side
+    //! for sortedReplace()'s vector paths.
+    std::vector<double> m_bMed;
     //! Strong runs per repair block, and the rate over bodyRateWin, as rings.
     std::vector<int>    m_bCount;
     std::vector<double> m_bRate;
@@ -652,7 +654,7 @@ private:
     std::vector<double> m_fXRe, m_fXIm;    //!< m_fSlots x m_fNb
     //! Per bin, the magnitudes of the last fineM frames, kept sorted: a hop
     //! moves one value out and one in.
-    std::vector<double> m_fSorted;   //!< m_fNb x fineM
+    std::vector<double> m_fSorted;   //!< m_fNb x fineM, a place of pad either side
     //! The fineQ quantile of each window of fineM frames, by the frame that
     //! ends it: frame f in row f % m_fQSlots. The windows before and after
     //! the cut frame are two of these, fineM + 1 frames apart, so each window

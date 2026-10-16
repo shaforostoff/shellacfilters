@@ -300,7 +300,8 @@ The [fine stage](#the-top-band-of-dense-crackle-the-fine-stage) runs under the
 same key. Shut, it costs nothing measurable; open on *Cuatro*, it takes the
 same build from 153× to 106× with AVX2 and from 85× to 66× with SSE2. Those
 are other runs on a different day, so set them against each other, not
-against the figures above. The Mac figures below predate it.
+against the figures above. The Mac table below is of the body stage alone;
+the one after it has the fine stage on.
 
 On the Macs, with the body stage included, the three builds taking turns:
 
@@ -324,6 +325,28 @@ With it shut, on *Serenata*, it costs 0–5 % on the M1 at orders 32–256. On
 the Haswell a separate fifteen-round run put that at 12 %, 9 % and 6 % at
 orders 32, 64 and 128. That is a fixed cost per sample, so it weighs more
 the cheaper the core is.
+
+With the fine stage on as well, over the same two clips, before and after
+[what came off it](#what-the-fine-stage-costs-and-what-came-off-it):
+
+| | M1, NEON | M1, baseline | 2014 MacBook Pro, AVX2 | MacBook Pro, SSE2 |
+| --- | --- | --- | --- | --- |
+| *Serenata*, 60 s stereo, as the stage was first committed (`8e3b00387`) | 60.9× | 22.6× | 38.5× | 20.9× |
+| … now | **62.1×** | 22.8× | **40.4×** | 22.0× |
+| *Cuatro compases*, 154 s mono 48 kHz, as first committed | 79.2× | 35.2× | 47.6× | 29.1× |
+| … now | **80.4×** | 35.7× | **51.4×** | 30.5× |
+
+Order 128, best of seven on the M1 and of nine on the MacBook Pro, the two
+builds taking turns. These are measured in process, over `push`/`pull` in
+1024-frame blocks, so unlike the figures above they leave out the file I/O —
+set them against each other rather than against the table before them. The
+gain is 7.5 % on the Haswell with AVX2, 4.7 % with SSE2 and 1.8 % on the M1;
+at order 64 it is 9.4 % and 4.3 %, because what came off is a fixed cost per
+sample and the core it sits beside is cheaper there. The Haswell gains most
+because what it was losing was branch mispredictions, which an M1 is far
+better at hiding. **Every output is byte-identical** to what the same build
+produced before, on both machines and with either kernel set: what changed is
+how the work is laid out, not the arithmetic.
 Latency ~94 ms (4144 samples at 44.1 kHz, ~70 ms of it the body stage),
 reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
@@ -1417,6 +1440,80 @@ it adds 24 % with AVX2. Of that, the voice guard is about a sixth.
 * **Output.** The first three leave it to the bit what it was. The cap changes
   it only above 20 kHz; `--fine-hi 100000` gives back the uncapped output to
   the bit.
+
+#### What the fine stage costs, and what came off it
+
+Even after those changes the stage was a third of the whole declicker. On
+*Cuatro compases* with AVX2 it took **475 of the 1475 cycles a sample** the
+2014 MacBook Pro spends (counted off its invariant timer, so at its nominal
+2.4 GHz). That is not because any one piece of it is heavy: it is that its
+frames are 128 points at a hop of N/4, so it runs **sixteen times as often as
+the body stage**, whose frames are 2048. Everything it does, it does every
+32 samples.
+
+Where those 475 cycles went, per input sample:
+
+| | cycles | |
+| --- | --- | --- |
+| the sorted windows, one value out and one in for each of 42 bins | 148 | 31 % |
+| the cut, the packing and the inverse transform | 129 | 27 % |
+| the voice guard | 100 | 21 % |
+| the windowed load and the forward transform | 81 | 17 % |
+| the magnitudes | 18 | 4 % |
+
+Nearly all of the first row was **the move, not the ranking**: of its 148
+cycles, 97 were the two loops that shift the window by one place. Their trip
+count is one or two and depends on the data, so each of their guards
+mispredicted about half the time — about 74 cycles a window for three or four
+moves of a double. They are now one predicated pass over the window, which
+costs a few more moves and no branches and vectorises (`sortedMove`).
+
+That left the row **latency-bound rather than busy**: each window's ranks
+reach its own move through a vector-to-register-to-vector round trip, and
+nothing in that window can start until they do, so a window cost 71 cycles
+against the dozen its uops take. The ranks for a tile of sixteen windows are
+now counted first and the moves made after, so each window's latency is
+covered by the next window's counting (`sortedRowAvx2`). Together: **148
+cycles to 76**.
+
+Three smaller things, in order of what they were worth:
+
+* **The odd stage out of the FFT had no kernel.** `fftRadix2` takes its stages
+  two at a time, and at 128 points there are five, so one of them ran alone in
+  scalar code — twice a hop, forward and inverse, and the only scalar stage
+  left. It is now `fftOne`, with an AVX2 kernel that is `fftPairAvx2`'s
+  butterfly: multiply and add, never FMA, so it is the scalar one to the bit.
+  Worth 1.5 %.
+* **The body stage's sliding median** found the value leaving by scanning for
+  an exact match and then shifted with the same two branchy loops. It now
+  shares `sortedReplace`, counting instead of searching. The median is the
+  same to the bit — the window holds its own copies of these magnitudes, so
+  counting what is below a value finds the first place equal to it, and equal
+  doubles are indistinguishable. End to end it is inside the noise on both
+  Macs (±0.6 %), but a mispredicting scan is gone from the body stage too.
+* **The voice guard read its window with a remainder per frame.** Its ring is
+  74 long, not a power of two, so each of the 73 reads was a 64-bit hardware
+  divide. One remainder finds the window's start and the rest step. Worth
+  0.3 %, which is less than the instruction count suggests: the loop is bound
+  by the scattered reads, not the divides.
+
+And two that were tried, measured and dropped:
+
+* **Lane masks from a table** instead of index comparisons in the move, to
+  keep it off the one vector port its blend also wants: 1.6 % *slower* on the
+  Haswell, where it just moved the pressure onto the load ports, and 0.5 %
+  faster on the M1 — not enough for a 2 kB table and a second code path.
+* **Counting the ranks through `movemask` and a popcount table** rather than
+  adding in the vector registers: 34 cycles a sample against 27. Shortening
+  the reduction at the end did not pay for a GPR load per step, and once the
+  row was tiled the reduction was not on anybody's critical path any more.
+
+**What is still there.** The forward and inverse transforms are about 100 of
+the remaining cycles, and both are full 128-point complex transforms of real
+data. Packing them as 64-point complex ones, the way the body stage already
+transforms its 2048 real samples as 1024 complex ones, would roughly halve
+that — perhaps 4–5 % end to end on *Cuatro*. Unlike everything above it would
+change the output in the last bits, so it has not been done.
 
 ---
 
