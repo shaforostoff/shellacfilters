@@ -296,6 +296,11 @@ throughout: the stage changes 98% of the song's 512-sample blocks, against 78%
 before the key was [held for 2 s](#the-body-of-dense-crackle-the-body-stage).
 There that is 184× → 154× and 97× → 87× realtime, best of seven runs
 interleaved. Before the stage's speed-ups it was 185× → 132× and 99× → 83×.
+The [fine stage](#the-top-band-of-dense-crackle-the-fine-stage) runs under the
+same key. Shut, it costs nothing measurable; open on *Cuatro*, it takes the
+same build from 153× to 106× with AVX2 and from 85× to 66× with SSE2. Those
+are other runs on a different day, so set them against each other, not
+against the figures above. The Mac figures below predate it.
 
 On the Macs, with the body stage included, the three builds taking turns:
 
@@ -1285,6 +1290,133 @@ The 2 s release keeps the key open on more of *Cuatro*, and the stage costs
 more there for it. On the Zen 4, alternating the two in two runs of seven and
 nine rounds, the stage cost +18–19 % over the core with AVX2 without the
 release and +20–22 % with it, and +10 % and +12 % with SSE2.
+
+### The top band of dense crackle: the fine stage
+
+**What was left.** Four of Tanturi's sample-aligned commercial pairs were the
+test: *Recuerdo* (1941), *Voz de tango* (1942), *Viejo ciego* (1946) and
+*Tu olvido* (1946, 96 kHz). The commercial version's removal is impulsive in
+every band, with 75–97 % of its energy in 5 % of the samples, where Gaussian
+noise would have 28 %. Above 6 kHz our output was as loud as the commercial
+version's whole content of that band, and on *Recuerdo* 3 dB louder. There
+the music is weak and the crackle is not. On *Viejo ciego* and *Tu olvido*
+each crackle leaves a burst of ringing 1–2 ms long, 5–10 times the floor
+between bursts. The detector repairs the largest; the commercial version takes
+nearly all of them.
+
+**By ear.** On *Tu olvido*, of our output with one band of the commercial
+version swapped in, only the band above 4 kHz was heard as clean.
+
+**The stage** (`Config::fine`). An STFT of the repaired audio, with frames of
+~2.9 ms (128 samples at 44.1 and 48 kHz, 256 at 96 kHz), hop N/4 and a
+square-root Hann either side. Each bin from 4.5 kHz to 20 kHz is clipped to
+twice its background, and never cut by more than 18 dB.
+
+* **The background** is the louder of two 20th percentiles of the bin's
+  magnitude: over the 16 frames before and over the 16 after, ~12 ms each.
+  A median fails, because the bursts come every ~4 ms and the median is made
+  of them. The louder side is used so that an onset or a release is not cut.
+* **The voice guard.** A voice's top band, and a reed's, also comes in bursts:
+  one per glottal pulse or reed closure, every 4–8 ms. The clip cannot tell
+  those from crackle. So below 8 kHz the cut backs off as far as the 4.5–8 kHz
+  envelope repeats with a period of 2.5–12 ms. That is measured as its
+  normalised autocorrelation over ±24 ms at the best lag. At 0.1 the back-off
+  begins, and at 0.3 there is no cut below 8 kHz at all. Above 8 kHz a voice on
+  shellac has little, and the clip stays as it is.
+* **It runs alongside the body stage**, on the same repaired audio, and adds
+  to what that stage removes. The two bands do not meet. Run after the body
+  stage instead, the result differs by 30–34 dB less than what it removes.
+* **The key.** It is gated by the body stage's key. Where that is shut it does
+  no transforms and subtracts nothing, so the Malvon master, *Olga* and
+  *El Marne* come out bit-identical, as do the `.flac` of *La tablada* and
+  everything else whose key never opens.
+* **Latency.** Its delay is a frame and the larger of 16 hops and the guard's
+  24 ms: 1183 samples at 44.1 kHz. That fits inside the body stage's 3072, so
+  it adds none.
+* **Off.** `declick_cli --fine 0` gives the previous output to the bit, and
+  the stage is off whenever the body stage is. `--fine-mid 0` turns off only
+  the voice guard.
+
+Over whole songs, the distance to the commercial version in 4.5–8 / 8–16 kHz
+(lower is closer):
+
+| | key open | without | with | the stage takes |
+|---|---|---|---|---|
+| *Recuerdo* | 99 % | −3.9 / +2.2 dB | −4.1 / +0.8 dB | −46.7 dB |
+| *Voz de tango* | 52 % | −3.5 / +0.1 dB | −3.5 / −0.2 dB | −49.9 dB |
+| *Viejo ciego* | 25 % | −5.7 / 0.0 dB | −5.7 / −0.2 dB | −65.1 dB |
+| *Tu olvido* | 99 % | −8.1 / −0.8 dB | −8.5 / −3.4 dB | −43.5 dB |
+
+The last column is against the whole song.
+
+**Chosen by ear**, in three rounds on *Tu olvido*:
+
+1. **The clip's strength.** The Python prototype was heard at twice and at
+   1.5 times the background, with no guard. Twice, the gentler, was heard as
+   good on a 15 s clip.
+2. **The guard.** Built in and heard over the whole song, that version split
+   the vocals. In the most strongly voiced seconds the commercial version
+   leaves 4.5–8 kHz almost alone, −0.6 and −1.7 dB against the original. The
+   unguarded stage took enough there to push the energy it cut below the
+   commercial version's from −14 to −8 dB of that band.
+3. **The setting.** Three ways of sparing the voice were heard, and all kept
+   it whole:
+   * starting the stage at 8 kHz;
+   * backing off from a periodicity of 0.3 to 0.6;
+   * the same from 0.2 to 0.4.
+
+   Starting at 8 kHz left crackle the back-offs took. Asked for the least
+   destructive back-off that still takes it, the default is softer still,
+   0.1 to 0.3. A fourth way was measured but not heard: a pitch-aware
+   background, keeping a bin as loud as it was one or two periods away. It
+   traded no better than backing off.
+
+On *Tu olvido*, with the stage, our version was heard as much better than the
+commercial one.
+
+Over the whole of *Tu olvido* in 4.5–8 kHz, against the commercial version:
+
+| | taken below its level | left above it |
+|---|---|---|
+| no stage | −14.4 dB | −5.7 dB |
+| unguarded | −9.1 dB | −9.1 dB |
+| guard, 0.2 to 0.4 | −12.0 dB | −6.7 dB |
+| guard, 0.1 to 0.3 (the default) | −13.4 dB | −6.1 dB |
+
+The C++ stage matches the prototype to 103–106 dB below what it removes.
+
+**What it takes elsewhere.** Of the dehum reference transfers, *Cachirulo*'s
+`.m4a` has the key open 99 % of the time. The stage takes −52 dB of it, and
+−25 dB of its band above 4.5 kHz. *La tablada*'s `.m4a` and *Cachirulo*'s
+`.flac` change by −76 and −64 dB, and *La tablada*'s `.flac` not at all.
+Unkeyed, the stage without its guard would take 16 dB of the Malvon master's
+6–12 kHz band, which is why it has to stay behind the key.
+
+**Not reached.** *Viejo ciego*'s key is open only 25 % of the time. Its rate
+of strong runs, 39 a second at 6σ, is that of *El Marne* (38). So a key of its
+own that opens there but stays shut on *El Marne* was not found. The 1–4 kHz
+bumps on *Viejo ciego* and *Tu olvido* are still left. The core does trigger
+on them, but its runs cover only their sharpest samples. An AR model fitted on
+the crackly audio treats the rest of each bump as music. Fitted on the
+commercial version instead, the same detector finds 93–97 % of them at the
+false-alarm rate where it now finds 62–79 %.
+
+**Cost.** With the key shut it costs nothing measurable. On *Cuatro
+compases*, where the key is open throughout, it adds 44 % with AVX2 and 28 %
+with SSE2 on the Zen 4, best of seven interleaved. On *Tu olvido* at 96 kHz
+it adds 24 % with AVX2. Of that, the voice guard is about a sixth.
+
+* **What was done about it.** As first written it made *Cuatro* five times
+  slower. The changes:
+  * The key is read once per repair block, not per hop.
+  * Each window of 16 frames is ranked once, not twice.
+  * Each bin's window is kept sorted, one value out and one in a hop. The
+    positions are found by counting rather than searching.
+  * The guard's autocorrelation uses the core's vector inner product.
+  * The band stops at 20 kHz, which at 96 kHz leaves a third of the bins.
+* **Output.** The first three leave it to the bit what it was. The cap changes
+  it only above 20 kHz; `--fine-hi 100000` gives back the uncapped output to
+  the bit.
 
 ---
 

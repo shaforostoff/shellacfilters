@@ -804,6 +804,18 @@ int Config::bodyDelay(int n) {
     return b * ((n + n / 2 - 1 + b - 1) / b);
 }
 
+// Frames per second at hop n/4, and from it the window as the prototype
+// computes it, operation for operation, so the two agree on its length.
+int Config::fineWindow(int n) const {
+    const double fs = rate / (double)(n / 4);
+    return (int)(24.0 * 1e-3 * fs);
+}
+
+int Config::fineDelay(int n) const {
+    const int w = fineWindow(n);
+    return (w > fineM) ? w : fineM;
+}
+
 void Config::compute(const Params & pIn, double sampleRate) {
     Params p = pIn;
     p.sanitize();
@@ -859,6 +871,21 @@ void Config::compute(const Params & pIn, double sampleRate) {
     }
     bodyLatency = body ? bodyDelay(bodyN) : 0;
     latency = pad + (int)kBlock + bodyLatency;
+
+    // The fine stage's frames span ~2.9 ms at any rate: the power of two
+    // nearest 0.0029 * rate. A sample is final once the frame D hops after
+    // the last one covering it has arrived, D * N/4 + N - 1 samples later, D
+    // the larger of fineM and the voice guard's 24 ms. That has to fit inside
+    // the body stage's delay, as the two share it. It does at every rate, by
+    // a factor of two or more; the loop is a guard.
+    {
+        const double want = 0.0029 * sampleRate;
+        int n = 16;
+        while (n < 4096 && want >= 1.4142135623730951 * (double)n) n *= 2;
+        if (fineM < 1) fineM = 1;
+        while (n > 16 && fineDelay(n) * (n / 4) + n - 1 > bodyDelay(bodyN)) n /= 2;
+        fineN = n;
+    }
 
     // The envelope the buffers are sized from. Same clamps as maxRun above, but
     // at Params::sanitize()'s 20 ms ceiling and kMaxOrder, so no parameter
@@ -1178,6 +1205,71 @@ void Channel::configure(const Config & cfg) {
         m_bKey.assign((size_t)nRelease, 0.0);
     }
 
+    // The fine stage, sized from fineN and fineM - so from the sample rate -
+    // and allocated whether or not it is on, like the body stage.
+    {
+        const int N = cfg.fineN;
+        m_fN = N;
+        m_fH = N / 4;
+        const double binHz = cfg.rate / (double)N;
+        m_fK0 = (int)ceil(cfg.fineLo / binHz);
+        if (m_fK0 < 1) m_fK0 = 1;
+        int k1 = (int)floor(cfg.fineHi / binHz);
+        if (k1 > N / 2) k1 = N / 2;
+        m_fNb = (m_fK0 <= k1) ? (k1 - m_fK0 + 1) : 0;   // an empty band: no cut
+        int kMid = (int)ceil(cfg.fineMid / binHz);
+        m_fNbLow = kMid - m_fK0;
+        if (m_fNbLow < 0) m_fNbLow = 0;
+        if (m_fNbLow > m_fNb) m_fNbLow = m_fNb;
+        // The voice guard's window and lags, as the prototype computes them:
+        // +-24 ms, and periods of 2.5 to 12 ms, in frames.
+        const double fs = cfg.rate / (double)m_fH;
+        m_fW = cfg.fineWindow(N);
+        m_fLmin = (int)(0.0025 * fs);
+        if (m_fLmin < 2) m_fLmin = 2;
+        m_fLmax = (int)(0.012 * fs);
+        if (m_fLmax > 2 * m_fW) m_fLmax = 2 * m_fW;
+        m_fD = cfg.fineDelay(N);
+        m_fSlots = m_fD + 2;
+        m_fQSlots = m_fD + 2;
+        m_fESlots = m_fD + m_fW + 2;
+        m_fWin.assign((size_t)N, 0.0);
+        m_fRe.assign((size_t)N, 0.0);
+        m_fIm.assign((size_t)N, 0.0);
+        m_fStRe.assign((size_t)N, 0.0);
+        m_fStIm.assign((size_t)N, 0.0);
+        m_fRev.assign((size_t)N, 0);
+        m_fMag.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
+        m_fXRe.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
+        m_fXIm.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
+        m_fSorted.assign((size_t)m_fNb * (size_t)cfg.fineM, 0.0);
+        m_fQ.assign((size_t)m_fQSlots * (size_t)m_fNb, 0.0);
+        m_fE.assign((size_t)m_fESlots, 0.0);
+        m_fSeg.assign((size_t)(2 * m_fW + 1), 0.0);
+
+        const double twoPi = 6.283185307179586;
+        double norm = 0.0;
+        for (int i = 0; i < N; ++i) {            // square root of the periodic Hann
+            m_fWin[(size_t)i] = sqrt(0.5 - 0.5 * cos(twoPi * (double)i / (double)N));
+        }
+        for (int i = 0; i < N; i += m_fH) norm += m_fWin[(size_t)i] * m_fWin[(size_t)i];
+        m_fNorm = (norm > 0.0) ? norm : 1.0;
+        for (int half = 1; half < N; half <<= 1) {
+            for (int k = 0; k < half; ++k) {
+                const double a = twoPi * (double)k / (double)(2 * half);
+                m_fStRe[(size_t)(half - 1 + k)] = cos(a);
+                m_fStIm[(size_t)(half - 1 + k)] = sin(a);
+            }
+        }
+        int bits = 0;
+        while ((1 << bits) < N) ++bits;
+        for (int i = 0; i < N; ++i) {
+            int r = 0;
+            for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
+            m_fRev[(size_t)i] = r;
+        }
+    }
+
     // The output ring. Between one pull and the next a caller can push maxBlock
     // samples, which emit at most maxBlock + kBlock, on top of the up to kBlock
     // already waiting.
@@ -1200,9 +1292,14 @@ size_t Channel::heapBytes() const {
             + m_bRe.capacity() + m_bIm.capacity() + m_bTwRe.capacity() + m_bTwIm.capacity()
             + m_bStRe.capacity() + m_bStIm.capacity()
             + m_bMag.capacity() + m_bXRe.capacity() + m_bXIm.capacity()
-            + m_bMed.capacity() + m_bRate.capacity() + m_bKey.capacity()) * sizeof(double)
+            + m_bMed.capacity() + m_bRate.capacity() + m_bKey.capacity()
+            + m_fWin.capacity() + m_fRe.capacity() + m_fIm.capacity()
+            + m_fStRe.capacity() + m_fStIm.capacity() + m_fMag.capacity()
+            + m_fXRe.capacity() + m_fXIm.capacity()
+            + m_fSorted.capacity() + m_fQ.capacity()
+            + m_fE.capacity() + m_fSeg.capacity()) * sizeof(double)
            + m_flag.capacity() + m_runs.capacity() * sizeof(int)
-           + (m_bRev.capacity() + m_bCount.capacity()) * sizeof(int);
+           + (m_bRev.capacity() + m_bCount.capacity() + m_fRev.capacity()) * sizeof(int);
 }
 
 bool Channel::retune(const Config & cfg) {
@@ -1248,6 +1345,10 @@ void Channel::reset() {
     m_bRateHave = 0;
     m_bStrong = 0;
     m_bKeyPos = 0;
+    m_bBeta = 0.0;
+    m_fNextHop = (uint64_t)m_fN;
+    m_fHist = 0;
+    m_fFrame = 0;
     // Prime with `pad` zeros so the first real sample lands at window index
     // pad and nothing is dropped off the front of the stream.
     m_fill = m_pad;
@@ -1746,6 +1847,7 @@ void Channel::pushOne(double v) {
         if (m_bRateHave < (int)m_bRate.size()) ++m_bRateHave;
         m_bKey[(size_t)m_bKeyPos] = bodyKey();
         if (++m_bKeyPos >= (int)m_bKey.size()) m_bKeyPos = 0;
+        m_bBeta = bodyBeta();
     }
 
     for (int i = 0; i < blk; ++i) {
@@ -1788,6 +1890,11 @@ void Channel::bodyPush(double y, double d) {
     if (t + 1 == m_bNextHop) {
         m_bNextHop += (uint64_t)m_bH;
         bodyHop(t + 1 - N);
+    }
+    if (t + 1 == m_fNextHop) {
+        m_fNextHop += (uint64_t)m_fH;
+        if (m_cfg.fine) fineHop(t + 1 - (uint64_t)m_fN);
+        else m_fHist = 0;
     }
     const uint64_t D = (uint64_t)m_cfg.bodyLatency;
     if (t >= D) {
@@ -1836,7 +1943,7 @@ void Channel::bodyHop(uint64_t start) {
     const size_t mask = m_bMask;
     const int nb = m_bM1 - m_bM0 + 1;
     const int nk = m_bK1 - m_bK0 + 1;
-    const double beta = (nk > 0) ? bodyBeta() : 0.0;
+    const double beta = (nk > 0) ? m_bBeta : 0.0;
     const double * twRe = &m_bTwRe[0];
     const double * twIm = &m_bTwIm[0];
 
@@ -1949,6 +2056,209 @@ void Channel::bodyHop(uint64_t start) {
         }
     }
 
+}
+
+//! The q quantile of n sorted values, as numpy's default (linear) finds it:
+//! the values at floor and ceil of q (n - 1), interpolated.
+static double sortedQuantile(const double * v, int n, double q) {
+    const double pos = q * (double)(n - 1);
+    int lo = (int)floor(pos);
+    if (lo < 0) lo = 0;
+    if (lo > n - 1) lo = n - 1;
+    const double frac = pos - (double)lo;
+    if (!(frac > 0.0) || lo + 1 >= n) return v[lo];
+    return v[lo] + frac * (v[lo + 1] - v[lo]);
+}
+
+//! In a sorted window of n values, replace `out` - which must be one of them,
+//! as it is the window's own copy - with `in`, keeping it sorted. Where each
+//! goes is a count, not a search: `out` is at the number of values below it
+//! (the first of any equal to it), and `in` goes in at the number below it
+//! among the others. Scanning and shifting a step at a time instead
+//! mispredicted, and was most of the stage's cost. A NaN counts below
+//! nothing, so it costs a wrong quantile, not a write outside the window.
+static void sortedReplace(double * m, int n, double out, double in) {
+    int jo = 0, ji = 0;
+#if DECLICK_SSE2
+    if ((n & 1) == 0) {
+        const __m128d vo = _mm_set1_pd(out), vi = _mm_set1_pd(in);
+        __m128i co = _mm_setzero_si128(), ci = _mm_setzero_si128();
+        for (int i = 0; i < n; i += 2) {
+            const __m128d v = _mm_loadu_pd(m + i);
+            co = _mm_sub_epi64(co, _mm_castpd_si128(_mm_cmplt_pd(v, vo)));
+            ci = _mm_sub_epi64(ci, _mm_castpd_si128(_mm_cmplt_pd(v, vi)));
+        }
+        co = _mm_add_epi64(co, _mm_unpackhi_epi64(co, co));
+        ci = _mm_add_epi64(ci, _mm_unpackhi_epi64(ci, ci));
+        jo = _mm_cvtsi128_si32(co);
+        ji = _mm_cvtsi128_si32(ci);
+    } else
+#endif
+    for (int i = 0; i < n; ++i) {
+        jo += (m[i] < out);
+        ji += (m[i] < in);
+    }
+    ji -= (out < in);               // `out` itself is not among the others
+    if (jo > n - 1) jo = n - 1;     // only if `out` was not there after all
+    if (ji > n - 1) ji = n - 1;
+    if (ji < 0) ji = 0;
+    for (int i = jo; i < ji; ++i) m[i] = m[i + 1];
+    for (int i = jo; i > ji; --i) m[i] = m[i - 1];
+    m[ji] = in;
+}
+
+//! The newest frame starts at sample `start` of the stage's input, and the
+//! one cut here m_fD hops before it: its background needs the fineM frames
+//! either side, and the voice guard the m_fW either side. A full complex
+//! transform of N points, the imaginary half zero: at N = 128 packing would
+//! save little. Only the band is read back, and only what is taken out is
+//! transformed back and added to m_bR, so where the key is shut the output is
+//! the input to the bit. See Config::fine.
+//!
+//! The background of the cut frame c is the louder of two quantiles, over
+//! frames c - fineM .. c - 1 and c + 1 .. c + fineM. Both are windows of
+//! fineM frames, fineM + 1 apart, so a hop ranks one window, the one ending at
+//! the newest frame: each bin's last fineM magnitudes are kept sorted, the
+//! oldest moved out and the newest in, and the quantile read off and kept
+//! until the cut frame comes round to it. The same values a fresh selection
+//! over both finds.
+void Channel::fineHop(uint64_t start) {
+    const int N = m_fN, H = m_fH, nb = m_fNb, S = m_fSlots, Mf = m_cfg.fineM;
+    const int D = m_fD, W = m_fW;
+    const size_t mask = m_bMask;
+    const double beta = (nb > 0) ? m_bBeta : 0.0;
+    if (beta <= 0.0) {
+        m_fHist = 0;           // the history has a hole; start it again
+        return;
+    }
+    double * re = &m_fRe[0];
+    double * im = &m_fIm[0];
+    const double * y = &m_bY[0];
+    const double * win = &m_fWin[0];
+    const int * rev = &m_fRev[0];
+    for (int i = 0; i < N; ++i) {
+        re[rev[i]] = y[(size_t)(start + (uint64_t)i) & mask] * win[i];
+        im[rev[i]] = 0.0;
+    }
+    fftRadix2(re, im, N, &m_fStRe[0], &m_fStIm[0], false, g_kernels->fftPair);
+    const uint64_t f = m_fFrame++;
+    const size_t nbs = (size_t)nb;
+    const size_t sl = (size_t)(f % (uint64_t)S) * nbs;
+    {
+        double * mg = &m_fMag[sl];
+        double * xr = &m_fXRe[sl];
+        double * xi = &m_fXIm[sl];
+        double e = 0.0;
+        for (int b = 0; b < nb; ++b) {
+            const int k = m_fK0 + b;
+            xr[b] = re[k];
+            xi[b] = im[k];
+            const double p = re[k] * re[k] + im[k] * im[k];
+            mg[b] = sqrt(p);
+            if (b < m_fNbLow) e += mg[b] * mg[b];
+        }
+        // The guard's envelope: the root of the energy below fineMid.
+        m_fE[(size_t)(f % (uint64_t)m_fESlots)] = sqrt(e);
+    }
+    if (m_fHist < 2 * D + 1) ++m_fHist;
+    if (m_fHist < Mf) return;
+
+    // The window of the last fineM frames, f - fineM + 1 .. f, and its
+    // quantile, into the row of frame f.
+    const double q = m_cfg.fineQ;
+    const uint64_t QS = (uint64_t)m_fQSlots;
+    const double * mag = &m_fMag[sl];
+    double * srt = &m_fSorted[0];
+    double * qNew = &m_fQ[(size_t)(f % QS) * nbs];
+    if (m_fHist == Mf) {
+        for (int j = 0; j < Mf; ++j) {
+            const double * pj = &m_fMag[(size_t)((f - (uint64_t)j) % (uint64_t)S) * nbs];
+            for (int b = 0; b < nb; ++b) srt[(size_t)b * (size_t)Mf + (size_t)j] = pj[b];
+        }
+        for (int b = 0; b < nb; ++b) {
+            double * w = srt + (size_t)b * (size_t)Mf;
+            std::sort(w, w + Mf);
+            qNew[b] = sortedQuantile(w, Mf, q);
+        }
+    } else {
+        const double * gone = &m_fMag[(size_t)((f - (uint64_t)Mf) % (uint64_t)S) * nbs];
+        for (int b = 0; b < nb; ++b) {
+            double * w = srt + (size_t)b * (size_t)Mf;
+            sortedReplace(w, Mf, gone[b], mag[b]);
+            qNew[b] = sortedQuantile(w, Mf, q);
+        }
+    }
+    if (m_fHist < 2 * D + 1) return;
+
+    // The cut frame c = f - D. After it, the window ending at c + fineM;
+    // before it, the one that ended at c - 1.
+    const uint64_t c = f - (uint64_t)D;
+    const size_t cs = (size_t)(c % (uint64_t)S) * nbs;
+    const double * cmag = &m_fMag[cs];
+    const double * cxr = &m_fXRe[cs];
+    const double * cxi = &m_fXIm[cs];
+    const double * qBefore = &m_fQ[(size_t)((c - 1) % QS) * nbs];
+    const double * qAfter = &m_fQ[(size_t)((c + (uint64_t)Mf) % QS) * nbs];
+
+    // The voice guard: how strongly the envelope below fineMid repeats, over
+    // c - W .. c + W, at its best lag - the normalised autocorrelation of the
+    // window less its mean, scaled for the lag's shorter overlap, as the
+    // prototype has it. The back-off is full at finePeriodic0, gone at 1.
+    double keep = 0.0;          // how much of the cut below fineMid is withheld
+    if (m_fNbLow > 0) {
+        const int n = 2 * W + 1;
+        double * seg = &m_fSeg[0];
+        double mean = 0.0;
+        for (int i = 0; i < n; ++i) {
+            seg[i] = m_fE[(size_t)((c - (uint64_t)W + (uint64_t)i) % (uint64_t)m_fESlots)];
+            mean += seg[i];
+        }
+        mean /= (double)n;
+        double den = 0.0;
+        for (int i = 0; i < n; ++i) { seg[i] -= mean; den += seg[i] * seg[i]; }
+        den += 1e-30;
+        double best = -1.0;
+        for (int lag = m_fLmin; lag <= m_fLmax; ++lag) {
+            const double v = dot(seg, seg + lag, n - lag) / den * (double)n / (double)(n - lag);
+            if (v > best) best = v;
+        }
+        const double span = m_cfg.finePeriodic1 - m_cfg.finePeriodic0;
+        keep = (span > 0.0) ? (best - m_cfg.finePeriodic0) / span
+                            : (best >= m_cfg.finePeriodic1 ? 1.0 : 0.0);
+        keep = dmin(dmax(keep, 0.0), 1.0);
+    }
+
+    const double alpha = m_cfg.fineAlpha, floorG = m_cfg.fineFloor;
+    for (int i = 0; i < N; ++i) { re[i] = 0.0; im[i] = 0.0; }
+    bool any = false;
+    for (int b = 0; b < nb; ++b) {
+        const double h = dmax(qBefore[b], qAfter[b]);
+        double g = alpha * h / (cmag[b] + 1e-20);
+        if (g > 1.0) g = 1.0;
+        if (g < floorG) g = floorG;
+        if (b < m_fNbLow) g = 1.0 - (1.0 - keep) * (1.0 - g);
+        const double cut = (1.0 - g) * beta;
+        if (!(cut > 0.0)) continue;
+        // Bin k and its mirror N - k, bit-reversed for the inverse; the
+        // Nyquist bin is its own mirror, and real for real input.
+        const int k = m_fK0 + b;
+        const double vr = cut * cxr[b], vi = cut * cxi[b];
+        re[rev[k]] += vr;
+        im[rev[k]] += vi;
+        if (k != N - k) {
+            re[rev[N - k]] += vr;
+            im[rev[N - k]] -= vi;
+        }
+        any = true;
+    }
+    if (!any) return;
+    fftRadix2(re, im, N, &m_fStRe[0], &m_fStIm[0], true, g_kernels->fftPair);
+    const double g = 1.0 / ((double)N * m_fNorm);
+    double * r = &m_bR[0];
+    const uint64_t from = start - (uint64_t)D * (uint64_t)H;
+    for (int i = 0; i < N; ++i) {
+        r[(size_t)(from + (uint64_t)i) & mask] += re[i] * win[i] * g;
+    }
 }
 
 template<typename Sample>

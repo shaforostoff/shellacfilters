@@ -235,6 +235,57 @@ struct Config {
     double bodyRelease  = 2.0;     //!< seconds
     int    bodyN        = 2048;    //!< from the sample rate alone
     int    bodyLatency  = 0;       //!< bodyDelay(bodyN) if body, else 0
+
+    //! The fine stage. Not user-facing; declick_cli sweeps it as --fine,
+    //! --fine-lo, --fine-hi, --fine-alpha, --fine-q and --fine-floor.
+    //! Above ~4 kHz a shellac transfer's music is weak and its crackle is not:
+    //! each crackle leaves a burst of ringing 1-2 ms long there, 5-10 times
+    //! the floor between them, and on dense crackle they come every few
+    //! milliseconds. The detector repairs the largest. A commercial decrackler
+    //! takes nearly all of them, and on Tanturi's *Tu olvido* (Videla, Ribo,
+    //! 1946) only its version of the band above 4 kHz was heard as clean.
+    //! In an STFT of the repaired audio with frames of ~2.9 ms (hop N/4, a
+    //! square-root Hann either side), a bin from fineLo up is clipped to
+    //! fineAlpha times its background, never below fineFloor. The background
+    //! is the louder of the fineQ quantiles over the fineM frames before and
+    //! the fineM after: a quantile low enough to fall between bursts that
+    //! come every 4 ms, which a median does not, and the louder side so an
+    //! onset or a release is left alone. It runs alongside the body stage on
+    //! the same repaired audio and adds to what that stage removes; the two
+    //! bands do not meet. It is gated by the body stage's key, so where that
+    //! is shut it subtracts nothing, and the Malvon master and the clean
+    //! D'Arienzo transfers come out to the bit as without it. Its delay, a
+    //! frame and the larger of fineM hops and the voice guard's 24 ms (below),
+    //! fits inside the body stage's, so it adds no latency. It needs the body
+    //! stage, and is off when that is.
+    //! alpha 2 was heard as good on *Tu olvido*; it is the gentler of the two
+    //! settings auditioned (1.5 takes more). See the README.
+    int    fine         = 1;
+    double fineLo       = 4500.0;
+    //! Bins above this are not processed. Nothing in them can be heard, and at
+    //! 96 kHz they would be two thirds of the stage's work.
+    double fineHi       = 20000.0;
+    double fineAlpha    = 2.0;
+    double fineQ        = 0.2;
+    double fineFloor    = 0.125893;  //!< -18 dB
+    int    fineM        = 16;        //!< frames either side; sizes buffers
+    int    fineN        = 128;       //!< from the sample rate alone
+    //! The voice guard. A voice's top band, and a reed's, comes as one burst
+    //! per period, every 4-8 ms, and the clip above cannot tell that from
+    //! crackle: on *Tu olvido* it cut the singers' 4.5-8 kHz pulse by pulse,
+    //! heard as vocals "split", where the commercial version leaves that band
+    //! almost alone. So below fineMid the cut backs off as far as the band's
+    //! envelope repeats: by the normalised autocorrelation of the fineLo ..
+    //! fineMid envelope over +-24 ms, at its best lag in 2.5-12 ms, it is full
+    //! at finePeriodic0 and gone at finePeriodic1. Above fineMid a voice on
+    //! shellac has little, and the clip stays as it was. Back-offs from 0.3 to
+    //! 0.6 and from 0.2 to 0.4 were heard as keeping the vocals whole, and as
+    //! leaving less crackle than starting the stage at fineMid. Asked for the
+    //! least destructive, the user chose 0.1 to 0.3, which backs off sooner
+    //! still.
+    double fineMid       = 8000.0;
+    double finePeriodic0 = 0.1;
+    double finePeriodic1 = 0.3;
     double rate         = 44100.0;   //!< the sample rate compute() was given
 
     int    pad          = 272;   //!< context needed either side of a block
@@ -270,17 +321,25 @@ struct Config {
     //! blocks. See compute().
     static int bodyDelay(int n);
 
+    //! The fine stage at transform length n, hop n/4, at `rate`: the voice
+    //! guard's half window, 24 ms in frames; and how many frames the cut one
+    //! trails the newest, the larger of that and fineM.
+    int fineWindow(int n) const;
+    int fineDelay(int n) const;
+
     //! True if `o` needs exactly the buffers this config already has, i.e. it
     //! can be swapped into a running Channel with retune() instead of
     //! configure(), which reallocates and therefore resets.
     //!
-    //! Only `order`, `maxRun`, `madWindow`, `body` and `bodyN` size anything
-    //! or set the latency (`pad` and `latency` are derived from them);
-    //! thresholds, depth, wet, delta and passes are read per block and can
-    //! change under a live stream.
+    //! Only `order`, `maxRun`, `madWindow`, `body`, `bodyN`, `fineN` and
+    //! `fineM` size anything or set the latency (`pad` and `latency` are
+    //! derived from them); thresholds, depth, wet, delta, passes and whether
+    //! the fine stage runs are read per block and can change under a live
+    //! stream.
     bool structurallyEquals(const Config & o) const {
         return order == o.order && maxRun == o.maxRun && madWindow == o.madWindow
-            && body == o.body && bodyN == o.bodyN && rate == o.rate;
+            && body == o.body && bodyN == o.bodyN && fineN == o.fineN
+            && fineM == o.fineM && rate == o.rate;
     }
 };
 
@@ -449,6 +508,9 @@ private:
     //! The key as the stage applies it: the strongest of the last
     //! Config::bodyRelease seconds of bodyKey().
     double bodyBeta() const;
+    //! The fine stage's frame starting at stage sample `start` is complete:
+    //! transform it, and cut the one fineM hops before it. See Config::fine.
+    void fineHop(uint64_t start);
     void growOut();               //!< only reachable by overrunning maxBlock
     void processBlock();          //!< repairs m_win[m_pad .. m_pad+kBlock)
     void detect(int from, int to, int pass);
@@ -561,6 +623,47 @@ private:
     std::vector<double> m_bKey;   //!< bodyKey() per block, over bodyRelease
     int    m_bCountPos = 0, m_bRatePos = 0, m_bRateHave = 0, m_bStrong = 0;
     int    m_bKeyPos = 0;
+
+    //! The fine stage; see Config::fine. It reads the body stage's ring of
+    //! repaired audio and adds what it removes to m_bR. Sized in configure()
+    //! from fineN and fineM.
+    int    m_fN = 0, m_fH = 0;
+    int    m_fK0 = 0, m_fNb = 0;  //!< the band: m_fNb bins from m_fK0
+    int    m_fNbLow = 0;          //!< of them, the first m_fNbLow are below fineMid
+    //! The voice guard's window, +-m_fW frames (24 ms), and its lags.
+    int    m_fW = 0, m_fLmin = 0, m_fLmax = 0;
+    //! How far the cut frame trails the newest: the larger of fineM, for the
+    //! quantile after it, and m_fW, for the guard's window.
+    int    m_fD = 0;
+    //! Frames held: back to the cut frame and the one that has just left the
+    //! latest quantile window, whose value has to be taken out of it.
+    int    m_fSlots = 0;
+    int    m_fQSlots = 0;         //!< rows of m_fQ: windows ending m_fD + 1 back to the newest
+    int    m_fESlots = 0;         //!< the guard's envelope, back to the cut frame's window
+    int    m_fHist = 0;           //!< consecutive frames transformed, to 2 m_fD + 1
+    uint64_t m_fFrame = 0;        //!< frames transformed; frame f is in slot f % m_fSlots
+    uint64_t m_fNextHop = 0;      //!< as m_bNextHop
+    double m_fNorm = 1.0;         //!< sum of the squared window over the hops
+    std::vector<double> m_fWin;            //!< square-root periodic Hann
+    std::vector<double> m_fRe, m_fIm;      //!< FFT work, N points
+    std::vector<double> m_fStRe, m_fStIm;  //!< N's twiddles, stage by stage
+    std::vector<int>    m_fRev;            //!< bit reversal of N
+    std::vector<double> m_fMag;            //!< m_fSlots x m_fNb
+    std::vector<double> m_fXRe, m_fXIm;    //!< m_fSlots x m_fNb
+    //! Per bin, the magnitudes of the last fineM frames, kept sorted: a hop
+    //! moves one value out and one in.
+    std::vector<double> m_fSorted;   //!< m_fNb x fineM
+    //! The fineQ quantile of each window of fineM frames, by the frame that
+    //! ends it: frame f in row f % m_fQSlots. The windows before and after
+    //! the cut frame are two of these, fineM + 1 frames apart, so each window
+    //! is ranked once rather than twice.
+    std::vector<double> m_fQ;        //!< m_fQSlots x m_fNb
+    std::vector<double> m_fE;        //!< the guard's envelope per frame, m_fESlots
+    std::vector<double> m_fSeg;      //!< 2 m_fW + 1 of it, around the cut frame
+    //! bodyBeta() as of the latest repair block. It only changes there, and
+    //! the fine stage, hopping every N/4 samples, cannot afford to rescan
+    //! Config::bodyRelease seconds of key for it each time.
+    double m_bBeta = 0.0;
 
     std::vector<double> m_madRing; //!< |forward residual| history
     int    m_madPos = 0;
