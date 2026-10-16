@@ -1488,11 +1488,16 @@ void Channel::configure(const Config & cfg) {
         m_fQSlots = m_fD + 2;
         m_fESlots = m_fD + m_fW + 2;
         m_fWin.assign((size_t)N, 0.0);
-        m_fRe.assign((size_t)N, 0.0);
-        m_fIm.assign((size_t)N, 0.0);
-        m_fStRe.assign((size_t)N, 0.0);
-        m_fStIm.assign((size_t)N, 0.0);
-        m_fRev.assign((size_t)N, 0);
+        // The transforms are of N real samples, packed two to a complex one:
+        // N/2 points, with the twiddles of N for unpacking. The band can
+        // reach the Nyquist bin, N/2, so that table has one place more.
+        m_fRe.assign((size_t)(N / 2), 0.0);
+        m_fIm.assign((size_t)(N / 2), 0.0);
+        m_fStRe.assign((size_t)(N / 2), 0.0);
+        m_fStIm.assign((size_t)(N / 2), 0.0);
+        m_fTwRe.assign((size_t)(N / 2 + 1), 0.0);
+        m_fTwIm.assign((size_t)(N / 2 + 1), 0.0);
+        m_fRev.assign((size_t)(N / 2), 0);
         m_fMag.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
         m_fXRe.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
         m_fXIm.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
@@ -1510,7 +1515,11 @@ void Channel::configure(const Config & cfg) {
         }
         for (int i = 0; i < N; i += m_fH) norm += m_fWin[(size_t)i] * m_fWin[(size_t)i];
         m_fNorm = (norm > 0.0) ? norm : 1.0;
-        for (int half = 1; half < N; half <<= 1) {
+        for (int k = 0; k <= N / 2; ++k) {
+            m_fTwRe[(size_t)k] = cos(twoPi * (double)k / (double)N);
+            m_fTwIm[(size_t)k] = sin(twoPi * (double)k / (double)N);
+        }
+        for (int half = 1; half < N / 2; half <<= 1) {
             for (int k = 0; k < half; ++k) {
                 const double a = twoPi * (double)k / (double)(2 * half);
                 m_fStRe[(size_t)(half - 1 + k)] = cos(a);
@@ -1518,8 +1527,8 @@ void Channel::configure(const Config & cfg) {
             }
         }
         int bits = 0;
-        while ((1 << bits) < N) ++bits;
-        for (int i = 0; i < N; ++i) {
+        while ((1 << bits) < N / 2) ++bits;
+        for (int i = 0; i < N / 2; ++i) {
             int r = 0;
             for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
             m_fRev[(size_t)i] = r;
@@ -1550,7 +1559,8 @@ size_t Channel::heapBytes() const {
             + m_bMag.capacity() + m_bXRe.capacity() + m_bXIm.capacity()
             + m_bMed.capacity() + m_bRate.capacity() + m_bKey.capacity()
             + m_fWin.capacity() + m_fRe.capacity() + m_fIm.capacity()
-            + m_fStRe.capacity() + m_fStIm.capacity() + m_fMag.capacity()
+            + m_fStRe.capacity() + m_fStIm.capacity()
+            + m_fTwRe.capacity() + m_fTwIm.capacity() + m_fMag.capacity()
             + m_fXRe.capacity() + m_fXIm.capacity()
             + m_fSorted.capacity() + m_fQ.capacity()
             + m_fE.capacity() + m_fSeg.capacity()) * sizeof(double)
@@ -2309,11 +2319,13 @@ void Channel::bodyHop(uint64_t start) {
 
 //! The newest frame starts at sample `start` of the stage's input, and the
 //! one cut here m_fD hops before it: its background needs the fineM frames
-//! either side, and the voice guard the m_fW either side. A full complex
-//! transform of N points, the imaginary half zero: at N = 128 packing would
-//! save little. Only the band is read back, and only what is taken out is
-//! transformed back and added to m_bR, so where the key is shut the output is
-//! the input to the bit. See Config::fine.
+//! either side, and the voice guard the m_fW either side. As in bodyHop(),
+//! the N real samples are transformed as N/2 complex ones, even samples in
+//! the real part and odd in the imaginary, and only the bins the cut reads
+//! are unpacked; back the other way the band and its mirror are packed into
+//! N/2 points the same way. Only the band is read back, and only what is
+//! taken out is transformed back and added to m_bR, so where the key is shut
+//! the output is the input to the bit. See Config::fine.
 //!
 //! The background of the cut frame c is the louder of two quantiles, over
 //! frames c - fineM .. c - 1 and c + 1 .. c + fineM. Both are windows of
@@ -2331,16 +2343,20 @@ void Channel::fineHop(uint64_t start) {
         m_fHist = 0;           // the history has a hole; start it again
         return;
     }
+    const int M = N / 2;
     double * re = &m_fRe[0];
     double * im = &m_fIm[0];
     const double * y = &m_bY[0];
     const double * win = &m_fWin[0];
     const int * rev = &m_fRev[0];
-    for (int i = 0; i < N; ++i) {
-        re[rev[i]] = y[(size_t)(start + (uint64_t)i) & mask] * win[i];
-        im[rev[i]] = 0.0;
+    const double * twRe = &m_fTwRe[0];
+    const double * twIm = &m_fTwIm[0];
+    for (int i = 0; i < M; ++i) {
+        const size_t at = (size_t)(start + 2 * (uint64_t)i);
+        re[rev[i]] = y[at & mask] * win[2 * i];
+        im[rev[i]] = y[(at + 1) & mask] * win[2 * i + 1];
     }
-    fftRadix2(re, im, N, &m_fStRe[0], &m_fStIm[0], false, g_kernels->fftPair, g_kernels->fftOne);
+    fftRadix2(re, im, M, &m_fStRe[0], &m_fStIm[0], false, g_kernels->fftPair, g_kernels->fftOne);
     const uint64_t f = m_fFrame++;
     const size_t nbs = (size_t)nb;
     const size_t sl = (size_t)(f % (uint64_t)S) * nbs;
@@ -2349,11 +2365,23 @@ void Channel::fineHop(uint64_t start) {
         double * xr = &m_fXRe[sl];
         double * xi = &m_fXIm[sl];
         double e = 0.0;
+        // X[k] = E + e^(-2 pi i k / N) O, with E and O the transforms of the
+        // even and odd samples: (Z[k] + Z*[M-k]) / 2 and (Z[k] - Z*[M-k]) / 2i.
+        // The band can reach the Nyquist bin k = M, where both Z[k] and
+        // Z[M-k] are Z[0]; the masks fold it there.
         for (int b = 0; b < nb; ++b) {
             const int k = m_fK0 + b;
-            xr[b] = re[k];
-            xi[b] = im[k];
-            const double p = re[k] * re[k] + im[k] * im[k];
+            const int kk = k & (M - 1), mk = (M - kk) & (M - 1);
+            const double zr = re[kk], zi = im[kk];
+            const double cr = re[mk], ci = -im[mk];
+            const double er = 0.5 * (zr + cr), ei = 0.5 * (zi + ci);
+            const double our = 0.5 * (zi - ci), oui = -0.5 * (zr - cr);
+            const double c = twRe[k], sn = twIm[k];
+            const double vr = er + c * our + sn * oui;
+            const double vi = ei + c * oui - sn * our;
+            xr[b] = vr;
+            xi[b] = vi;
+            const double p = vr * vr + vi * vi;
             mg[b] = sqrt(p);
             if (b < m_fNbLow) e += mg[b] * mg[b];
         }
@@ -2435,8 +2463,8 @@ void Channel::fineHop(uint64_t start) {
     }
 
     const double alpha = m_cfg.fineAlpha, floorG = m_cfg.fineFloor;
-    memset(re, 0, (size_t)N * sizeof(double));
-    memset(im, 0, (size_t)N * sizeof(double));
+    memset(re, 0, (size_t)M * sizeof(double));
+    memset(im, 0, (size_t)M * sizeof(double));
     bool any = false;
     for (int b = 0; b < nb; ++b) {
         const double h = dmax(qBefore[b], qAfter[b]);
@@ -2446,25 +2474,34 @@ void Channel::fineHop(uint64_t start) {
         if (b < m_fNbLow) g = 1.0 - (1.0 - keep) * (1.0 - g);
         const double cut = (1.0 - g) * beta;
         if (!(cut > 0.0)) continue;
-        // Bin k and its mirror N - k, bit-reversed for the inverse; the
-        // Nyquist bin is its own mirror, and real for real input.
+        // Packed for the inverse: bin k takes X + i X e^(2 pi i k/N), and its
+        // mirror N - k the conjugates of both. The Nyquist bin is its own
+        // mirror, and real for real input; it folds onto Z[0].
         const int k = m_fK0 + b;
         const double vr = cut * cxr[b], vi = cut * cxi[b];
-        re[rev[k]] += vr;
-        im[rev[k]] += vi;
+        const double c = twRe[k], sn = twIm[k];
+        const double ur = vr * c - vi * sn, ui = vr * sn + vi * c;
+        const int kr = rev[k & (M - 1)];      // see fftRadix2
+        re[kr] += vr - ui;
+        im[kr] += vi + ur;
         if (k != N - k) {
-            re[rev[N - k]] += vr;
-            im[rev[N - k]] -= vi;
+            const int mr = rev[M - k];
+            re[mr] += vr + ui;
+            im[mr] += ur - vi;
         }
         any = true;
     }
     if (!any) return;
-    fftRadix2(re, im, N, &m_fStRe[0], &m_fStIm[0], true, g_kernels->fftPair, g_kernels->fftOne);
+    fftRadix2(re, im, M, &m_fStRe[0], &m_fStIm[0], true, g_kernels->fftPair, g_kernels->fftOne);
+    // The packed bins above are twice what the inverse of M points wants, so
+    // the 1/M it is missing is a 1/N here, as in bodyHop().
     const double g = 1.0 / ((double)N * m_fNorm);
     double * r = &m_bR[0];
     const uint64_t from = start - (uint64_t)D * (uint64_t)H;
-    for (int i = 0; i < N; ++i) {
-        r[(size_t)(from + (uint64_t)i) & mask] += re[i] * win[i] * g;
+    for (int i = 0; i < M; ++i) {
+        const size_t at = (size_t)(from + 2 * (uint64_t)i);
+        r[at & mask]       += re[i] * win[2 * i] * g;
+        r[(at + 1) & mask] += im[i] * win[2 * i + 1] * g;
     }
 }
 
