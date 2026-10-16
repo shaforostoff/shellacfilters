@@ -189,6 +189,9 @@ struct Config {
     //! above 8 sigma against 1.93 (Sensitivity 0.7 alone: -37.2 dB, 2.28/s).
     //! Benchmark: small crackle -3.9 dB removed against -3.8, all of it
     //! -6.2 against -6.4, harm -15.5 against -13.9. Chosen by ear over 0.6.
+    //! The half repair is what m_win holds, so the refits and the detection
+    //! see it, but a repair's estimate is solved against Channel::m_full,
+    //! where every run is in full; see there for why.
     double softMin      = 0.5;
     double softSpan     = 3.5;
 
@@ -520,8 +523,8 @@ private:
     void interpolate(int from, int to, int reach);
     //! Repairs m_win[s..e] with the current model. False if it could not.
     //! `again` for a re-repair: the click is taken from m_dry, and the
-    //! repair is not counted a second time. `gain` scales what is taken out;
-    //! see Config::softMin.
+    //! repair is not counted a second time. `gain` scales what is taken out
+    //! of m_win; m_full takes all of it. See Config::softMin.
     bool repairRun(int s, int e, bool again, double gain);
     //! Repairs every run recorded this block again, with the current model.
     void rerepairRuns();
@@ -545,6 +548,18 @@ private:
     AlignedBuf m_win;             //!< sliding window of input/repaired audio
     std::vector<uint8_t> m_flag;  //!< parallel to m_win: repair mask
     AlignedBuf m_dry;             //!< untouched copy, for the dry/wet mix
+    //! m_win with every repair in full, whatever its Config::softMin gain:
+    //! what repairRun() solves against. Solved against m_win, a run's context
+    //! held its neighbours' half clicks. After the first pass the refit has
+    //! the clicks out and whitens harder, and through it those half clicks
+    //! pushed a re-repair out of the local range, to the clamp, which was the
+    //! context of the next. Through a cluster of weak runs the estimates went
+    //! 0.066, 0.10, 0.18, 0.71, 1.0 against limits of 0.053-0.066, and the
+    //! gaps between the runs then read up to 440 sigma and were repaired in
+    //! full, at the clamp: a loud burst on Tanturi's Voz de tango at 14.37 s
+    //! after Dehum, and smaller ones elsewhere. Equal to m_win wherever every
+    //! gain is 1, so the hard repair is unchanged bit for bit.
+    AlignedBuf m_full;
     int    m_fill = 0;            //!< samples currently held in m_win
     int    m_silentUntil = 0;     //!< m_win below this is prime()'s zeros
     int    m_pad = 0;

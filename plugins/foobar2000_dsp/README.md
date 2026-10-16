@@ -1100,6 +1100,27 @@ What changed, and why:
   5 % more CPU. Preferred by ear over 0.6 / 3, which leaves the MP3 exactly as
   many clicks as before (1.93/s) but takes 0.9 dB more from the Malvon
   master.
+* **Repairs solved against full repairs.** As first built, a run's
+  estimate was solved against the window as the soft repair left it, with
+  half of every weak neighbour's click still in it. The refit after the
+  first pass has the clicks out and whitens harder, and through it those
+  half clicks pushed a re-repair past the local range to the clamp, which
+  was then the next run's context. In a cluster of weak runs on Tanturi's
+  *Voz de tango* after Dehum (14.37 s) the estimates went 0.066, 0.10,
+  0.18, 0.71, 1.0 against limits of 0.053–0.066, and the gaps between the
+  runs then read up to 440σ and were repaired in full at the clamp: a loud
+  6 ms burst. Smaller ones turned up on *La tablada* (.m4a, 103.6 s) and
+  on *Voz de tango* without Dehum (59.2 s). Each repair now writes a second
+  copy of the window in full, `Channel::m_full`, and solves against it;
+  what the detection and the refits read, and what is output, still has
+  the half repair. All three bursts are gone. Hard repair (`--soft-span 0`)
+  is unchanged bit for bit. Removed, against the first build: Malvon
+  master −38.6 → −38.4 dB, clean D'Arienzo −48.1 → −48.1, *La tablada*
+  .flac −33.4 → −33.2, *Cachirulo* .flac −31.0 → −31.1. The other cure,
+  keeping only full repairs in the window and taking the half at the
+  output, cures it as well but takes 0.3–0.7 dB more from the clean
+  records: the half clicks the detection and the refits see are part of
+  what Sensitivity 0.9 was tuned with. No measurable CPU.
 
 Tried and dropped:
 
