@@ -1439,7 +1439,8 @@ it adds 24 % with AVX2. Of that, the voice guard is about a sixth.
   * The band stops at 20 kHz, which at 96 kHz leaves a third of the bins.
 * **Output.** The first three leave it to the bit what it was. The cap changes
   it only above 20 kHz; `--fine-hi 100000` gives back the uncapped output to
-  the bit.
+  the bit. The packed transforms added later do move the last bits, by one or
+  two ULP on a crackly file and not at all on a clean one: see below.
 
 #### What the fine stage costs, and what came off it
 
@@ -1508,12 +1509,55 @@ And two that were tried, measured and dropped:
   the reduction at the end did not pay for a GPR load per step, and once the
   row was tiled the reduction was not on anybody's critical path any more.
 
-**What is still there.** The forward and inverse transforms are about 100 of
-the remaining cycles, and both are full 128-point complex transforms of real
-data. Packing them as 64-point complex ones, the way the body stage already
-transforms its 2048 real samples as 1024 complex ones, would roughly halve
-that — perhaps 4–5 % end to end on *Cuatro*. Unlike everything above it would
-change the output in the last bits, so it has not been done.
+**And the transforms, which did change the output.** The forward and inverse
+transforms were about 100 of the remaining cycles, and both were full
+128-point complex transforms of real data. They are now packed as 64-point
+complex ones, the way the body stage already transforms its 2048 real samples
+as 1024 complex ones: even samples into the real part and odd into the
+imaginary through the bit-reversal table, `fftRadix2` at N/2, and only the
+band's bins unpacked, `X[k] = E + e^(-2 pi i k/N) O` with `E` and `O` the
+transforms of the even and odd samples. On the way back the band and its
+mirror are packed into N/2 points the same way. It needs a twiddle table of
+N at the fine stage's own size, built in `configure()` beside the stage
+twiddles, with one place more than the body stage's: the fine band may reach
+the Nyquist bin, which folds onto `Z[0]`. It also takes the transform from
+five stages to four, so the odd stage out — the one `fftOne` above was written
+for — is gone from this stage, and with it half the butterflies.
+
+Best of five interleaved runs on each machine, whole files through
+`Channel::push`/`pull` in 1024-frame blocks:
+
+| | M1, NEON | Haswell, AVX2 | Haswell, SSE2 |
+| --- | --- | --- | --- |
+| *Cuatro compases*, dense crackle, 48 kHz | **−5.7 %** | −2.5 % | −4.2 % |
+| *Tu olvido*, 96 kHz | **−4.1 %** | −3.0 % | |
+| *Malvón*, clean, 44.1 kHz | −0.1 % | | |
+
+The M1 repeats to 0.03 % and is the number to believe; the Haswell throttles
+about 30 % over a few minutes, so its two builds were run alternately. The
+AVX2 column is smaller than the SSE2 one because `fftPairAvx2` had already
+made the butterflies cheap there, and there are simply fewer of them to save.
+*Malvón* is the control: it is clean enough that the body key never opens, the
+stage returns before it transforms anything, and that line is noise.
+
+**What it costs in the last bits.** The packing is the same transform by a
+different route — a different summation order, and a twiddle multiply per bin
+where there was none — so unlike everything above it is not bit-exact. Over
+whole files, against the same build without it:
+
+| | identical samples | worst deviation |
+| --- | --- | --- |
+| *Malvón*, clean | **100 %** | none, byte for byte |
+| *Tu olvido* | 71.0 % | 1.1e−16, −319.1 dBFS |
+| *Cuatro compases* | 51.2 % | 2.6e−16, −311.8 dBFS |
+
+So about half the samples of a crackly file move, and they move by one or two
+ULP of a double — two-billionths of a 24-bit LSB, and 155 dB below the worst
+deviation the `dot()` kernel [already
+introduces](#where-the-time-goes-and-what-was-done-about-it). A clean file
+does not move at all, in any bit: where the key is shut this stage does
+nothing, and it still does nothing. Every ground-truth and reference-transfer
+figure in this README is unchanged to the last digit printed.
 
 ---
 

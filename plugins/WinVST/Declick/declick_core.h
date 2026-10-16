@@ -647,9 +647,10 @@ private:
     uint64_t m_fNextHop = 0;      //!< as m_bNextHop
     double m_fNorm = 1.0;         //!< sum of the squared window over the hops
     std::vector<double> m_fWin;            //!< square-root periodic Hann
-    std::vector<double> m_fRe, m_fIm;      //!< FFT work, N points
-    std::vector<double> m_fStRe, m_fStIm;  //!< N's twiddles, stage by stage
-    std::vector<int>    m_fRev;            //!< bit reversal of N
+    std::vector<double> m_fRe, m_fIm;      //!< FFT work, N/2 points
+    std::vector<double> m_fStRe, m_fStIm;  //!< N/2's twiddles, stage by stage
+    std::vector<double> m_fTwRe, m_fTwIm;  //!< N's, for the packing, k <= N/2
+    std::vector<int>    m_fRev;            //!< bit reversal of N/2
     std::vector<double> m_fMag;            //!< m_fSlots x m_fNb
     std::vector<double> m_fXRe, m_fXIm;    //!< m_fSlots x m_fNb
     //! Per bin, the magnitudes of the last fineM frames, kept sorted: a hop
