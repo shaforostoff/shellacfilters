@@ -62,7 +62,17 @@ void usage() {
         "  --fine-mid <Hz>    Below this the cut backs off where the band repeats with\n"
         "                     a voice's period (default 8000; fine-lo turns it off)\n"
         "  --fine-p0 <x>      Periodicity where it starts to back off (default 0.1)\n"
-        "  --fine-p1 <x>      ... and where it has backed off entirely (default 0.3)\n");
+        "  --fine-p1 <x>      ... and where it has backed off entirely (default 0.3)\n"
+        "  --flank <0|1>      Repair the flanks of runs again, above flank-hz, on\n"
+        "                     band-limited transfers under the body key (default 1)\n"
+        "  --flank-pad-ms <x> How far each run is widened either side (default 0.18)\n"
+        "  --flank-hz <Hz>    Above this the widened repair is kept (default 3000)\n"
+        "  --flank-edge0 <Hz> -40 dB edge at or below which the pad is full (default 13000)\n"
+        "  --flank-edge1 <Hz> ... and at or above which there is none (default 15000)\n"
+        "  --flank-shut <0..1> Its strength where the key is shut, band-limited only (default 0)\n"
+        "  --flank-wide <0..1> Share of the pad a full-band transfer gets under the key (default 0)\n"
+        "  --flank-shut-gain <0..1> ... where it is shut, only runs repaired at this gain or more (default 0)\n"
+        "  --flank-hold <s>   Seconds it fades out over once the key shuts (default 12)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -93,6 +103,8 @@ int main(int argc, char ** argv) {
     float bodyRate0 = -1.0f, bodyRate1 = -1.0f, bodyRelease = -1.0f;
     float fine = -1.0f, fineLo = -1.0f, fineHi = -1.0f, fineAlpha = -1.0f, fineQ = -1.0f;
     float fineFloor = -1.0f, fineMid = -1.0f, fineP0 = -1.0f, fineP1 = -1.0f;
+    float flank = -1.0f, flankPadMs = -1.0f, flankHz = -1.0f, flankEdge0 = -1.0f, flankEdge1 = -1.0f;
+    float flankShut = -1.0f, flankWide = -1.0f, flankShutGain = -1.0f, flankHold = -1.0f;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--delta") { delta = true; continue; }
@@ -129,6 +141,15 @@ int main(int argc, char ** argv) {
         else if (a == "--fine-mid") fineMid = v;
         else if (a == "--fine-p0") fineP0 = v;
         else if (a == "--fine-p1") fineP1 = v;
+        else if (a == "--flank") flank = v;
+        else if (a == "--flank-pad-ms") flankPadMs = v;
+        else if (a == "--flank-hz") flankHz = v;
+        else if (a == "--flank-edge0") flankEdge0 = v;
+        else if (a == "--flank-edge1") flankEdge1 = v;
+        else if (a == "--flank-shut") flankShut = v;
+        else if (a == "--flank-wide") flankWide = v;
+        else if (a == "--flank-shut-gain") flankShutGain = v;
+        else if (a == "--flank-hold") flankHold = v;
         else if (a == "-s") params.sensitivity = v;
         else if (a == "-e") params.extent = v;
         else if (a == "-l") params.maxLengthMs = v;
@@ -151,7 +172,8 @@ int main(int argc, char ** argv) {
     const size_t frames = audio.frames();
 
     declick::Config cfg;
-    // Before compute(): whether the body stage runs sets the latency.
+    // Before compute(): whether the body stage and the flank repair run sets
+    // the latency.
     if (body >= 0.0f) cfg.body = (int)body;
     if (bodyFloor >= 0.0f) cfg.bodyFloor = bodyFloor;
     if (bodyPeak >= 0.0f) cfg.bodyPeak = bodyPeak;
@@ -167,6 +189,15 @@ int main(int argc, char ** argv) {
     if (fineMid >= 0.0f) cfg.fineMid = fineMid;
     if (fineP0 >= 0.0f) cfg.finePeriodic0 = fineP0;
     if (fineP1 >= 0.0f) cfg.finePeriodic1 = fineP1;
+    if (flank >= 0.0f) cfg.flank = (int)flank;
+    if (flankPadMs >= 0.0f) cfg.flankPadMs = flankPadMs;
+    if (flankHz >= 0.0f) cfg.flankHz = flankHz;
+    if (flankEdge0 >= 0.0f) cfg.flankEdge0 = flankEdge0;
+    if (flankEdge1 >= 0.0f) cfg.flankEdge1 = flankEdge1;
+    if (flankShut >= 0.0f) cfg.flankShut = flankShut;
+    if (flankWide >= 0.0f) cfg.flankWide = flankWide;
+    if (flankShutGain >= 0.0f) cfg.flankShutGain = flankShutGain;
+    if (flankHold >= 0.0f) cfg.flankHold = flankHold;
     cfg.compute(params, (double)audio.sampleRate);
     if (alpha >= 0.0f) cfg.wienerAlpha = alpha;
     if (wmax >= 0.0f) cfg.wienerMax = wmax;
@@ -226,12 +257,14 @@ int main(int argc, char ** argv) {
         avail = chans[0]->available();
     }
 
-    uint64_t repaired = 0, seen = 0, clamped = 0, reclamped = 0;
+    uint64_t repaired = 0, seen = 0, clamped = 0, reclamped = 0, flSpans = 0, flSkipped = 0;
     for (unsigned c = 0; c < channels; ++c) {
         repaired += chans[c]->repairedSamples();
         seen += chans[c]->seenSamples();
         clamped += chans[c]->clampedSamples();
         reclamped += chans[c]->reclampedSamples();
+        flSpans += chans[c]->flankSpans();
+        flSkipped += chans[c]->flankSkipped();
     }
 
     if (delta) {
@@ -264,6 +297,13 @@ int main(int argc, char ** argv) {
                (unsigned long long)repaired, (unsigned long long)seen,
                seen ? 100.0 * (double)repaired / (double)seen : 0.0,
                (unsigned long long)clamped, (unsigned long long)reclamped);
+        // The flank repair: the transfer's -40 dB edge as it stood at the
+        // end, the pad that gave, and the spans repaired again.
+        if (cfg.flankStage > 0) {
+            printf("  flank: edge %.0f Hz, pad %d of %d, %llu spans, %llu passed over\n",
+                   chans[0]->bandEdge(), chans[0]->flankPadNow(), cfg.flankPad,
+                   (unsigned long long)flSpans, (unsigned long long)flSkipped);
+        }
     }
     return 0;
 }

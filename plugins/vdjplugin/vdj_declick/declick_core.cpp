@@ -1008,6 +1008,22 @@ inline double median3(double a, double b, double c) {
     return dmax(dmin(a, b), dmin(dmax(a, b), c));
 }
 
+//! The modified Bessel function I0, by its series: for the flank repair's
+//! Kaiser window, built once in configure().
+static double besselI0(double x) {
+    double sum = 1.0, term = 1.0;
+    for (int k = 1; k < 64; ++k) {
+        const double h = x / (2.0 * (double)k);
+        term *= h * h;
+        sum += term;
+        if (term < 1e-16 * sum) break;
+    }
+    return sum;
+}
+
+//! The flank repair's long-term spectrum: 512-point transforms at any rate.
+enum { kWideFft = 512 };
+
 const Kernels * pickKernels(bool allowWide) {
 #if DECLICK_AVX2
     if (allowWide && cpuHasAvx2Fma()) return &kAvx2Kernels;
@@ -1122,7 +1138,21 @@ void Config::compute(const Params & pIn, double sampleRate) {
         bodyN = n;
     }
     bodyLatency = body ? bodyDelay(bodyN) : 0;
-    latency = pad + (int)kBlock + bodyLatency;
+
+    // The flank repair's pad and high-pass scale with the rate, as times: 8
+    // samples and 127 taps at 44.1 kHz. It holds each repaired block back by
+    // one more block before the body stage, so the next one's flanks can
+    // still reach into it - a whole block, for the same two reasons the body
+    // stage's delay is whole blocks. The pad and the filter's half length
+    // have to fit inside it; at any rate they do by a factor of four.
+    if (sampleRate < 32000.0) flank = 0;
+    flankPad = (int)floor(flankPadMs * 1e-3 * sampleRate + 0.5);
+    if (flankPad < 0) flankPad = 0;
+    flankHalf = (int)floor(63.0 * sampleRate / 44100.0 + 0.5);
+    if (flankHalf < 1) flankHalf = 1;
+    if (flankPad + flankHalf >= (int)kBlock) flank = 0;
+    flankStage = flank ? (int)kBlock : 0;
+    latency = pad + (int)kBlock + bodyLatency + flankStage;
 
     // The fine stage's frames span ~2.9 ms at any rate: the power of two
     // nearest 0.0029 * rate. A sample is final once the frame D hops after
@@ -1536,6 +1566,68 @@ void Channel::configure(const Config & cfg) {
         }
     }
 
+    // The flank repair: a run list for the block, the corrections aligned with
+    // the window, and the high-pass - a unit impulse less a Kaiser-windowed
+    // sinc low-pass at flankHz, normalised to unity at DC. Allocated whether
+    // or not it is on, like the stages above.
+    {
+        m_flRun.assign(2 * (size_t)kBlock, 0);
+        m_flGain.assign((size_t)kBlock, 1.0);
+        m_flOrder.assign((size_t)kBlock, 0);
+        // Window index i is m_flAcc[i + kBlock]: the block held back sits just
+        // below the window, at -kBlock .. -1.
+        m_flAcc.assign(need + (size_t)kBlock, 0.0);
+        m_stY.assign((size_t)kBlock, 0.0);
+        m_stD.assign((size_t)kBlock, 0.0);
+        const int Hh = cfg.flankHalf;
+        m_flHp.assign((size_t)(2 * Hh + 1), 0.0);
+        const double pi = 3.141592653589793;
+        const double fc = cfg.flankHz / cfg.rate;           // cycles per sample
+        const double beta = 6.0;
+        double sum = 0.0;
+        for (int j = -Hh; j <= Hh; ++j) {
+            const double x = 2.0 * pi * fc * (double)j;
+            const double sinc = (j == 0) ? 2.0 * fc : sin(x) / (pi * (double)j);
+            const double r = (double)j / (double)Hh;
+            const double w = besselI0(beta * sqrt(dmax(0.0, 1.0 - r * r))) / besselI0(beta);
+            m_flHp[(size_t)(j + Hh)] = sinc * w;
+            sum += sinc * w;
+        }
+        for (int j = 0; j <= 2 * Hh; ++j) m_flHp[(size_t)j] = -m_flHp[(size_t)j] / sum;
+        m_flHp[(size_t)Hh] += 1.0;
+    }
+
+    // The long-term spectrum for the edge: a 512-point complex transform of
+    // 512 real samples, the imaginary part zero, so every bin to Nyquist is
+    // there to read without unpacking. Tables as the fine stage builds them.
+    {
+        const int M = kWideFft;
+        const double twoPi = 6.283185307179586;
+        m_wSpec.assign((size_t)(M / 2 + 1), 0.0);
+        m_wWin.assign((size_t)M, 0.0);
+        m_wRe.assign((size_t)M, 0.0);
+        m_wIm.assign((size_t)M, 0.0);
+        m_wStRe.assign((size_t)M, 0.0);
+        m_wStIm.assign((size_t)M, 0.0);
+        m_wRev.assign((size_t)M, 0);
+        for (int i = 0; i < M; ++i)
+            m_wWin[(size_t)i] = 0.5 - 0.5 * cos(twoPi * (double)i / (double)M);
+        for (int half = 1; half < M; half <<= 1) {
+            for (int k = 0; k < half; ++k) {
+                const double a = twoPi * (double)k / (double)(2 * half);
+                m_wStRe[(size_t)(half - 1 + k)] = cos(a);
+                m_wStIm[(size_t)(half - 1 + k)] = sin(a);
+            }
+        }
+        int bits = 0;
+        while ((1 << bits) < M) ++bits;
+        for (int i = 0; i < M; ++i) {
+            int r = 0;
+            for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
+            m_wRev[(size_t)i] = r;
+        }
+    }
+
     // The output ring. Between one pull and the next a caller can push maxBlock
     // samples, which emit at most maxBlock + kBlock, on top of the up to kBlock
     // already waiting.
@@ -1564,9 +1656,14 @@ size_t Channel::heapBytes() const {
             + m_fTwRe.capacity() + m_fTwIm.capacity() + m_fMag.capacity()
             + m_fXRe.capacity() + m_fXIm.capacity()
             + m_fSorted.capacity() + m_fQ.capacity()
-            + m_fE.capacity() + m_fSeg.capacity()) * sizeof(double)
+            + m_fE.capacity() + m_fSeg.capacity()
+            + m_flGain.capacity() + m_flAcc.capacity() + m_flHp.capacity()
+            + m_stY.capacity() + m_stD.capacity()
+            + m_wSpec.capacity() + m_wWin.capacity() + m_wRe.capacity() + m_wIm.capacity()
+            + m_wStRe.capacity() + m_wStIm.capacity()) * sizeof(double)
            + m_flag.capacity() + m_runs.capacity() * sizeof(int)
-           + (m_bRev.capacity() + m_bCount.capacity() + m_fRev.capacity()) * sizeof(int);
+           + (m_bRev.capacity() + m_bCount.capacity() + m_fRev.capacity()
+              + m_flRun.capacity() + m_flOrder.capacity() + m_wRev.capacity()) * sizeof(int);
 }
 
 bool Channel::retune(const Config & cfg) {
@@ -1619,6 +1716,20 @@ void Channel::reset() {
     m_fNextHop = (uint64_t)m_fN;
     m_fHist = 0;
     m_fFrame = 0;
+    std::fill(m_flAcc.begin(), m_flAcc.end(), 0.0);
+    m_flN = 0;
+    m_flEnd = -(1 << 30);
+    m_flP = 0;
+    m_flPOpen = 0;
+    m_flSince = 1 << 30;
+    m_bBetaPrev = 0.0;
+    m_stHave = false;
+    m_flSpans = 0;
+    m_flSkipped = 0;
+    std::fill(m_wSpec.begin(), m_wSpec.end(), 0.0);
+    m_wBlock = 0;
+    m_wFrames = 0.0;
+    m_wEdge = 0.0;
     // Prime with `pad` zeros so the first real sample lands at window index
     // pad and nothing is dropped off the front of the stream.
     m_fill = m_pad;
@@ -1916,6 +2027,12 @@ void Channel::interpolate(int from, int to, int reach) {
         }
         i = e + 1;
         if (ok && peak >= m_cfg.bodyPeak) ++m_bStrong;   // the body stage's key
+        if (ok && m_cfg.flankStage > 0 && m_flN < (int)m_flGain.size()) {
+            m_flRun[(size_t)(2 * m_flN)] = s;
+            m_flRun[(size_t)(2 * m_flN + 1)] = e;
+            m_flGain[(size_t)m_flN] = gain;
+            ++m_flN;
+        }
         if (ok && m_cfg.rerepair > 0 &&
             m_nruns + 2 <= (int)m_runs.size()) {
             m_runGain[(size_t)(m_nruns / 2)] = gain;
@@ -1925,20 +2042,9 @@ void Channel::interpolate(int from, int to, int reach) {
     }
 }
 
-bool Channel::repairRun(int s, int e, bool again, double gain) {
+bool Channel::solveSpan(int s, int e) {
     const int order = m_cfg.order;
-    const int ctx = 3 * order;
     const int m = e - s + 1;
-    if (m <= 0 || m > m_cfg.maxRun) return false;      // too long: that is music
-
-    const int lo0 = s - ctx;
-    const int hi0 = e + ctx;
-    if (lo0 < 0 || hi0 >= m_fill) return false;
-
-    const int L = hi0 - lo0 + 1;
-    const int rows = L - order;
-    if (rows <= m) return false;
-
     // G is symmetric banded Toeplitz with first column aa[0..order],
     // where aa is the autocorrelation of the AR coefficients. That holds
     // exactly as long as ctx >= order, which it is. m_a has `order` zeros
@@ -1980,7 +2086,24 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
         m_rhs[(size_t)j] = -v;
     }
 
-    if (!solveBandedToeplitz(&m_aa[0], order, &m_rhs[0], m, m_solve)) return false;
+    return solveBandedToeplitz(&m_aa[0], order, &m_rhs[0], m, m_solve);
+}
+
+bool Channel::repairRun(int s, int e, bool again, double gain) {
+    const int order = m_cfg.order;
+    const int ctx = 3 * order;
+    const int m = e - s + 1;
+    if (m <= 0 || m > m_cfg.maxRun) return false;      // too long: that is music
+
+    const int lo0 = s - ctx;
+    const int hi0 = e + ctx;
+    if (lo0 < 0 || hi0 >= m_fill) return false;
+
+    const int L = hi0 - lo0 + 1;
+    const int rows = L - order;
+    if (rows <= m) return false;
+
+    if (!solveSpan(s, e)) return false;
 
     // Optional per-sample confidence. Under the model's Gaussian
     // innovation the posterior covariance of the interpolated run is
@@ -2064,6 +2187,137 @@ void Channel::rerepairRuns() {
     }
 }
 
+//! The block's runs, widened by the pad in force, in start order, merged where
+//! they meet; each span interpolated again and its high-passed difference from
+//! the output added to m_flAcc. A span starts after the last one, this block's
+//! or the one before, and far enough in that the high-pass reaches back no
+//! further than the samples still held for the body stage. See Config::flank.
+void Channel::flankPass() {
+    const int n = m_flN;
+    m_flN = 0;
+    if (m_bBeta > 0.0) m_flSince = 0;
+    else if (m_flSince < (1 << 30)) ++m_flSince;
+    // Where the key is open, at full strength and with flankWide's pad on a
+    // full-band transfer; where it is shut, only as far as the transfer is
+    // band-limited, fading over flankHold seconds from full to flankShut.
+    const bool open = m_bBeta > 0.0;
+    const int P = open ? m_flPOpen : m_flP;
+    double strength = open ? 1.0 : m_cfg.flankShut;
+    if (!open && m_cfg.flankHold > 0.0) {
+        const double t = (double)m_flSince * (double)kBlock / m_cfg.rate;
+        strength = dmax(strength, 1.0 - t / m_cfg.flankHold);
+    }
+    if (n == 0 || P <= 0 || !(strength > 0.0)) return;
+    int * ord = &m_flOrder[0];
+    for (int k = 0; k < n; ++k) {             // a few dozen at most, mostly in order
+        int j = k;
+        const int sk = m_flRun[(size_t)(2 * k)];
+        while (j > 0 && m_flRun[(size_t)(2 * ord[j - 1])] > sk) { ord[j] = ord[j - 1]; --j; }
+        ord[j] = k;
+    }
+    // Each run on its own, with its own gain: widened into the samples
+    // between it and its neighbours, never into a neighbour, and the gap
+    // between two runs going to the first. Merged into one span, a cluster on
+    // dense crackle became one long interpolation that lost the music's
+    // 3-4.5 kHz, and took it with the strongest run's gain.
+    const int lowest = m_pad - (int)kBlock + m_cfg.flankHalf;
+    int prev = m_flEnd;
+    for (int k = 0; k < n; ++k) {
+        const int r = ord[k];
+        const int s0 = m_flRun[(size_t)(2 * r)], e0 = m_flRun[(size_t)(2 * r + 1)];
+        int s = s0 - P, e = e0 + P;
+        if (s < lowest) s = lowest;
+        if (s <= prev) s = prev + 1;
+        if (k + 1 < n) {
+            const int next = m_flRun[(size_t)(2 * ord[k + 1])];
+            if (e >= next) e = next - 1;
+        }
+        if (s > s0 || e < e0) continue;       // no room either side: nothing new
+        if (s == s0 && e == e0) continue;
+        if (!open && m_flGain[(size_t)r] < m_cfg.flankShutGain) { prev = e0; continue; }
+        flankSpan(s, e, m_flGain[(size_t)r], strength);
+        prev = e;
+    }
+}
+
+void Channel::flankSpan(int s, int e, double gain, double strength) {
+    const int ctx = 3 * m_cfg.order;
+    const int m = e - s + 1;
+    if (m > m_cfg.maxRun || s - ctx < 0 || e + ctx >= m_fill || !solveSpan(s, e)) {
+        ++m_flSkipped;
+        return;
+    }
+    // The same limit as repairRun()'s, from the input either side.
+    const double localMax = dmax(absMax(&m_dry[(size_t)(s - ctx)], ctx),
+                                 absMax(&m_dry[(size_t)(e + 1)], ctx));
+    const double limit = 1.5 * dmax(localMax, 1e-9);
+    const int Hh = m_cfg.flankHalf;
+    const double * hp = &m_flHp[(size_t)Hh];   // hp[-Hh .. Hh]
+    double * acc = &m_flAcc[(size_t)kBlock];   // acc[i] is window index i, from -kBlock
+    for (int j = 0; j < m; ++j) {
+        double v = m_rhs[(size_t)j];
+        if (v > limit) v = limit;
+        else if (v < -limit) v = -limit;
+        const int t = s + j;
+        const double x = m_dry[(size_t)t];
+        const double d = strength * ((x - gain * (x - v)) - m_win[(size_t)t]);
+        if (d == 0.0) continue;
+        const int a = -Hh;                      // never below -kBlock: see `lowest`
+        const int b = (t + Hh >= m_fill) ? (m_fill - 1 - t) : Hh;
+        for (int u = a; u <= b; ++u) acc[t + u] += hp[u] * d;
+    }
+    m_flEnd = e;
+    ++m_flSpans;
+}
+
+//! Every fourth block, the power spectrum of its input into a long-term
+//! average: the mean of every transform for the first ten seconds, then an
+//! exponential one over ten. After three seconds the -40 dB edge - the highest
+//! bin within 40 dB of the 2-5 kHz level, in log terms, above 5 kHz - sets the
+//! flank repair's pad: full at flankEdge0, none at flankEdge1.
+void Channel::bandwidthBlock() {
+    if (++m_wBlock < 4) return;
+    m_wBlock = 0;
+    const int M = kWideFft;
+    double * re = &m_wRe[0];
+    double * im = &m_wIm[0];
+    const double * x = &m_dry[(size_t)m_pad];
+    for (int i = 0; i < M; ++i) {
+        re[m_wRev[(size_t)i]] = x[i] * m_wWin[(size_t)i];
+        im[m_wRev[(size_t)i]] = 0.0;
+    }
+    fftRadix2(re, im, M, &m_wStRe[0], &m_wStIm[0], false, g_kernels->fftPair, g_kernels->fftOne);
+    const double hop = 4.0 * (double)kBlock;
+    const double tenS = 10.0 * m_cfg.rate / hop;
+    m_wFrames += 1.0;
+    const double a = (m_wFrames < tenS) ? 1.0 / m_wFrames : 1.0 / tenS;
+    double * P = &m_wSpec[0];
+    for (int k = 0; k <= M / 2; ++k) P[k] += a * (re[k] * re[k] + im[k] * im[k] - P[k]);
+    if (m_wFrames < 3.0 * m_cfg.rate / hop) {
+        m_wEdge = 0.0;
+        m_flP = 0;
+        m_flPOpen = 0;
+        return;
+    }
+    const double binHz = m_cfg.rate / (double)M;
+    const int k2 = (int)ceil(2000.0 / binHz), k5 = (int)floor(5000.0 / binHz);
+    double lsum = 0.0;
+    for (int k = k2; k <= k5; ++k) lsum += log(P[k] + 1e-30);
+    const double floorP = exp(lsum / (double)(k5 - k2 + 1)) * 1e-4;    // -40 dB
+    int edge = k5;
+    for (int k = M / 2; k > k5; --k) {
+        if (P[k] > floorP) { edge = k; break; }
+    }
+    m_wEdge = (double)edge * binHz;
+    const double span = m_cfg.flankEdge1 - m_cfg.flankEdge0;
+    double f = (span > 0.0) ? (m_cfg.flankEdge1 - m_wEdge) / span
+                            : (m_wEdge <= m_cfg.flankEdge0 ? 1.0 : 0.0);
+    f = dmin(dmax(f, 0.0), 1.0);
+    m_flP = (int)floor((double)m_cfg.flankPad * f + 0.5);
+    const double w = dmin(dmax(m_cfg.flankWide, 0.0), 1.0);
+    m_flPOpen = (int)floor((double)m_cfg.flankPad * (w + (1.0 - w) * f) + 0.5);
+}
+
 void Channel::processBlock() {
     const int order = m_cfg.order;
     const int blk = (int)kBlock;
@@ -2076,6 +2330,7 @@ void Channel::processBlock() {
     const int dTo = (to < m_fill - order) ? to : (m_fill - order);
 
     m_nruns = 0;
+    m_flN = 0;
     for (int pass = 0; pass < m_cfg.passes; ++pass) {
         if (dTo <= dFrom) break;
         // Refit each pass: once the worst clicks are gone the model fits the
@@ -2105,6 +2360,7 @@ void Channel::pushOne(double v) {
     m_dry[(size_t)m_fill] = v;
     m_full[(size_t)m_fill] = v;
     m_flag[(size_t)m_fill] = 0;
+    m_flAcc[(size_t)m_fill + kBlock] = 0.0;
     ++m_fill;
     ++m_seen;
 
@@ -2129,8 +2385,32 @@ void Channel::pushOne(double v) {
         m_bBeta = bodyBeta();
     }
 
-    for (int i = 0; i < blk; ++i) {
-        bodyPush(m_win[(size_t)(m_pad + i)], m_dry[(size_t)(m_pad + i)]);
+    const int Q = m_cfg.flankStage;
+    if (Q > 0) {
+        // The flank repair, which can reach back into the block held back;
+        // then that block goes to the body stage with its corrections, under
+        // the key as it stood when it was repaired, so the body and fine
+        // stages see what they would have seen without the hold, a block
+        // later. This block is held in its place.
+        bandwidthBlock();
+        flankPass();
+        const double beta = m_bBeta;
+        if (m_stHave) {
+            m_bBeta = m_bBetaPrev;
+            const double * acc = &m_flAcc[(size_t)m_pad];   // window index pad - kBlock
+            for (int i = 0; i < blk; ++i) bodyPush(m_stY[(size_t)i] + acc[i], m_stD[(size_t)i]);
+            m_bBeta = beta;
+        }
+        for (int i = 0; i < blk; ++i) {
+            m_stY[(size_t)i] = m_win[(size_t)(m_pad + i)];
+            m_stD[(size_t)i] = m_dry[(size_t)(m_pad + i)];
+        }
+        m_stHave = true;
+        m_bBetaPrev = beta;
+    } else {
+        for (int i = 0; i < blk; ++i) {
+            bodyPush(m_win[(size_t)(m_pad + i)], m_dry[(size_t)(m_pad + i)]);
+        }
     }
 
     // Slide along by one block, keeping the repairs that reached past its end.
@@ -2139,6 +2419,10 @@ void Channel::pushOne(double v) {
     memmove(&m_dry[0], &m_dry[(size_t)blk], sizeof(double) * keep);
     memmove(&m_full[0], &m_full[(size_t)blk], sizeof(double) * keep);
     memmove(&m_flag[0], &m_flag[(size_t)blk], sizeof(uint8_t) * keep);
+    if (Q > 0) {
+        memmove(&m_flAcc[0], &m_flAcc[(size_t)blk], sizeof(double) * (keep + (size_t)blk));
+        m_flEnd = (m_flEnd > -(1 << 30) + blk) ? m_flEnd - blk : -(1 << 30);
+    }
     m_fill -= blk;
     m_fitLen = 0;                 // the next fit is of a different window
     m_silentUntil = (m_silentUntil > blk) ? (m_silentUntil - blk) : 0;

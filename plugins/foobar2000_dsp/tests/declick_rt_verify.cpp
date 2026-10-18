@@ -136,6 +136,31 @@ std::vector<double> signal(int n, double rate) {
     return v;
 }
 
+//! The signal through a windowed-sinc low-pass at `hz`: a transfer band-limited
+//! like the .m4a ones, which is what the flank repair needs before it acts.
+std::vector<double> lowpassed(const std::vector<double> & x, double rate, double hz) {
+    const int H = 50;
+    const double fc = hz / rate;
+    std::vector<double> h((size_t)(2 * H + 1));
+    double sum = 0.0;
+    for (int j = -H; j <= H; ++j) {
+        const double s = (j == 0) ? 2.0 * fc : sin(6.283185307179586 * fc * j) / (3.141592653589793 * j);
+        const double w = 0.5 + 0.5 * cos(3.141592653589793 * j / (H + 1));
+        h[(size_t)(j + H)] = s * w;
+        sum += s * w;
+    }
+    std::vector<double> y(x.size(), 0.0);
+    for (size_t i = 0; i < x.size(); ++i) {
+        double v = 0.0;
+        for (int j = -H; j <= H; ++j) {
+            const long k = (long)i - j;
+            if (k >= 0 && k < (long)x.size()) v += h[(size_t)(j + H)] * x[(size_t)k];
+        }
+        y[i] = v / sum;
+    }
+    return y;
+}
+
 void perSample(Channel & ch, const std::vector<double> & sig, int from, int to) {
     for (int i = from; i < to; ++i) {
         double x = sig[(size_t)i];
@@ -237,6 +262,24 @@ int main() {
         ch.pull(&sink[0], got < sink.size() ? got : sink.size(), 1);
     }
     requireQuiet("push exactly maxBlock / drain");
+
+    // The flank repair only runs on a band-limited transfer under the key, and
+    // the signal above is neither band-limited nor quiet enough above 13 kHz:
+    // its pad stays 0. Low-passed at 9 kHz, the edge falls under flankEdge0
+    // after the estimate's first 3 s, and the clicks hold the key open.
+    {
+        const std::vector<double> lp = lowpassed(sig, rate, 9000.0);
+        ch.configure(cfg);
+        ch.prime();
+        arm();
+        perSample(ch, lp, 0, 6 * R);
+        requireQuiet("band-limited at 9 kHz: the flank repair");
+        const bool ran = ch.flankSpans() > 0;
+        printf("  %-50s %-4s %llu spans, edge %.0f Hz, pad %d\n", "... and it ran",
+               ran ? "ok" : "FAIL", (unsigned long long)ch.flankSpans(),
+               ch.bandEdge(), ch.flankPadNow());
+        if (!ran) ++g_failures;
+    }
 
     // --- parameter changes -------------------------------------------------
     arm();

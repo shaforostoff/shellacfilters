@@ -347,13 +347,14 @@ because what it was losing was branch mispredictions, which an M1 is far
 better at hiding. **Every output is byte-identical** to what the same build
 produced before, on both machines and with either kernel set: what changed is
 how the work is laid out, not the arithmetic.
-Latency ~94 ms (4144 samples at 44.1 kHz, ~70 ms of it the body stage),
+Latency ~106 ms (4656 samples at 44.1 kHz, ~70 ms of it the body stage and
+11.6 ms the [flank repair](#band-limited-transfers-the-flank-repair)'s hold),
 reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
 must go in before the first block comes out, but the emitted stream is aligned
 with the input. The component reads ahead rather than holding the output back —
 it feeds every chunk in and emits whatever the pipeline has finished — so what
-those 94 ms describe is how far ahead of the listener the decoder is running,
+those 106 ms describe is how far ahead of the listener the decoder is running,
 which is exactly what `get_latency()` exists to tell the core.
 
 **Nothing is carried from one track to the next.** Every record has its own
@@ -1580,6 +1581,112 @@ does not move at all, in any bit: where the key is shut this stage does
 nothing, and it still does nothing. Every ground-truth and reference-transfer
 figure in this README is unchanged to the last digit printed.
 
+### Band-limited transfers: the flank repair
+
+**What was left.** Four of D'Arienzo's 1940s sides come as two transfers: a
+`.flac` flat to 20 kHz, and an `.m4a` (ALAC, lossless) whose spectrum falls
+40 dB by 11.7–14.4 kHz. Declick was heard as good on the `.flac` and bad on the
+`.m4a`. They are different copies of the record, so the crackle differs and the
+music does not. Warped onto the `.m4a` to a fraction of a sample and EQ-matched
+to it every 2 s, the `.flac` copy became a clean reference for it, independent
+of any decrackled version. The warp is a Viterbi path through 40 ms
+cross-correlations that follows the 1.32 Hz wow of either disc; 94–97 % of the
+songs match at ρ ≥ 0.75. Against that reference:
+
+* **The `.m4a`'s excess above 3 kHz is crackle.** Events at more than 16 times
+  their local floor carry 19–49 % of its energy there, where a Gaussian of the
+  same spectrum puts 0–3 %.
+* **The detector finds it.** 99–100 % of the larger events' energy at
+  4.5–10 kHz lies on a run. The repairs leave 36–55 % of it.
+* **The half repair is not the limit.** Repairing every weak run in full
+  changed that by a point, and took 2.6 dB more from *Malvón*.
+* **The click has one shape**, the same in all four songs: a 3–4 sample spike
+  that rings for ±10–15 samples, an impulse through the transfer's low-pass. A
+  run ends inside the ringing. With one sample of slack, its interpolation is
+  pinned to flanks that are still click, and rebuilds part of it.
+
+**The stage** (`Config::flank`). Once a block is repaired, each of its runs is
+widened by 0.18 ms (8 samples at 44.1 kHz) either side, into the samples
+between it and its neighbours but never into one, and interpolated again
+against every repair in full, at its own gain. Only the difference above
+3 kHz is kept, through a 127-tap Kaiser-windowed high-pass. Below that the
+audio is exactly what the repair made of it.
+
+* **Band-limited transfers only.** Every fourth block's spectrum goes into a
+  ten-second average. From three seconds on, its −40 dB edge — the highest
+  frequency within 40 dB of its 2–5 kHz level — sets the pad: full at 13 kHz
+  and below, none at 15 kHz and above. A full-band record gets none.
+* **The key, and a fade after it.** It acts where the body stage's key is
+  open, and once the key shuts it fades out over 12 s (`--flank-hold`). The
+  key counts runs that peak at 6σ, and a dense carpet inflates σ until few
+  reach it: on *Amarras* it shuts over 2:04–2:08, just where the `.m4a` stands
+  furthest above the clean copy, and with the key alone nothing was repaired
+  there. A record whose key never opens is untouched by the fade.
+  * Tried instead: a softer repair wherever the key is shut, on band-limited
+    transfers (`--flank-shut`). At half strength it did as much for *Amarras*
+    as the fade, but it also took −20 to −27 dB of 3–10 kHz from nearly every
+    band-limited 1950s remaster in the sample below, whose key never opens.
+  * Tried too: only the strong runs where the key is shut
+    (`--flank-shut-gain`). That gained nothing; the gain there comes from the
+    weak runs, the carpet.
+  * And a pad for full-band transfers under the key (`--flank-wide`). On *No
+    está*, *Ruiseñor* and *Cornetín* what it took beyond the stage
+    correlated as much with what the decrackled version keeps as with what it
+    removes. It stays off.
+* **Off below 32 kHz**, where a low sample rate cannot be told from a
+  band-limited transfer.
+* **Each run on its own.** Merged into one span where their pads met, a
+  cluster on dense crackle became one long interpolation that lost the music's
+  3–4.5 kHz: *Si supiera* went 1.8 dB further from its reference there.
+* **Latency.** The next block's flanks reach back into this one, so each block
+  waits one more block before the body stage: 512 samples, 11.6 ms. The body
+  and fine stages see the same samples under the same key as before, a block
+  later.
+* **Off.** `declick_cli --flank 0` gives the previous output to the bit, at the
+  previous latency.
+
+Against the reference, dB of (output − reference) against the reference's
+level per band (lower is closer), and the share of the `.m4a`'s crackle events
+left at 4.5–10 kHz:
+
+| | | 3–4.5 kHz | 4.5–7 kHz | 7–10 kHz | events left, larger / smaller |
+|---|---|---|---|---|---|
+| *La madrugada* | without | −8.9 | +0.2 | +6.3 | 36 / 75 % |
+| | **with** | **−9.1** | **−1.1** | **+4.9** | **22 / 50 %** |
+| | decrackled | −8.8 | −1.1 | +3.6 | 21 / 48 % |
+| *Amarras* | without | −5.8 | +1.9 | +7.8 | 55 / 86 % |
+| | **with** | **−6.4** | **+0.7** | **+6.6** | **36 / 61 %** |
+| | decrackled | −6.1 | 0.0 | +4.5 | 21 / 48 % |
+| *Si supiera* | without | −11.4 | −1.5 | +5.2 | 45 / 86 % |
+| | **with** | −11.2 | **−2.1** | **+4.6** | **33 / 74 %** |
+
+Below 3 kHz nothing moves by more than 0.1 dB. With the key alone, *Amarras*
+came to 40 / 69 %; the fade brings 2:05–2:08 0.6–1.3 dB closer to the clean
+copy. *Yo quiero cantar un tango*'s key never opens, and that song barely
+changes. **Heard** on *Amarras* and *La madrugada*, in its Python prototype:
+cleaner, closer to the reference, and no voice in what it takes. Then the
+fade: right on *Amarras* 1:58–2:18, and no music in what it takes from two
+remasters it reaches further on (*Homero*, *Carpeta*).
+
+**Records it must not touch.** Bit-identical to the build before it: the
+*Malvón* master, *No está*, *Va a cantar un ruiseñor*, *Cornetín*, *El Marne*,
+the Troilo dehum pairs, the `.flac` copies above, and *Olga* — band-limited,
+but its key never opens. So are 78 of 98 further songs: a random 80 of
+1950–79 and the 18 references of the hard-case study. The other 20 are
+band-limited transfers whose key opens at some point. In four of them it acts
+over 72–98 % of the song, taking −18 to −23 dB of the 3–10 kHz band: Donato's
+*Por una mujer*, de Angelis's *Jorge Duval* and *Que nadie se entere (2)*,
+D'Arienzo's *La payanca*. *Homero* and *Carpeta* lose −26 and −27 dB over
+about half the song, and were heard to lose no music. The other 14 lose −28 to
+−48 dB over 5–50 %. `scripts/declick_regress.py` passes, with no clamp count
+changed. *El irresistible* and *Hotel Victoria* lose 0.3 dB more. Its one new
+event is 3 samples at 1.36 times the local range on *Si supiera*, where the
+build before reached 1.24.
+
+**Cost.** +2.0–2.1 % on the full-band clips (*Pa que bailen los muchachos*,
+*Malvón*): the spectrum and the block's wait. +24.4 % on *La madrugada*, where
+every run is interpolated a second time.
+
 ---
 
 ## Dehum parameters
@@ -2555,8 +2662,8 @@ wrong pre-roll makes the core zero-fill mid-stream. Around it, the things an AU
 has to get right that a VST does not:
 
 * `GetLatency()` and `GetTailTime()` are **seconds**, not samples, and both have
-  to come back out as `cfg.latency` at the rate in force — 4144 samples at the
-  shipping default, 3856 after dropping to order 32, 7424 at 96 kHz;
+  to come back out as `cfg.latency` at the rate in force — 4656 samples at the
+  shipping default, 4368 after dropping to order 32, 7936 at 96 kHz;
 * `PropertyChanged(kAudioUnitProperty_Latency)` is what an AU says instead of
   `audioMasterIOChanged`, so it must fire **exactly once** for Max repair or
   Model order and **never** for the other five, for Dehum's seven, or across a
@@ -3286,7 +3393,7 @@ and a compiler would not:
 | `resvd1`, `resvd2`, `future[56]` | left zeroed, as the host expects |
 | the deprecated `process` | a no-op function, not a null pointer, because a host old enough to call it will not check first |
 | opcode routing | all seven parameter names arrive at the right index; displays and labels stay inside `kVstMaxParamStrLen` in a buffer bigger than promised |
-| the latency contract | Declick declares 4144 samples at 44.1 kHz with `effGetTailSize` matching, and calls `audioMasterIOChanged` twice for the two structural parameters; Dehum declares 0 and calls it **never** |
+| the latency contract | Declick declares 4656 samples at 44.1 kHz with `effGetTailSize` matching, and calls `audioMasterIOChanged` twice for the two structural parameters; Dehum declares 0 and calls it **never** |
 | `main` | exported as well as `VSTPluginMain`, for hosts that predate the rename, and reaching the same plug-in when called. On Windows the `.def` makes them one address and that is asserted too; the `.so` gets a forwarder instead, because there is no `.def` to alias with |
 | `effClose` | 24 open/close cycles do not accumulate private bytes. This is a contract, not a nicety: the host frees nothing, so a shim that forgets the `delete` leaks the whole instance on every plug-in scan, and Dehum carries ~400 kB of analysis state per channel |
 

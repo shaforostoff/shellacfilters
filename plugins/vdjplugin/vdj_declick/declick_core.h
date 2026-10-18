@@ -289,6 +289,70 @@ struct Config {
     double fineMid       = 8000.0;
     double finePeriodic0 = 0.1;
     double finePeriodic1 = 0.3;
+
+    //! The flank repair. Not user-facing; declick_cli sweeps it as --flank,
+    //! --flank-pad-ms, --flank-hz, --flank-edge0 and --flank-edge1.
+    //! On a transfer band-limited near 11 kHz - the .m4a copies of D'Arienzo's
+    //! 1940s sides fall 40 dB by 11.7-14.4 kHz, their .flac copies by 21 kHz -
+    //! a click is a 3-4 sample spike that rings for +-10-15 samples, and that
+    //! one shape runs through all four songs. A run ends inside the ringing,
+    //! the interpolation is pinned to flanks that are still click, and it
+    //! rebuilds part of it: measured against the .flac copy, warped onto the
+    //! .m4a to a fraction of a sample, the detector found 99-100% of the
+    //! crackle above 4.5 kHz and the repairs left 36-55% of its energy. A full
+    //! repair of every weak run changed that by a point.
+    //! So once a block is repaired, each of its runs is widened by flankPad
+    //! samples either side, into the samples between it and its neighbours but
+    //! never into one, and interpolated again against every repair in full, at
+    //! its own gain. Only the high-passed (flankHz) difference from the output
+    //! is kept, so below that the audio is exactly what the repair made of it.
+    //! The difference goes into m_flAcc, which is added as each block leaves
+    //! for the body stage, a block later than it would have: room for the next
+    //! block's flanks and the filter's spill. On *La madrugada* (.m4a) the
+    //! crackle events left above 4.5 kHz go 36 -> 22%, the decrackled
+    //! version's 21%, and 3-7 kHz comes as close to the clean copy as that
+    //! version or closer; below 3 kHz nothing moves by more than 0.1 dB.
+    //! It acts only as far as the transfer is band-limited: the pad is full
+    //! where the long-term spectrum falls 40 dB under its 2-5 kHz level by
+    //! flankEdge0, and gone by flankEdge1. A full-band record gets none, so the
+    //! Malvon master, *No esta*, *Va a cantar un ruisenor* and *Cornetin* come
+    //! out to the bit as without it, with flankStage more latency. Off below
+    //! 32 kHz, where a low sample rate cannot be told from a band-limited
+    //! transfer.
+    //! And it acts where the body stage's key is open, then fades out over
+    //! flankHold seconds once it shuts. The key counts runs at 6 sigma, and a
+    //! dense carpet inflates sigma until few reach it: on *Amarras* (.m4a) it
+    //! shuts over 2:04-2:08, where the .m4a stands furthest above the clean
+    //! copy, and the repair stopped there. Over 12 s the fade covers that and
+    //! brings it 0.6-1.3 dB closer, and the events left over the song go
+    //! 40 -> 36% and 69 -> 61%. A record whose key never opens is untouched by
+    //! it, which a softer repair everywhere was not: at half strength it took
+    //! -20 to -27 dB of 3-10 kHz from nearly every band-limited 1950s
+    //! remaster in a sample of 98. 12 s was heard as right on *Amarras*, and
+    //! as taking no music from two remasters it reaches further on.
+    int    flank        = 1;
+    double flankPadMs   = 0.18;      //!< 8 samples at 44.1 kHz
+    double flankHz      = 3000.0;
+    double flankEdge0   = 13000.0;
+    double flankEdge1   = 15000.0;
+    double flankHold    = 12.0;      //!< seconds
+    //! Where the key is shut, past the hold: the strength left there, on a
+    //! band-limited transfer only. 0: see flankHold for what it costs.
+    double flankShut    = 0.0;
+    //! ... and there only for runs repaired with at least this gain (see
+    //! Config::softMin). The gain there comes from the weak runs, the carpet:
+    //! strong runs alone did nothing for *Amarras*.
+    double flankShutGain = 0.0;
+    //! Where the key is open: the share of the pad a full-band transfer gets.
+    //! 0: on *No esta*, *Ruisenor* and *Cornetin* what it would take
+    //! correlates as much with what the decrackled version keeps as with what
+    //! it removes.
+    double flankWide    = 0.0;
+    int    flankPad     = 8;         //!< from flankPadMs and the rate
+    int    flankHalf    = 63;        //!< the high-pass's half length, from the rate
+    //! Samples the repaired audio waits before the body stage, for the flank
+    //! repair: a block, or 0 when it is off. Part of the latency.
+    int    flankStage   = 0;
     double rate         = 44100.0;   //!< the sample rate compute() was given
 
     int    pad          = 272;   //!< context needed either side of a block
@@ -334,15 +398,16 @@ struct Config {
     //! can be swapped into a running Channel with retune() instead of
     //! configure(), which reallocates and therefore resets.
     //!
-    //! Only `order`, `maxRun`, `madWindow`, `body`, `bodyN`, `fineN` and
-    //! `fineM` size anything or set the latency (`pad` and `latency` are
-    //! derived from them); thresholds, depth, wet, delta, passes and whether
-    //! the fine stage runs are read per block and can change under a live
-    //! stream.
+    //! Only `order`, `maxRun`, `madWindow`, `body`, `bodyN`, `fineN`,
+    //! `fineM`, `flankStage` and `flankHalf` size anything or set the latency
+    //! (`pad` and `latency` are derived from them); thresholds, depth, wet,
+    //! delta, passes and whether the fine stage runs are read per block and
+    //! can change under a live stream.
     bool structurallyEquals(const Config & o) const {
         return order == o.order && maxRun == o.maxRun && madWindow == o.madWindow
             && body == o.body && bodyN == o.bodyN && fineN == o.fineN
-            && fineM == o.fineM && rate == o.rate;
+            && fineM == o.fineM && flankStage == o.flankStage
+            && flankHalf == o.flankHalf && flankHz == o.flankHz && rate == o.rate;
     }
 };
 
@@ -498,6 +563,15 @@ public:
     uint64_t clampedSamples() const { return m_clamped; }
     uint64_t reclampedSamples() const { return m_reclamped; }
 
+    //! Diagnostics for the flank repair: spans interpolated again, spans
+    //! passed over (longer than maxRun, or too near the window's edge), and
+    //! the -40 dB edge of the long-term spectrum in Hz with the pad it gives
+    //! now. See Config::flank.
+    uint64_t flankSpans() const { return m_flSpans; }
+    uint64_t flankSkipped() const { return m_flSkipped; }
+    double bandEdge() const { return m_wEdge; }
+    int flankPadNow() const { return m_flPOpen; }
+
     //! Diagnostics: total bytes this channel is holding. Nothing in the
     //! processing path adds to this - see the buffer envelope in Config.
     size_t heapBytes() const;
@@ -533,8 +607,17 @@ private:
     //! repair is not counted a second time. `gain` scales what is taken out
     //! of m_win; m_full takes all of it. See Config::softMin.
     bool repairRun(int s, int e, bool again, double gain);
+    //! The interpolation of m_win[s..e] from m_full around it, into m_rhs.
+    //! The caller has checked that the span and its context fit the window.
+    bool solveSpan(int s, int e);
     //! Repairs every run recorded this block again, with the current model.
     void rerepairRuns();
+    //! The flank repair of this block's runs, into m_flAcc; see Config::flank.
+    void flankPass();
+    void flankSpan(int s, int e, double gain, double strength);
+    //! The long-term spectrum of the input, every fourth block, and from it
+    //! the -40 dB edge and the flank repair's pad.
+    void bandwidthBlock();
     void fitModel(int from, int to);
     //! The fit's autocorrelation from the last one's; see the .cpp.
     bool updateAutocorr(int n, int order);
@@ -611,6 +694,38 @@ private:
     std::vector<int> m_runs;
     std::vector<double> m_runGain;   //!< each run's repair gain, one per pair
     int    m_nruns = 0;
+
+    //! The flank repair; see Config::flank. Every run repaired this block, on
+    //! any pass, as (start, end) pairs with its gain, whatever Config::rerepair
+    //! says; and the high-passed corrections, aligned with m_win and slid with
+    //! it, which the output adds as it leaves for the body stage.
+    std::vector<int> m_flRun;
+    std::vector<double> m_flGain;
+    std::vector<int> m_flOrder;      //!< the runs in start order
+    int    m_flN = 0;
+    std::vector<double> m_flAcc;
+    std::vector<double> m_flHp;      //!< the high-pass, 2 flankHalf + 1 taps
+    //! The last sample a flank span reached, in m_win's coordinates: the next
+    //! block's spans start after it, so no sample is corrected twice.
+    int    m_flEnd = 0;
+    int    m_flP = 0;                //!< the pad where the key is shut: from the edge alone
+    int    m_flPOpen = 0;            //!< ... and where it is open, with flankWide
+    //! Blocks since the key was last open, for flankHold; huge until it opens.
+    int    m_flSince = 1 << 30;
+    //! The repaired block held back for the flank repair, its dry copy, and
+    //! m_bBeta as it stood when it was repaired, which is what the body and
+    //! fine stages see while it goes through them.
+    std::vector<double> m_stY, m_stD;
+    bool   m_stHave = false;
+    double m_bBetaPrev = 0.0;
+    uint64_t m_flSpans = 0, m_flSkipped = 0;
+    //! The long-term spectrum for the edge: a 512-point transform of every
+    //! fourth block of input, averaged over ~10 s.
+    std::vector<double> m_wSpec, m_wWin, m_wRe, m_wIm, m_wStRe, m_wStIm;
+    std::vector<int>    m_wRev;
+    int    m_wBlock = 0;             //!< blocks since the last transform
+    double m_wFrames = 0.0;          //!< transforms averaged so far
+    double m_wEdge = 0.0;            //!< Hz; 0 until there is enough of them
 
     //! The body stage; see Config::body. Rings of repaired (m_bY) and dry
     //! (m_bD) audio and of what it removes from them (m_bR), indexed by the
