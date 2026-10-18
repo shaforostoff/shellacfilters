@@ -1597,6 +1597,8 @@ void Channel::reset() {
     m_outCount = 0;
     m_repaired = 0;
     m_seen = 0;
+    m_clamped = 0;
+    m_reclamped = 0;
     m_silentUntil = 0;
     std::fill(m_bY.begin(), m_bY.end(), 0.0);
     std::fill(m_bD.begin(), m_bD.end(), 0.0);
@@ -2013,9 +2015,11 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
     const double alpha = m_cfg.wienerAlpha;
     const double wcap = m_cfg.wienerMax;
     int touched = 0;
+    int clamped = 0;   // see clampedSamples()
 
     for (int j = 0; j < m; ++j) {
         double v = m_rhs[(size_t)j];
+        clamped += fabs(v) > limit;
         if (v > limit) v = limit;
         else if (v < -limit) v = -limit;
 
@@ -2048,6 +2052,8 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
         m_flag[s + j] = 1;
     }
     if (!again) m_repaired += (uint64_t)touched;
+    if (again) m_reclamped += (uint64_t)clamped;
+    else m_clamped += (uint64_t)clamped;
     return true;
 }
 

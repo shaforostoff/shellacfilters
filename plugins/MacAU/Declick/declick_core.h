@@ -491,6 +491,13 @@ public:
     uint64_t repairedSamples() const { return m_repaired; }
     uint64_t seenSamples() const { return m_seen; }
 
+    //! Diagnostics: how many repaired samples had their estimate clamped to
+    //! the local range in repairRun(), on first repairs and on re-repairs. A
+    //! clamped estimate means the solve went wrong; on clean records it
+    //! should stay near zero. A re-repair counts every time it is done.
+    uint64_t clampedSamples() const { return m_clamped; }
+    uint64_t reclampedSamples() const { return m_reclamped; }
+
     //! Diagnostics: total bytes this channel is holding. Nothing in the
     //! processing path adds to this - see the buffer envelope in Config.
     size_t heapBytes() const;
@@ -699,6 +706,7 @@ private:
     size_t m_outCount = 0;         //!< samples held
 
     uint64_t m_repaired = 0, m_seen = 0;
+    uint64_t m_clamped = 0, m_reclamped = 0;
 };
 
 //! The inner-product kernels this process runs: "avx2" where the CPU and OS

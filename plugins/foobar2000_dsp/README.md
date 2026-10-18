@@ -2621,6 +2621,67 @@ build\x64\tests\Release\component_smoke.exe ^
   --screenshot dialog.bmp
 ```
 
+### Before committing a core change
+
+The tests above check linear algebra, allocations and that the ports agree.
+None of them looks at what the core does to a record. So a change to
+`declick_core` or `dehum_core` also gets a whole-song A/B against the commit
+before it, with `scripts/declick_regress.py`:
+
+```bash
+"C:\Program Files\Python314\python.exe" scripts\declick_regress.py
+"C:\Program Files\Python314\python.exe" scripts\declick_regress.py --base fe53b2314 --cand f9557b738
+```
+
+With no arguments it compares HEAD against the working tree. It builds
+`declick_cli` and `dehum_cli` for both from `git archive`, runs ten reference
+songs whole, through declick alone and through dehum then declick, and prints
+for each: removal in dB, clamped estimates, and every out-of-range event, a
+stretch where the output exceeds 1.25 times the input's 10 ms peak. It exits 1
+if the candidate has an event longer than 3 samples that the base does not, or
+more clamped estimates than 20 (or half the base's count, if that is more) over
+the base. The songs live outside the repository; their paths are at the top of
+the script, and `--file` runs it on others. About 25 s on the dev box once the
+builds are cached.
+
+Why whole songs and the chain: the half repair of 59c398f48 passed every test
+and every 60 s excerpt, moved whole-song removal by about 0.1 dB, and put a
+6 ms burst at the clamp into *Voz de tango* at 14.37 s, but only with Dehum
+ahead of it. That burst is chaotic. The same audio started 100 samples later,
+or with white noise 70 dB down added, does not produce it. Nor did any of about
+2,000 synthetic signals tried for a ctest, which is why there is none.
+
+`declick_cli` prints `clamped N first, M again` after the repaired count: the
+estimates `repairRun()` had to pull back to 1.5 times the local range, first
+repairs and re-repairs, which means solves that went wrong. At f9557b738 the
+clean records (Malvon, *Olga*, the Troilo .flac sides) have none, the crackly
+ones a handful, and *Hotel Victoria* the most, 31+2. fe53b2314, the core before
+the fix, had 169+11 on *Voz de tango* after Dehum and 893+58 on *El
+irresistible* after Dehum, in that song's near-silent tail. The output there
+never left the 1.25x range, so the counter catches runaways the scan does not.
+Quantised digital silence, such as a 16-bit fade-out tail, clamps by the
+thousand on any build without anything being heard. So read the counter
+against the base, never as an absolute.
+
+Abrupt level steps are a known gap, not a regression. Synthetic signals that
+drop by 40 dB or more take the output 6 to 17 times past the scan's limit,
+before f9557b738 and after it. The worst case is a pair of clicks whose run is
+longer than `maxRun`. That run is refused and the clicks stay in, while the
+clean samples either side of it, flagged only because the clicks ring through
+the detector, are solved against them. The clamp's ±3·order window holds the
+same raw clicks, so it lets those estimates through. A hard step does it on its
+own too, the quiet side's repairs carrying on the loud side's tone, and so does
+the body stage, whose 46 ms frames smear across the step. Real records never
+get there. Across 400 TangoTunes transfers run whole, the deepest drop out of a
+loud passage was about 26 dB, where the shellac floor stops it. The worst event
+peaked at 1.56 times the input's 10 ms peak, a few samples on a near-clipping
+transient, which is what an ordinary event looks like. Where the clamp binds on
+a real song, a ±order window gives the same limit, and on *Hotel Victoria* that
+window would bind four times as often. So the window stays as it is.
+
+None of this replaces listening. And the "clicks above 8 sigma" score is not a
+pass or fail: it swings 2x between near-identical outputs.
+
 ### Deliberate behavioural differences
 
 Two places where the port does not follow the VST, both to avoid producing

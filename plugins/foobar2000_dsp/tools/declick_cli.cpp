@@ -226,10 +226,12 @@ int main(int argc, char ** argv) {
         avail = chans[0]->available();
     }
 
-    uint64_t repaired = 0, seen = 0;
+    uint64_t repaired = 0, seen = 0, clamped = 0, reclamped = 0;
     for (unsigned c = 0; c < channels; ++c) {
         repaired += chans[c]->repairedSamples();
         seen += chans[c]->seenSamples();
+        clamped += chans[c]->clampedSamples();
+        reclamped += chans[c]->reclampedSamples();
     }
 
     if (delta) {
@@ -256,9 +258,12 @@ int main(int argc, char ** argv) {
         printf("  kernels %s\n", declick::kernelName());
         printf("  latency %d samples (%.1f ms)\n", cfg.latency,
                1000.0 * cfg.latency / (double)audio.sampleRate);
-        printf("  repaired %llu of %llu samples (%.2f%%)\n",
+        // Clamped: estimates a repair had to pull back into the local range,
+        // which means its solve went wrong. See Channel::clampedSamples().
+        printf("  repaired %llu of %llu samples (%.2f%%), clamped %llu first, %llu again\n",
                (unsigned long long)repaired, (unsigned long long)seen,
-               seen ? 100.0 * (double)repaired / (double)seen : 0.0);
+               seen ? 100.0 * (double)repaired / (double)seen : 0.0,
+               (unsigned long long)clamped, (unsigned long long)reclamped);
     }
     return 0;
 }
