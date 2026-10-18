@@ -1687,6 +1687,115 @@ build before reached 1.24.
 *Malvón*): the spectrum and the block's wait. +24.4 % on *La madrugada*, where
 every run is interpolated a second time.
 
+### Crackle the body key misses: the carpet key
+
+**What was left.** The body key counts runs that peak at 6σ, and on a crackly
+transfer that count sits right at its 20–60 a second ramp. Dense crackle
+inflates σ, so fewer of its clicks reach 6σ just where it is densest, and the
+key flickers or stays shut:
+
+* *Yo quiero cantar un tango* (`.m4a`) had it open 3 % of the song;
+* *Si supiera* 36 %;
+* *Viejo ciego* 34 %;
+* *Margarita Gauthier* 27 %.
+
+Where it is shut the fine stage and the flank repair do nothing either. Against
+the clean copy, the crackle there was not denser from one second to the next:
+
+* On *Amarras* 1:48–2:21 the detector repaired 1,200–1,500 runs a second
+  throughout, about 300 of them at 4σ or more.
+* The worst seconds were where the music dropped by 8 dB.
+* Every per-second measure tried tracked the music rather than the crackle:
+  run rates at lower peaks, the share repaired, σ against its own floor, the
+  high band's kurtosis.
+
+What tells a crackly transfer from a clean one is the record. Its surface keeps
+a carpet of runs going through the quiet passages; on a clean record runs come
+and go with the music.
+
+**The key** (`Config::carpet`).
+
+* **What it counts.** Every repair block, the runs that peak at 4σ or more,
+  where the body key counts its own.
+* **Its value.** Their rate per 44.1k samples over each second, and the 20th
+  percentile of the last 20 seconds of those rates.
+* **The ramp.** It opens from 110 runs a second and is full at 150.
+* **Its first seconds.** It may open after 3 s. While its 20 s fill, both
+  thresholds stand up to half as high again: a loud opening of a few seconds is
+  little evidence.
+
+| | its value, 5th / 50th percentile |
+|---|---|
+| the four D'Arienzo `.m4a` | 101–278 / 145–341 |
+| ten Tanturi and Calo `.m4a` the user named as not perfect | 99–274 / 127–350 |
+| clean band-limited 1958–75 remasters, *Olga* | at most 77 |
+| *El Marne* | at most 108; 120 on its first seconds |
+| the *Malvón* master | at most 66 |
+
+**It opens the fine stage and the flank repair, not the body stage.**
+
+* The fine stage cuts by the larger of the two keys.
+* The flank repair's strength is at least the carpet key.
+* Opening the body stage too moved six of the seven songs below 1.1–3.1 dB
+  further from their clean copy at 0.5–1 kHz: that is music.
+
+Against clean copies of seven songs, dB of (output − reference) per band
+(lower is closer), and the `.m4a`'s crackle events left at 4.5–10 kHz:
+
+* the four D'Arienzo `.m4a` against their `.flac` copies, as above;
+* three Calo `.m4a` against vinyl transfers, warped onto them after a speed
+  search (the vinyl runs 1.6 and 2.4 % slow on two of them).
+
+| | | 4.5–7 kHz | 7–10 kHz | events left, larger / smaller |
+|---|---|---|---|---|
+| *Yo quiero* | without | +4.6 | +11.8 | 56 / 86 % |
+| | **with** | **+3.8** | **+10.5** | **37 / 65 %** |
+| *Amarras* | without | +0.7 | +6.6 | 36 / 61 % |
+| | **with** | **+0.4** | **+5.9** | **31 / 54 %** |
+| *Si supiera* | without | −2.1 | +4.6 | 33 / 74 % |
+| | **with** | **−2.2** | **+4.2** | **31 / 69 %** |
+| *Margarita Gauthier* | without | −4.6 | +1.5 | 42 / 78 % |
+| | **with** | **−4.7** | **+0.9** | **40 / 74 %** |
+| *A las siete en el café* | without | −4.1 | +4.2 | 26 / 72 % |
+| | **with** | −4.1 | **+3.9** | **25 / 70 %** |
+| *Tristezas de la calle Corrientes* | without | −4.8 | +0.9 | 39 / 76 % |
+| | **with** | **−4.9** | **+0.6** | **38 / 75 %** |
+
+Below 3 kHz the output is the same as without it on all seven. *La madrugada*'s
+key was already open, and it hardly changes. **Heard** as helping on *Homero*
+and *Si supiera*.
+
+**Records it must not touch.**
+
+* **Bit-identical to the build before it:**
+  * *Malvón*, *Olga*, *El Marne*, *La tablada*;
+  * the band-limited 1958–75 remasters of the sample below;
+  * the full-band songs of the sample whose body key never opens;
+  * 81 of 108 songs in all (the 98-song sample, the six regression songs and
+    the four D'Arienzo `.flac` copies).
+* **The others are crackly transfers:**
+  * the `.flac` copies, *No está*, *Ruiseñor*, *Cornetín*;
+  * the 1950s remasters the body key already opens on.
+  * The most changed are *Bien milonga* (−30.8 dB of 3–10 kHz over 79 % of the
+    song), *Homero* (−29.9 dB over 51 %) and *Mano a mano* (−27.0 dB over
+    28 %).
+  * One 1970 remaster, *Senda florida (2)*, changes over 6 % of the song by
+    −52 dB.
+* **`scripts/declick_regress.py` passes** on the reference set and on the
+  fourteen songs above:
+  * no new out-of-range event, no clamp count changed;
+  * *Yo quiero* takes 1.3 dB more, *Amarras* and *Viejo ciego* 0.2–0.3 dB,
+    *Hotel Victoria* 0.1–0.2 dB.
+* **Off:** `declick_cli --carpet 0` gives the previous output to the bit.
+
+**Cost.**
+
+* **Where it stays shut,** nothing measurable (+0.2 to +1.4 %, the noise of
+  interleaved best-of-7 runs): a counter per block, twenty numbers sorted once a
+  second.
+* **Where it opens,** the stages it opens: +44 % on *Yo quiero*, +20 % on
+  *Viejo ciego*, as on a record whose body key is open.
+
 ---
 
 ## Dehum parameters

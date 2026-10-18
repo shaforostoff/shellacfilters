@@ -1154,6 +1154,13 @@ void Config::compute(const Params & pIn, double sampleRate) {
     flankStage = flank ? (int)kBlock : 0;
     latency = pad + (int)kBlock + bodyLatency + flankStage;
 
+    // The carpet key's ring is a fixed array of kCarpetMax seconds.
+    if (carpetWin < 1) carpetWin = 1;
+    if (carpetWin > (int)kCarpetMax) carpetWin = (int)kCarpetMax;
+    if (carpetMin < 1) carpetMin = 1;
+    if (carpetMin > carpetWin) carpetMin = carpetWin;
+    carpetQ = dmin(dmax(carpetQ, 0.0), 1.0);
+
     // The fine stage's frames span ~2.9 ms at any rate: the power of two
     // nearest 0.0029 * rate. A sample is final once the frame D hops after
     // the last one covering it has arrived, D * N/4 + N - 1 samples later, D
@@ -1713,6 +1720,14 @@ void Channel::reset() {
     m_bStrong = 0;
     m_bKeyPos = 0;
     m_bBeta = 0.0;
+    m_cBlk = 0;
+    m_cRuns = 0.0;
+    m_cSamp = 0.0;
+    std::fill(m_cRing, m_cRing + kCarpetMax, 0.0);
+    m_cPos = 0;
+    m_cHave = 0;
+    m_cKey = 0.0;
+    m_cOpen = 0;
     m_fNextHop = (uint64_t)m_fN;
     m_fHist = 0;
     m_fFrame = 0;
@@ -2027,6 +2042,7 @@ void Channel::interpolate(int from, int to, int reach) {
         }
         i = e + 1;
         if (ok && peak >= m_cfg.bodyPeak) ++m_bStrong;   // the body stage's key
+        if (ok && peak >= m_cfg.carpetPeak) ++m_cBlk;    // the carpet key
         if (ok && m_cfg.flankStage > 0 && m_flN < (int)m_flGain.size()) {
             m_flRun[(size_t)(2 * m_flN)] = s;
             m_flRun[(size_t)(2 * m_flN + 1)] = e;
@@ -2207,6 +2223,9 @@ void Channel::flankPass() {
         const double t = (double)m_flSince * (double)kBlock / m_cfg.rate;
         strength = dmax(strength, 1.0 - t / m_cfg.flankHold);
     }
+    // And at least the carpet key; see Config::carpet. With the key shut that
+    // is 0, which changes nothing.
+    strength = dmax(strength, m_cKey);
     if (n == 0 || P <= 0 || !(strength > 0.0)) return;
     int * ord = &m_flOrder[0];
     for (int k = 0; k < n; ++k) {             // a few dozen at most, mostly in order
@@ -2367,6 +2386,7 @@ void Channel::pushOne(double v) {
     if (m_fill < capacity) return;
 
     m_bStrong = 0;
+    m_cBlk = 0;
     processBlock();
 
     // The body stage's key: strong runs in this block, their rate over the
@@ -2383,6 +2403,10 @@ void Channel::pushOne(double v) {
         m_bKey[(size_t)m_bKeyPos] = bodyKey();
         if (++m_bKeyPos >= (int)m_bKey.size()) m_bKeyPos = 0;
         m_bBeta = bodyBeta();
+    }
+    if (m_cfg.carpet) {
+        carpetBlock();
+        if (m_cKey > 0.0) ++m_cOpen;
     }
 
     const int Q = m_cfg.flankStage;
@@ -2488,6 +2512,37 @@ double Channel::bodyKey() const {
     const double span = m_cfg.bodyRate1 - m_cfg.bodyRate0;
     if (!(span > 0.0)) return key >= m_cfg.bodyRate1 ? 1.0 : 0.0;
     return dmin(dmax((key - m_cfg.bodyRate0) / span, 0.0), 1.0);
+}
+
+//! This block's runs at carpetPeak sigma into the second being counted. Once
+//! that has spanned a second of samples, its rate per 44.1k samples goes into
+//! the ring, and the key is the ring's carpetQ quantile, linear between the two
+//! values either side, on the ramp. Twenty numbers sorted once a second, on the
+//! stack.
+void Channel::carpetBlock() {
+    m_cRuns += m_cBlk;
+    m_cSamp += (double)kBlock;
+    if (m_cSamp < m_cfg.rate) return;
+    const int W = m_cfg.carpetWin;
+    m_cRing[m_cPos] = m_cRuns * 44100.0 / m_cSamp;
+    if (++m_cPos >= W) m_cPos = 0;
+    if (m_cHave < W) ++m_cHave;
+    m_cRuns = 0.0;
+    m_cSamp = 0.0;
+    if (m_cHave < m_cfg.carpetMin) return;
+    double v[kCarpetMax];
+    for (int k = 0; k < m_cHave; ++k) v[k] = m_cRing[k];
+    std::sort(v, v + m_cHave);
+    const double qp = m_cfg.carpetQ * (double)(m_cHave - 1);
+    const int lo = (int)floor(qp);
+    const double fr = qp - lo;
+    const double K = (lo + 1 < m_cHave) ? v[lo] + fr * (v[lo + 1] - v[lo]) : v[lo];
+    // Less history, more evidence asked: the thresholds start carpetWarm
+    // higher and come down to their own as the ring fills.
+    const double wf = 1.0 + m_cfg.carpetWarm * (double)(W - m_cHave) / (double)W;
+    const double span = wf * (m_cfg.carpetRate1 - m_cfg.carpetRate0);
+    if (!(span > 0.0)) { m_cKey = K >= wf * m_cfg.carpetRate1 ? 1.0 : 0.0; return; }
+    m_cKey = dmin(dmax((K - wf * m_cfg.carpetRate0) / span, 0.0), 1.0);
 }
 
 //! The newest frame starts at sample `start` of the stage's input, and the
@@ -2636,7 +2691,9 @@ void Channel::fineHop(uint64_t start) {
     const int N = m_fN, H = m_fH, nb = m_fNb, S = m_fSlots, Mf = m_cfg.fineM;
     const int D = m_fD, W = m_fW;
     const size_t mask = m_bMask;
-    const double beta = (nb > 0) ? m_bBeta : 0.0;
+    // The carpet key opens this stage, and only this one, where the body key
+    // is shut; see Config::carpet.
+    const double beta = (nb > 0) ? dmax(m_bBeta, m_cKey) : 0.0;
     if (beta <= 0.0) {
         m_fHist = 0;           // the history has a hole; start it again
         return;

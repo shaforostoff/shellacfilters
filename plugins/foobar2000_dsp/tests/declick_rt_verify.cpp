@@ -281,6 +281,30 @@ int main() {
         if (!ran) ++g_failures;
     }
 
+    // The carpet key opens the fine stage and the flank repair where the body
+    // key is shut. Here the body key is held shut and the carpet key's ramp
+    // brought down to the clicks above, about 63 a second, so that it has to
+    // open on its own - from 3 s, once a second's rates fill its ring.
+    {
+        Config cc = cfg;
+        cc.bodyRate0 = 1e9;
+        cc.bodyRate1 = 2e9;
+        cc.carpetRate0 = 20.0;
+        cc.carpetRate1 = 40.0;
+        const std::vector<double> lp = lowpassed(sig, rate, 9000.0);
+        ch.configure(cc);
+        ch.prime();
+        arm();
+        perSample(ch, lp, 0, 6 * R);
+        requireQuiet("the carpet key, with the body key held shut");
+        const bool ran = ch.carpetOpenBlocks() > 0 && ch.flankSpans() > 0;
+        printf("  %-50s %-4s open %llu blocks, key %.2f, %llu flank spans\n", "... and it opened",
+               ran ? "ok" : "FAIL", (unsigned long long)ch.carpetOpenBlocks(), ch.carpetKey(),
+               (unsigned long long)ch.flankSpans());
+        if (!ran) ++g_failures;
+        ch.configure(cfg);
+    }
+
     // --- parameter changes -------------------------------------------------
     arm();
     const bool retuned = ch.retune(cTune);

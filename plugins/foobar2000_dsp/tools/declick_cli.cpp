@@ -72,7 +72,16 @@ void usage() {
         "  --flank-shut <0..1> Its strength where the key is shut, band-limited only (default 0)\n"
         "  --flank-wide <0..1> Share of the pad a full-band transfer gets under the key (default 0)\n"
         "  --flank-shut-gain <0..1> ... where it is shut, only runs repaired at this gain or more (default 0)\n"
-        "  --flank-hold <s>   Seconds it fades out over once the key shuts (default 12)\n");
+        "  --flank-hold <s>   Seconds it fades out over once the key shuts (default 12)\n"
+        "  --carpet <0|1>     The carpet key: opens the fine stage and the flank repair\n"
+        "                     on a steady carpet of crackle, where the body key is shut (default 1)\n"
+        "  --carpet-peak <x>  Runs counted peak at this many sigma or more (default 4)\n"
+        "  --carpet-win <s>   Seconds of per-second rates it looks back over, 1..64 (default 20)\n"
+        "  --carpet-q <0..1>  Quantile of those rates that is the key's value (default 0.2)\n"
+        "  --carpet-rate0 <x> Runs per second (per 44.1k samples) where it starts to open (default 110)\n"
+        "  --carpet-rate1 <x> ... and where it is fully open (default 150)\n"
+        "  --carpet-warm <x>  Thresholds stand this much higher while the window fills (default 0.5)\n"
+        "  --carpet-min <s>   Seconds before it may open (default 3)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -105,6 +114,8 @@ int main(int argc, char ** argv) {
     float fineFloor = -1.0f, fineMid = -1.0f, fineP0 = -1.0f, fineP1 = -1.0f;
     float flank = -1.0f, flankPadMs = -1.0f, flankHz = -1.0f, flankEdge0 = -1.0f, flankEdge1 = -1.0f;
     float flankShut = -1.0f, flankWide = -1.0f, flankShutGain = -1.0f, flankHold = -1.0f;
+    float carpet = -1.0f, carpetPeak = -1.0f, carpetWin = -1.0f, carpetQ = -1.0f;
+    float carpetRate0 = -1.0f, carpetRate1 = -1.0f, carpetWarm = -1.0f, carpetMin = -1.0f;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--delta") { delta = true; continue; }
@@ -150,6 +161,14 @@ int main(int argc, char ** argv) {
         else if (a == "--flank-wide") flankWide = v;
         else if (a == "--flank-shut-gain") flankShutGain = v;
         else if (a == "--flank-hold") flankHold = v;
+        else if (a == "--carpet") carpet = v;
+        else if (a == "--carpet-peak") carpetPeak = v;
+        else if (a == "--carpet-win") carpetWin = v;
+        else if (a == "--carpet-q") carpetQ = v;
+        else if (a == "--carpet-rate0") carpetRate0 = v;
+        else if (a == "--carpet-rate1") carpetRate1 = v;
+        else if (a == "--carpet-warm") carpetWarm = v;
+        else if (a == "--carpet-min") carpetMin = v;
         else if (a == "-s") params.sensitivity = v;
         else if (a == "-e") params.extent = v;
         else if (a == "-l") params.maxLengthMs = v;
@@ -198,6 +217,14 @@ int main(int argc, char ** argv) {
     if (flankWide >= 0.0f) cfg.flankWide = flankWide;
     if (flankShutGain >= 0.0f) cfg.flankShutGain = flankShutGain;
     if (flankHold >= 0.0f) cfg.flankHold = flankHold;
+    if (carpet >= 0.0f) cfg.carpet = (int)carpet;
+    if (carpetPeak >= 0.0f) cfg.carpetPeak = carpetPeak;
+    if (carpetWin >= 0.0f) cfg.carpetWin = (int)carpetWin;
+    if (carpetQ >= 0.0f) cfg.carpetQ = carpetQ;
+    if (carpetRate0 >= 0.0f) cfg.carpetRate0 = carpetRate0;
+    if (carpetRate1 >= 0.0f) cfg.carpetRate1 = carpetRate1;
+    if (carpetWarm >= 0.0f) cfg.carpetWarm = carpetWarm;
+    if (carpetMin >= 0.0f) cfg.carpetMin = (int)carpetMin;
     cfg.compute(params, (double)audio.sampleRate);
     if (alpha >= 0.0f) cfg.wienerAlpha = alpha;
     if (wmax >= 0.0f) cfg.wienerMax = wmax;
@@ -258,6 +285,7 @@ int main(int argc, char ** argv) {
     }
 
     uint64_t repaired = 0, seen = 0, clamped = 0, reclamped = 0, flSpans = 0, flSkipped = 0;
+    uint64_t carpetOpen = 0;
     for (unsigned c = 0; c < channels; ++c) {
         repaired += chans[c]->repairedSamples();
         seen += chans[c]->seenSamples();
@@ -265,6 +293,7 @@ int main(int argc, char ** argv) {
         reclamped += chans[c]->reclampedSamples();
         flSpans += chans[c]->flankSpans();
         flSkipped += chans[c]->flankSkipped();
+        carpetOpen += chans[c]->carpetOpenBlocks();
     }
 
     if (delta) {
@@ -303,6 +332,12 @@ int main(int argc, char ** argv) {
             printf("  flank: edge %.0f Hz, pad %d of %d, %llu spans, %llu passed over\n",
                    chans[0]->bandEdge(), chans[0]->flankPadNow(), cfg.flankPad,
                    (unsigned long long)flSpans, (unsigned long long)flSkipped);
+        }
+        // The carpet key: the share of the stream it was open over, which is
+        // where it opened the fine stage and the flank repair.
+        if (cfg.carpet) {
+            printf("  carpet: key open over %.1f%% of the stream\n",
+                   seen ? 100.0 * (double)(carpetOpen * declick::kBlock) / (double)seen : 0.0);
         }
     }
     return 0;

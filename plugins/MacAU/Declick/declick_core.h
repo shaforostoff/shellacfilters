@@ -41,7 +41,8 @@ enum {
     //! same time. It costs real CPU, so the default sits at 128 rather than at
     //! the top of the range - see the README for the throughput figures.
     kMaxOrder = 256,
-    kBlock    = 512      //!< analysis hop; also sets most of the latency
+    kBlock    = 512,     //!< analysis hop; also sets most of the latency
+    kCarpetMax = 64      //!< seconds the carpet key can look back; see Config::carpet
 };
 
 //! User-facing controls, all normalised 0..1 except where noted.
@@ -257,7 +258,9 @@ struct Config {
     //! the same repaired audio and adds to what that stage removes; the two
     //! bands do not meet. It is gated by the body stage's key, so where that
     //! is shut it subtracts nothing, and the Malvon master and the clean
-    //! D'Arienzo transfers come out to the bit as without it. Its delay, a
+    //! D'Arienzo transfers come out to the bit as without it - and by the
+    //! carpet key, which opens it on a steady carpet of crackle where the body
+    //! key stays shut (see Config::carpet). Its delay, a
     //! frame and the larger of fineM hops and the voice guard's 24 ms (below),
     //! fits inside the body stage's, so it adds no latency. It needs the body
     //! stage, and is off when that is.
@@ -330,6 +333,7 @@ struct Config {
     //! -20 to -27 dB of 3-10 kHz from nearly every band-limited 1950s
     //! remaster in a sample of 98. 12 s was heard as right on *Amarras*, and
     //! as taking no music from two remasters it reaches further on.
+    //! Its strength is also at least the carpet key's; see Config::carpet.
     int    flank        = 1;
     double flankPadMs   = 0.18;      //!< 8 samples at 44.1 kHz
     double flankHz      = 3000.0;
@@ -353,6 +357,54 @@ struct Config {
     //! Samples the repaired audio waits before the body stage, for the flank
     //! repair: a block, or 0 when it is off. Part of the latency.
     int    flankStage   = 0;
+
+    //! The carpet key. Not user-facing; declick_cli sweeps it as --carpet,
+    //! --carpet-peak, --carpet-win, --carpet-q, --carpet-rate0, --carpet-rate1,
+    //! --carpet-warm and --carpet-min.
+    //! The body key counts runs that peak at bodyPeak sigma, and on a crackly
+    //! transfer that count sits right at its ramp: dense crackle inflates
+    //! sigma, so fewer of its clicks reach 6 sigma just where it is densest,
+    //! and the key flickers or stays shut. *Yo quiero cantar un tango* (.m4a)
+    //! had it open 3% of the song, *Si supiera* 36%, *Viejo ciego* 34%, and
+    //! where it is shut the fine stage and the flank repair do nothing.
+    //! Measured against a clean copy of the record, the crackle there was not
+    //! denser from one second to the next: on *Amarras* 1:48-2:21 the detector
+    //! repaired 1200-1500 runs a second throughout, ~300 of them at 4 sigma
+    //! or more, and the worst seconds were where the music dropped by 8 dB.
+    //! What tells a crackly transfer from a clean one is the record: its
+    //! surface keeps a carpet of runs going through the quiet passages, where
+    //! on a clean record runs come and go with the music.
+    //! So in every repair block this counts the runs that peak at carpetPeak
+    //! sigma, where the body key counts its own, and takes their rate per
+    //! 44.1k samples over each second. The carpetQ quantile of the last
+    //! carpetWin seconds of those rates is the key's value, ramped in from
+    //! carpetRate0 to carpetRate1. It may open once carpetMin seconds are in,
+    //! and while the ring fills both thresholds stand up to carpetWarm higher:
+    //! a loud opening of a few seconds is little evidence. Crackly transfers
+    //! read 100-350 here; the clean band-limited 1958-75 remasters of a
+    //! 98-song sample read up to 77, *El Marne* 108 after its opening (120 on
+    //! its first seconds), the Malvon master 66.
+    //! It opens the fine stage and the flank repair, never the body stage: the
+    //! fine stage cuts by the larger of this key and the body key's, and the
+    //! flank repair's strength is at least this key. Against clean copies of
+    //! seven songs - four D'Arienzo .m4a against their .flac copies, three Calo
+    //! .m4a against vinyl transfers, each warped onto the .m4a - the output
+    //! below 3 kHz is the same as without it and above 3 kHz closer on all
+    //! seven: on *Yo quiero* the crackle events left at 4.5-10 kHz go from
+    //! 56/86% to 37/65%. Opening the body stage as well moved six of them
+    //! 1.1-3.1 dB further from the clean copy at 0.5-1 kHz, which is music.
+    //! The Malvon master, *Olga*, *El Marne* and 44 more clean records come
+    //! out to the bit as without it. Heard as helping on *Homero* and *Si
+    //! supiera*.
+    int    carpet       = 1;
+    double carpetPeak   = 4.0;       //!< sigma
+    int    carpetWin    = 20;        //!< seconds, 1 .. kCarpetMax
+    double carpetQ      = 0.2;
+    double carpetRate0  = 110.0;     //!< runs per second, per 44.1k samples
+    double carpetRate1  = 150.0;
+    double carpetWarm   = 0.5;       //!< thresholds x (1 + this x the window's empty share)
+    int    carpetMin    = 3;         //!< seconds, 1 .. carpetWin
+
     double rate         = 44100.0;   //!< the sample rate compute() was given
 
     int    pad          = 272;   //!< context needed either side of a block
@@ -572,6 +624,11 @@ public:
     double bandEdge() const { return m_wEdge; }
     int flankPadNow() const { return m_flPOpen; }
 
+    //! Diagnostics for the carpet key: repair blocks it was open in, and its
+    //! value now, 0..1. See Config::carpet.
+    uint64_t carpetOpenBlocks() const { return m_cOpen; }
+    double carpetKey() const { return m_cKey; }
+
     //! Diagnostics: total bytes this channel is holding. Nothing in the
     //! processing path adds to this - see the buffer envelope in Config.
     size_t heapBytes() const;
@@ -592,6 +649,8 @@ private:
     //! The key as the stage applies it: the strongest of the last
     //! Config::bodyRelease seconds of bodyKey().
     double bodyBeta() const;
+    //! The carpet key, once per repair block; see Config::carpet.
+    void carpetBlock();
     //! The fine stage's frame starting at stage sample `start` is complete:
     //! transform it, and cut the one fineM hops before it. See Config::fine.
     void fineHop(uint64_t start);
@@ -804,6 +863,17 @@ private:
     //! the fine stage, hopping every N/4 samples, cannot afford to rescan
     //! Config::bodyRelease seconds of key for it each time.
     double m_bBeta = 0.0;
+
+    //! The carpet key; see Config::carpet. Runs at carpetPeak sigma in this
+    //! repair block, and in the second being counted with the samples it has
+    //! spanned so far; the last carpetWin seconds' rates, as a ring; the key.
+    //! A fixed array: twenty numbers a second need no allocation.
+    int    m_cBlk = 0;
+    double m_cRuns = 0.0, m_cSamp = 0.0;
+    double m_cRing[kCarpetMax];
+    int    m_cPos = 0, m_cHave = 0;
+    double m_cKey = 0.0;
+    uint64_t m_cOpen = 0;
 
     std::vector<double> m_madRing; //!< |forward residual| history
     int    m_madPos = 0;
