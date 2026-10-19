@@ -295,10 +295,30 @@ int main() {
         if (!ran) ++g_failures;
     }
 
+    // The mid stage cuts in the fine stage's frames, under its key, where a
+    // frame holds a run repaired at midPeak sigma or more - the clicks above
+    // are; it must cut frames, and allocate nothing. Those clicks come every
+    // 700 samples exactly, as regular as a voice's pulses, and its guard
+    // backs off on them as it would on a voice; so here the guard is held off.
+    {
+        Config cm = cfg;
+        cm.midPeriodic0 = 2.0;
+        cm.midPeriodic1 = 3.0;
+        ch.configure(cm);
+        ch.prime();
+        arm();
+        perSample(ch, sig, 0, 6 * R);
+        requireQuiet("the mid stage, under the body key");
+        const bool ran = ch.midFrames() > 0;
+        printf("  %-50s %-4s %llu frames cut\n", "... and it ran",
+               ran ? "ok" : "FAIL", (unsigned long long)ch.midFrames());
+        if (!ran) ++g_failures;
+    }
+
     // The carpet key opens the fine stage and the flank repair where the body
     // key is shut. Here the body key is held shut and the carpet key's ramp
     // brought down to the clicks above, about 63 a second, so that it has to
-    // open on its own - from 3 s, once a second's rates fill its ring.
+    // open on its own - from carpetFirst on, by the rate so far.
     {
         Config cc = cfg;
         cc.bodyRate0 = 1e9;

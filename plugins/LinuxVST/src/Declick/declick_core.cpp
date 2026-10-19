@@ -1160,6 +1160,7 @@ void Config::compute(const Params & pIn, double sampleRate) {
     if (carpetMin < 1) carpetMin = 1;
     if (carpetMin > carpetWin) carpetMin = carpetWin;
     carpetQ = dmin(dmax(carpetQ, 0.0), 1.0);
+    if (!(carpetFirst > 0.0)) carpetFirst = 0.0;
 
     // The fine stage's frames span ~2.9 ms at any rate: the power of two
     // nearest 0.0029 * rate. A sample is final once the frame D hops after
@@ -1367,6 +1368,7 @@ void Channel::configure(const Config & cfg) {
     m_dry.assign(need, 0.0);
     m_full.assign(need, 0.0);
     m_flag.assign(need, 0);
+    m_strong.assign(need, 0);
     m_fwd.assign(need, 0.0);
     m_bwd.assign(need, 0.0);
     m_det.assign(need, 0.0);
@@ -1527,6 +1529,19 @@ void Channel::configure(const Config & cfg) {
         m_fNbLow = kMid - m_fK0;
         if (m_fNbLow < 0) m_fNbLow = 0;
         if (m_fNbLow > m_fNb) m_fNbLow = m_fNb;
+        // The mid stage's bins, from midLo up to the fine band, go first; of
+        // them, those whose centre is below bodyHi are in the body stage's band.
+        m_dNb = 0;
+        m_dYieldNb = 0;
+        if (cfg.mid && m_fNb > 0) {
+            int kd = (int)ceil(cfg.midLo / binHz);
+            if (kd < 1) kd = 1;
+            if (kd < m_fK0) m_dNb = m_fK0 - kd;
+            for (int b = 0; b < m_dNb; ++b)
+                if (cfg.body && (double)(kd + b) * binHz < cfg.bodyHi) m_dYieldNb = b + 1;
+        }
+        m_fHShift = 0;
+        while ((1 << m_fHShift) < m_fH) ++m_fHShift;
         // The voice guard's window and lags, as the prototype computes them:
         // +-24 ms, and periods of 2.5 to 12 ms, in frames.
         const double fs = cfg.rate / (double)m_fH;
@@ -1550,15 +1565,25 @@ void Channel::configure(const Config & cfg) {
         m_fTwRe.assign((size_t)(N / 2 + 1), 0.0);
         m_fTwIm.assign((size_t)(N / 2 + 1), 0.0);
         m_fRev.assign((size_t)(N / 2), 0);
-        m_fMag.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
-        m_fXRe.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
-        m_fXIm.assign((size_t)m_fSlots * (size_t)m_fNb, 0.0);
+        const size_t nbAll = (size_t)(m_dNb + m_fNb);
+        m_fMag.assign((size_t)m_fSlots * nbAll, 0.0);
+        m_fXRe.assign((size_t)m_fSlots * nbAll, 0.0);
+        m_fXIm.assign((size_t)m_fSlots * nbAll, 0.0);
         // One place of pad either side of the windows: the vector paths of
         // sortedReplace() load one past each end and discard it.
-        m_fSorted.assign((size_t)m_fNb * (size_t)cfg.fineM + 2, 0.0);
-        m_fQ.assign((size_t)m_fQSlots * (size_t)m_fNb, 0.0);
+        m_fSorted.assign(nbAll * (size_t)cfg.fineM + 2, 0.0);
+        m_fQ.assign((size_t)m_fQSlots * nbAll, 0.0);
         m_fE.assign((size_t)m_fESlots, 0.0);
+        m_dE.assign((size_t)m_fESlots, 0.0);
         m_fSeg.assign((size_t)(2 * m_fW + 1), 0.0);
+        // The mid stage's run flags by hop: back to the hop before the cut
+        // frame, which trails the newest by m_fD hops, with room to spare.
+        {
+            size_t slots = 1;
+            while (slots < (size_t)(2 * (m_fD + N / m_fH + 4))) slots <<= 1;
+            m_dRun.assign(slots, 0);
+            m_dRunMask = slots - 1;
+        }
 
         const double twoPi = 6.283185307179586;
         double norm = 0.0;
@@ -1673,6 +1698,7 @@ void Channel::configure(const Config & cfg) {
         m_flAcc.assign(need + (size_t)kBlock, 0.0);
         m_stY.assign((size_t)kBlock, 0.0);
         m_stD.assign((size_t)kBlock, 0.0);
+        m_stS.assign((size_t)kBlock, 0);
         const int Hh = cfg.flankHalf;
         m_flHp.assign((size_t)(2 * Hh + 1), 0.0);
         const double pi = 3.141592653589793;
@@ -1750,7 +1776,7 @@ size_t Channel::heapBytes() const {
             + m_fTwRe.capacity() + m_fTwIm.capacity() + m_fMag.capacity()
             + m_fXRe.capacity() + m_fXIm.capacity()
             + m_fSorted.capacity() + m_fQ.capacity()
-            + m_fE.capacity() + m_fSeg.capacity()
+            + m_fE.capacity() + m_dE.capacity() + m_fSeg.capacity()
             + m_fR.capacity() + m_fKeep.capacity() + m_fKeepAt.capacity()
             + m_mWin.capacity() + m_mRe.capacity() + m_mIm.capacity()
             + m_mStRe.capacity() + m_mStIm.capacity()
@@ -1761,7 +1787,8 @@ size_t Channel::heapBytes() const {
             + m_stY.capacity() + m_stD.capacity()
             + m_wSpec.capacity() + m_wWin.capacity() + m_wRe.capacity() + m_wIm.capacity()
             + m_wStRe.capacity() + m_wStIm.capacity()) * sizeof(double)
-           + m_flag.capacity() + m_runs.capacity() * sizeof(int)
+           + m_flag.capacity() + m_strong.capacity() + m_stS.capacity() + m_dRun.capacity()
+           + m_runs.capacity() * sizeof(int)
            + (m_bRev.capacity() + m_bCount.capacity() + m_fRev.capacity()
               + m_mRev.capacity() + m_flRun.capacity() + m_flOrder.capacity() + m_wRev.capacity()) * sizeof(int);
 }
@@ -1780,6 +1807,7 @@ void Channel::reset() {
     std::fill(m_dry.begin(), m_dry.end(), 0.0);
     std::fill(m_full.begin(), m_full.end(), 0.0);
     std::fill(m_flag.begin(), m_flag.end(), (uint8_t)0);
+    std::fill(m_strong.begin(), m_strong.end(), (uint8_t)0);
     std::fill(m_madRing.begin(), m_madRing.end(), 0.0);
     m_madPos = 0;
     m_madFull = false;
@@ -1821,6 +1849,10 @@ void Channel::reset() {
     m_cHave = 0;
     m_cKey = 0.0;
     m_cOpen = 0;
+    m_cTotRuns = 0.0;
+    m_cTotSamp = 0.0;
+    std::fill(m_dRun.begin(), m_dRun.end(), (uint8_t)0);
+    m_dCuts = 0;
     m_fNextHop = (uint64_t)m_fN;
     m_fHist = 0;
     m_fFrame = 0;
@@ -2143,6 +2175,8 @@ void Channel::interpolate(int from, int to, int reach) {
         i = e + 1;
         if (ok && peak >= m_cfg.bodyPeak) ++m_bStrong;   // the body stage's key
         if (ok && peak >= m_cfg.carpetPeak) ++m_cBlk;    // the carpet key
+        if (ok && m_dNb > 0 && peak >= m_cfg.midPeak)    // the mid stage's gate
+            memset(&m_strong[(size_t)s], 1, (size_t)(e - s + 1));
         if (ok && m_cfg.flankStage > 0 && m_flN < (int)m_flGain.size()) {
             m_flRun[(size_t)(2 * m_flN)] = s;
             m_flRun[(size_t)(2 * m_flN + 1)] = e;
@@ -2479,6 +2513,7 @@ void Channel::pushOne(double v) {
     m_dry[(size_t)m_fill] = v;
     m_full[(size_t)m_fill] = v;
     m_flag[(size_t)m_fill] = 0;
+    m_strong[(size_t)m_fill] = 0;
     m_flAcc[(size_t)m_fill + kBlock] = 0.0;
     ++m_fill;
     ++m_seen;
@@ -2522,18 +2557,21 @@ void Channel::pushOne(double v) {
         if (m_stHave) {
             m_bBeta = m_bBetaPrev;
             const double * acc = &m_flAcc[(size_t)m_pad];   // window index pad - kBlock
-            for (int i = 0; i < blk; ++i) bodyPush(m_stY[(size_t)i] + acc[i], m_stD[(size_t)i]);
+            for (int i = 0; i < blk; ++i)
+                bodyPush(m_stY[(size_t)i] + acc[i], m_stD[(size_t)i], m_stS[(size_t)i]);
             m_bBeta = beta;
         }
         for (int i = 0; i < blk; ++i) {
             m_stY[(size_t)i] = m_win[(size_t)(m_pad + i)];
             m_stD[(size_t)i] = m_dry[(size_t)(m_pad + i)];
+            m_stS[(size_t)i] = m_strong[(size_t)(m_pad + i)];
         }
         m_stHave = true;
         m_bBetaPrev = beta;
     } else {
         for (int i = 0; i < blk; ++i) {
-            bodyPush(m_win[(size_t)(m_pad + i)], m_dry[(size_t)(m_pad + i)]);
+            bodyPush(m_win[(size_t)(m_pad + i)], m_dry[(size_t)(m_pad + i)],
+                     m_strong[(size_t)(m_pad + i)]);
         }
     }
 
@@ -2543,6 +2581,7 @@ void Channel::pushOne(double v) {
     memmove(&m_dry[0], &m_dry[(size_t)blk], sizeof(double) * keep);
     memmove(&m_full[0], &m_full[(size_t)blk], sizeof(double) * keep);
     memmove(&m_flag[0], &m_flag[(size_t)blk], sizeof(uint8_t) * keep);
+    memmove(&m_strong[0], &m_strong[(size_t)blk], sizeof(uint8_t) * keep);
     if (Q > 0) {
         memmove(&m_flAcc[0], &m_flAcc[(size_t)blk], sizeof(double) * (keep + (size_t)blk));
         m_flEnd = (m_flEnd > -(1 << 30) + blk) ? m_flEnd - blk : -(1 << 30);
@@ -2564,7 +2603,7 @@ void Channel::emitMixed(double y, double d) {
 //! Every sample comes out Config::bodyLatency samples after it went in. The
 //! removal for it is final by then: the last frame covering it is cut when
 //! the frame two hops later arrives.
-void Channel::bodyPush(double y, double d) {
+void Channel::bodyPush(double y, double d, uint8_t strong) {
     if (!m_cfg.body) {
         emitMixed(y, d);
         return;
@@ -2575,6 +2614,10 @@ void Channel::bodyPush(double y, double d) {
     m_bD[i] = d;
     m_bR[i] = 0.0;              // no frame has reached it yet
     m_fR[i] = 0.0;
+    {                           // the mid stage's run flag for this hop
+        uint8_t & r = m_dRun[(size_t)(t >> m_fHShift) & m_dRunMask];
+        r = ((t & (uint64_t)(m_fH - 1)) == 0) ? strong : (uint8_t)(r | strong);
+    }
     const uint64_t N = (uint64_t)m_bN;
     if (t + 1 == m_bNextHop) {
         m_bNextHop += (uint64_t)m_bH;
@@ -2633,6 +2676,18 @@ double Channel::bodyKey() const {
 void Channel::carpetBlock() {
     m_cRuns += m_cBlk;
     m_cSamp += (double)kBlock;
+    // Before carpetMin seconds are in, from carpetFirst on: the rate over
+    // everything seen so far, against the thresholds at their warmest.
+    m_cTotRuns += m_cBlk;
+    m_cTotSamp += (double)kBlock;
+    if (m_cfg.carpetFirst > 0.0 && m_cHave < m_cfg.carpetMin
+        && m_cTotSamp >= m_cfg.carpetFirst * m_cfg.rate) {
+        const double K = m_cTotRuns * 44100.0 / m_cTotSamp;
+        const double wf = 1.0 + m_cfg.carpetWarm;
+        const double span = wf * (m_cfg.carpetRate1 - m_cfg.carpetRate0);
+        m_cKey = (span > 0.0) ? dmin(dmax((K - wf * m_cfg.carpetRate0) / span, 0.0), 1.0)
+                              : (K >= wf * m_cfg.carpetRate1 ? 1.0 : 0.0);
+    }
     if (m_cSamp < m_cfg.rate) return;
     const int W = m_cfg.carpetWin;
     m_cRing[m_cPos] = m_cRuns * 44100.0 / m_cSamp;
@@ -2798,13 +2853,45 @@ void Channel::bodyHop(uint64_t start) {
 //! oldest moved out and the newest in, and the quantile read off and kept
 //! until the cut frame comes round to it. The same values a fresh selection
 //! over both finds.
+//! How strongly an envelope ring repeats around frame c: the normalised
+//! autocorrelation of c - W .. c + W less its mean, at its best lag in
+//! lmin .. lmax, scaled for the lag's shorter overlap, as the prototype has
+//! it. `seg` holds 2 W + 1. The window is consecutive in the ring, so one
+//! remainder finds its start and the rest step: `slots` is not a power of
+//! two, and the remainder of a uint64 by it is a hardware divide - at ~25
+//! cycles and one per frame of the window, that was the largest single cost
+//! in the fine stage's guard, and most of its 100 cycles a sample.
+static double envPeriodicity(const double * ring, size_t slots, uint64_t c, int W,
+                             int lmin, int lmax, double * seg) {
+    const int n = 2 * W + 1;
+    double mean = 0.0;
+    size_t ei = (size_t)((c - (uint64_t)W) % (uint64_t)slots);
+    for (int i = 0; i < n; ++i) {
+        seg[i] = ring[ei];
+        mean += seg[i];
+        if (++ei == slots) ei = 0;
+    }
+    mean /= (double)n;
+    double den = 0.0;
+    for (int i = 0; i < n; ++i) { seg[i] -= mean; den += seg[i] * seg[i]; }
+    den += 1e-30;
+    double best = -1.0;
+    for (int lag = lmin; lag <= lmax; ++lag) {
+        const double v = dot(seg, seg + lag, n - lag) / den * (double)n / (double)(n - lag);
+        if (v > best) best = v;
+    }
+    return best;
+}
+
 void Channel::fineHop(uint64_t start) {
-    const int N = m_fN, H = m_fH, nb = m_fNb, S = m_fSlots, Mf = m_cfg.fineM;
+    const int N = m_fN, H = m_fH, S = m_fSlots, Mf = m_cfg.fineM;
+    // The band: the mid stage's nd bins, then the fine stage's own.
+    const int nd = m_dNb, nb = m_dNb + m_fNb, k0 = m_fK0 - m_dNb;
     const int D = m_fD, W = m_fW;
     const size_t mask = m_bMask;
     // The carpet key opens this stage, and only this one, where the body key
     // is shut; see Config::carpet.
-    const double beta = (nb > 0) ? dmax(m_bBeta, m_cKey) : 0.0;
+    const double beta = (m_fNb > 0) ? dmax(m_bBeta, m_cKey) : 0.0;
     if (beta <= 0.0) {
         m_fHist = 0;           // the history has a hole; start it again
         return;
@@ -2830,13 +2917,13 @@ void Channel::fineHop(uint64_t start) {
         double * mg = &m_fMag[sl];
         double * xr = &m_fXRe[sl];
         double * xi = &m_fXIm[sl];
-        double e = 0.0;
+        double e = 0.0, ed = 0.0;
         // X[k] = E + e^(-2 pi i k / N) O, with E and O the transforms of the
         // even and odd samples: (Z[k] + Z*[M-k]) / 2 and (Z[k] - Z*[M-k]) / 2i.
         // The band can reach the Nyquist bin k = M, where both Z[k] and
         // Z[M-k] are Z[0]; the masks fold it there.
         for (int b = 0; b < nb; ++b) {
-            const int k = m_fK0 + b;
+            const int k = k0 + b;
             const int kk = k & (M - 1), mk = (M - kk) & (M - 1);
             const double zr = re[kk], zi = im[kk];
             const double cr = re[mk], ci = -im[mk];
@@ -2849,10 +2936,13 @@ void Channel::fineHop(uint64_t start) {
             xi[b] = vi;
             const double p = vr * vr + vi * vi;
             mg[b] = sqrt(p);
-            if (b < m_fNbLow) e += mg[b] * mg[b];
+            if (b < nd) ed += mg[b] * mg[b];
+            else if (b - nd < m_fNbLow) e += mg[b] * mg[b];
         }
-        // The guard's envelope: the root of the energy below fineMid.
+        // The guards' envelopes: the root of the energy below fineMid, and of
+        // the mid stage's band.
         m_fE[(size_t)(f % (uint64_t)m_fESlots)] = sqrt(e);
+        if (nd > 0) m_dE[(size_t)(f % (uint64_t)m_fESlots)] = sqrt(ed);
     }
     if (m_fHist < 2 * D + 1) ++m_fHist;
     if (m_fHist < Mf) return;
@@ -2898,35 +2988,33 @@ void Channel::fineHop(uint64_t start) {
     // prototype has it. The back-off is full at finePeriodic0, gone at 1.
     double keep = 0.0;          // how much of the cut below fineMid is withheld
     if (m_fNbLow > 0) {
-        const int n = 2 * W + 1;
-        double * seg = &m_fSeg[0];
-        double mean = 0.0;
-        // The window is consecutive in the ring, so one remainder finds its
-        // start and the rest step. m_fESlots is not a power of two, and the
-        // remainder of a uint64 by it is a hardware divide: at ~25 cycles and
-        // one per frame of the window, that was the largest single cost in
-        // the guard, and most of its 100 cycles a sample.
-        const double * eRing = &m_fE[0];
-        size_t ei = (size_t)((c - (uint64_t)W) % (uint64_t)m_fESlots);
-        for (int i = 0; i < n; ++i) {
-            seg[i] = eRing[ei];
-            mean += seg[i];
-            if (++ei == (size_t)m_fESlots) ei = 0;
-        }
-        mean /= (double)n;
-        double den = 0.0;
-        for (int i = 0; i < n; ++i) { seg[i] -= mean; den += seg[i] * seg[i]; }
-        den += 1e-30;
-        double best = -1.0;
-        for (int lag = m_fLmin; lag <= m_fLmax; ++lag) {
-            const double v = dot(seg, seg + lag, n - lag) / den * (double)n / (double)(n - lag);
-            if (v > best) best = v;
-        }
+        const double best = envPeriodicity(&m_fE[0], (size_t)m_fESlots, c, W, m_fLmin, m_fLmax, &m_fSeg[0]);
         const double span = m_cfg.finePeriodic1 - m_cfg.finePeriodic0;
         keep = (span > 0.0) ? (best - m_cfg.finePeriodic0) / span
                             : (best >= m_cfg.finePeriodic1 ? 1.0 : 0.0);
         keep = dmin(dmax(keep, 0.0), 1.0);
     }
+    // The mid stage cuts only a frame that holds, or neighbours, a run
+    // repaired at midPeak sigma or more: the hops from the one before the
+    // frame to the one after it. Then it backs off as its band's envelope
+    // repeats, as the fine stage does below fineMid. See Config::mid.
+    bool gate = false;
+    double keepD = 1.0;
+    if (nd > 0) {
+        const uint64_t from = start - (uint64_t)D * (uint64_t)H;
+        const uint64_t h0 = from >> m_fHShift, h1 = h0 + (uint64_t)(N >> m_fHShift);
+        for (uint64_t h = (h0 > 0) ? h0 - 1 : 0; h <= h1 && !gate; ++h)
+            gate = m_dRun[(size_t)h & m_dRunMask] != 0;
+        if (gate) {
+            const double best = envPeriodicity(&m_dE[0], (size_t)m_fESlots, c, W, m_fLmin, m_fLmax, &m_fSeg[0]);
+            const double span = m_cfg.midPeriodic1 - m_cfg.midPeriodic0;
+            keepD = (span > 0.0) ? (best - m_cfg.midPeriodic0) / span
+                                 : (best >= m_cfg.midPeriodic1 ? 1.0 : 0.0);
+            keepD = dmin(dmax(keepD, 0.0), 1.0);
+        }
+    }
+    // In the body stage's band it yields to that stage by the body key.
+    const double yieldD = m_cfg.midYield ? 1.0 - m_bBeta : 1.0;
     // The micro stage's frames near this one back off as it does. Kept by the
     // cut frame's place on the hop grid, not by its number: frames are only
     // numbered while the key is open.
@@ -2939,19 +3027,26 @@ void Channel::fineHop(uint64_t start) {
     const double alpha = m_cfg.fineAlpha, floorG = m_cfg.fineFloor;
     memset(re, 0, (size_t)M * sizeof(double));
     memset(im, 0, (size_t)M * sizeof(double));
-    bool any = false;
+    bool any = false, anyD = false;
     for (int b = 0; b < nb; ++b) {
+        if (b < nd && !gate) continue;
         const double h = dmax(qBefore[b], qAfter[b]);
         double g = alpha * h / (cmag[b] + 1e-20);
         if (g > 1.0) g = 1.0;
         if (g < floorG) g = floorG;
-        if (b < m_fNbLow) g = 1.0 - (1.0 - keep) * (1.0 - g);
-        const double cut = (1.0 - g) * beta;
+        double cut;
+        if (b < nd) {
+            g = 1.0 - (1.0 - keepD) * (1.0 - g);
+            cut = (1.0 - g) * beta * ((b < m_dYieldNb) ? yieldD : 1.0);
+        } else {
+            if (b - nd < m_fNbLow) g = 1.0 - (1.0 - keep) * (1.0 - g);
+            cut = (1.0 - g) * beta;
+        }
         if (!(cut > 0.0)) continue;
         // Packed for the inverse: bin k takes X + i X e^(2 pi i k/N), and its
         // mirror N - k the conjugates of both. The Nyquist bin is its own
         // mirror, and real for real input; it folds onto Z[0].
-        const int k = m_fK0 + b;
+        const int k = k0 + b;
         const double vr = cut * cxr[b], vi = cut * cxi[b];
         const double c = twRe[k], sn = twIm[k];
         const double ur = vr * c - vi * sn, ui = vr * sn + vi * c;
@@ -2964,7 +3059,9 @@ void Channel::fineHop(uint64_t start) {
             im[mr] += ur - vi;
         }
         any = true;
+        if (b < nd) anyD = true;
     }
+    if (anyD) ++m_dCuts;
     if (!any) return;
     fftRadix2(re, im, M, &m_fStRe[0], &m_fStIm[0], true, g_kernels->fftPair, g_kernels->fftOne);
     // The packed bins above are twice what the inverse of M points wants, so

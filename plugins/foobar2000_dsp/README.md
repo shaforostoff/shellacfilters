@@ -1728,7 +1728,8 @@ and go with the music.
 * **The ramp.** It opens from 110 runs a second and is full at 150.
 * **Its first seconds.** It may open after 3 s. While its 20 s fill, both
   thresholds stand up to half as high again: a loud opening of a few seconds is
-  little evidence.
+  little evidence. Before 3 s it now has an early value, from 0.25 s: see
+  [the first seconds](#the-first-seconds-an-early-carpet-key).
 
 | | its value, 5th / 50th percentile |
 |---|---|
@@ -1932,6 +1933,161 @@ loud bandoneón. The second was chosen as the safer.
     on full-band transfers too.
 * **Memory:** about 40 kB more a channel at 44.1 kHz: the fine stage's own
   removal ring, and the micro stage's frames.
+
+### Clicks that outlast their run: the mid stage
+
+**What was left.** Four Pugliese `.m4a` were named as not clean enough: *El
+rodeo*, *El día de tu ausencia*, *El abrojito* and *Nada más que un corazón*.
+Their vinyl copies were warped onto them as for the Calo songs. Those copies
+are low-passed (−40 dB by 6.8–8.5 kHz) and some are processed: measured
+against further copies, only *Nada más*'s and a second copy of *El abrojito*
+are references above 1.5 kHz. So what follows is mostly counted on envelopes,
+which needs no waveform match: impulses are 0.5 ms frames of a band over 8
+times their ±20 ms median, and a click is one where the vinyl's frame is not
+an event too.
+
+* **The gap band.** Over the quietest third of each song, impulses a second at
+  2–3 / 3–4.5 kHz:
+
+| | `.m4a` | vinyl | before | decrackled |
+|---|---|---|---|---|
+| *El rodeo* | 35 / 43 | 5 / 6 | 29 / 31 | 11 / 7 |
+| *El abrojito* | 26 / 34 | 9 / 8 | 20 / 16 | 10 / 10 |
+| *Nada más* | 10 / 21 | 6 / 9 | 8 / 13 | 6 / 6 |
+| *El día de tu ausencia* | 9 / 11 | 4 / 3 | 7 / 6 | 6 / 4 |
+
+* **They are found, not repaired.** 96–98 % of these clicks have a repaired
+  run within 0.5 ms. The stages before removed a median 15–44 % of their
+  2–4.5 kHz energy; the decrackled version 65–96 %.
+* **The click outlasts its run.** The run is the onset, a median 5 samples.
+  Around it the band stays over 1.8 times its level 3 ms away for ±0.6 ms, and
+  above it for ±0.9 ms. The AR model predicts that ringing, so it is never
+  flagged, and the repair keeps it.
+
+**What did not work.**
+
+* **Interpolating wider** (a 0.7 ms flank pad kept from 2 kHz): 35–74 % of
+  the clicks' energy, but 1.5–11 % of the music at 2–3 kHz.
+* **The fine stage's clip moved down with no guard:** 21–59 % of the record's
+  own 2–4.5 kHz events.
+* **A broadband test.** A click should also show at 7–11 kHz, but in a crackly
+  `.m4a` so do the record's attacks (AUC 0.52–0.66).
+
+**What tells them apart** in the `.m4a` alone is how the band's envelope
+repeats. By the fine stage's guard statistic, taken on this band, it reads
+0.21–0.24 at the clicks and 0.81–0.83 at the record's own events: AUC 0.92 on
+the four. A voice's or an instrument's pulses repeat; clicks do not.
+
+**The stage** (`Config::mid`). The fine stage's frames also take the bins from
+2 kHz (`--mid-lo`) up to the fine band, 6–13 at 44.1 kHz.
+
+* **The clip is the fine stage's:** twice the louder of the 20th percentiles
+  either side, −18 dB floor, under its key.
+* **Only in frames that hold, or neighbour, a run repaired at 4σ or more**
+  (`--mid-peak`). The runs are flagged as they are repaired, and the flags
+  travel with the audio into the body stage's ring, one per hop.
+* **Its own guard:** the cut backs off as this band's envelope repeats, from
+  0.3 (none) to 0.5 (all), over ±24 ms at lags of 2.5–12 ms.
+* **It yields to the body stage** in their shared band, 2–3 kHz, by the body
+  key. The two read the same audio, and their cuts would add on one click.
+* **No latency added.** Its frames, background and guard are the fine
+  stage's.
+
+Against the vinyl, the stage alone; impulses at 2–3 / 3–4.5 kHz over the
+quietest third, a second; the median share of the clicks' and the record's
+events' 2–4.5 kHz energy removed; music taken at 2–3 / 3–4.5 kHz, the
+projection of the removal on the vinyl as a share of its amplitude:
+
+| | | impulses | at clicks | at the record's events | taken |
+|---|---|---|---|---|---|
+| *El rodeo* | before | 29 / 31 | 15 % | 1 % | 0.2 / 0.2 % |
+| | **now** | **27 / 28** | **29 %** | 1 % | 0.3 / 0.2 % |
+| | decrackled | 11 / 7 | 94 % | 47 % | 0.8 / 1.1 % |
+| *El día de tu ausencia* | before | 7 / 6 | 31 % | 4 % | 0.9 / 0.4 % |
+| | **now** | **5 / 4** | **54 %** | 5 % | 1.6 / 0.6 % |
+| | decrackled | 6 / 4 | 65 % | 2 % | 0.4 / 0.0 % |
+| *El abrojito* | before | 20 / 16 | 44 % | 2 % | 0.6 / 0.7 % |
+| | **now** | **13 / 10** | **71 %** | 2 % | 1.0 / 1.1 % |
+| | decrackled | 10 / 10 | 96 % | 17 % | 2.3 / 0.8 % |
+| *Nada más* | before | 8 / 13 | 40 % | 1 % | 0.7 / 0.4 % |
+| | **now** | **6 / 9** | **61 %** | 1 % | 1.2 / 0.7 % |
+| | decrackled | 6 / 6 | 95 % | 10 % | 1.1 / 0.9 % |
+
+Nothing below 2 kHz or above 4.5 kHz moves. The C++ stage's removal correlates
+0.976–0.989 with its Python prototype's on the four, 0.5–0.8 dB less. Where
+the body key is open it yields, and takes 2.8–3.5 dB less than the prototype
+did after the body stage.
+
+**Chosen by ear** from three versions:
+
+* this stage with the guard from 0.4 to 0.6;
+* the same, with the guard from 0.3 to 0.5;
+* the first, with a lower carpet ramp of its own (80–110), which opens it on
+  *El rodeo*. There the carpet key is open 46 % of the time (mean 0.19), and
+  with that ramp the stage took 56 % of the clicks' energy.
+
+The second was chosen. *El rodeo* keeps its shut stretches, 40–90 s and from
+120 s on: no key built on this band told it from clean records.
+
+### The first seconds: an early carpet key
+
+**What was heard.** The first three seconds of *La vida me engaño* were
+noisier than the rest. They were, as on any crackly record:
+
+* **The body key** waits for a whole rate window: shut for the first second,
+  then 0.15 → 0.70 by 2 s there.
+* **The carpet key** may not open before 3 s, and its first rate needs a whole
+  second of input.
+* *La vida me engaño* has ~400 runs a second at 4σ from its first block; the
+  key's ramp starts at 110. Until 3 s only the repair and a partly open body
+  stage ran. The output kept 25 and 13 impulses a second at 7–10 kHz in its
+  first two seconds, 0–2 after.
+* `--carpet-min 1 --carpet-warm 0` mends the second second (13 → 1) but not the
+  first.
+
+**The change** (`Config::carpetFirst`, `--carpet-first`). From 0.25 s until
+the key may open as before, its value is the rate of 4σ runs over everything
+seen so far, against the thresholds at their warmest, half as high again.
+
+* *La vida me engaño*, seconds 0 / 1: 7–10 kHz 25 / 13 → 4 / 0; 4.5–7 kHz
+  14 / 19 → 12 / 14.
+* *El abrojito*: 7–10 kHz 10 / 11 → 5 / 1; 4.5–7 kHz 22 / 22 → 17 / 10.
+* It opens the stages the carpet key opens, the mid stage among them.
+
+**Heard** on its own, on the first 20 s of seven songs.
+
+**Records they must not touch,** the two changes together:
+
+* **Bit-identical to the build before them:**
+  * the *Malvón* master, *Olga*, *La tablada* (both copies);
+  * 30 of 101 songs in all: the 98-song sample, the *Malvón* master, *Olga* and
+    *El Marne*.
+* **29 more change only in their first 3 s**, by −46 to −116 dB: records
+  that start with crackle before the music. *El Marne* is one, by −90 dB.
+* **The other 42** are those whose keys open. The most changed is *La payanca*
+  (1954), −30.1 dB of 2–4.5 kHz beyond the build before, then *Cachirulo*
+  `.m4a`, −32.2 dB. With the prototype, the worst single seconds on the
+  sample were all clicks in near-silence, at run-ins and run-outs. Outside the
+  sample, *Tu olvido* and *La vida me engaño* change most, −28.5 and −29.5 dB.
+* **Out-of-range events** are the same on all 109 songs (with the four
+  Pugliese, *Tu olvido*, *Llévame carretero*, *La vida me engaño* and *Cuatro
+  compases*).
+* **`scripts/declick_regress.py` passes** on the reference set and on six more
+  (the four Pugliese, *La vida me engaño*, *Tu olvido*):
+  * no new out-of-range event, no clamp count changed;
+  * 0.08–0.4 dB more taken from the six, 0.05 dB from *Cachirulo* `.m4a`;
+    *La tablada*, *Malvón*, *Olga* and *El Marne* as before.
+* **Off:** `declick_cli --mid 0 --carpet-first 0` gives the build before them
+  to the bit, at 22.05, 44.1, 48 and 96 kHz.
+
+**Cost**, the builds taking turns, best of seven, on the Zen 4:
+
+* **Where the keys stay shut,** +1 to +2 % (*Pa que bailen*): a flag per
+  sample and per hop.
+* **Where they open,** +4 to +5 %: *El abrojito* 106× → 101× with AVX2, 68× →
+  65× with SSE2. The stage is 8 more bins of a transform the fine stage
+  already makes, and a second guard.
+* **Memory:** about 15 kB more a channel at 44.1 kHz.
 
 ---
 

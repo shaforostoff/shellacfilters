@@ -68,6 +68,13 @@ void usage() {
         "  --micro-ms <x>     Its background, ms either side (default 6)\n"
         "  --micro-alpha <x>  Clip a bin to this many times its background (default 2)\n"
         "  --micro-q <0..1>   Quantile the background is taken at (default 0.2)\n"
+        "  --mid <0|1>        The fine stage's clip from mid-lo up to fine-lo, in\n"
+        "                     frames holding a strong run, under its key (default 1)\n"
+        "  --mid-lo <Hz>      Where it starts (default 2000)\n"
+        "  --mid-peak <x>     Sigma a repaired run must peak at to open a frame (default 4)\n"
+        "  --mid-p0 <x>       Periodicity of its band where it starts to back off (default 0.3)\n"
+        "  --mid-p1 <x>       ... and where it has backed off entirely (default 0.5)\n"
+        "  --mid-yield <0|1>  In the body band, yield to the body stage by its key (default 1)\n"
         "  --flank <0|1>      Repair the flanks of runs again, above flank-hz, on\n"
         "                     band-limited transfers under the body key (default 1)\n"
         "  --flank-pad-ms <x> How far each run is widened either side (default 0.18)\n"
@@ -86,7 +93,9 @@ void usage() {
         "  --carpet-rate0 <x> Runs per second (per 44.1k samples) where it starts to open (default 110)\n"
         "  --carpet-rate1 <x> ... and where it is fully open (default 150)\n"
         "  --carpet-warm <x>  Thresholds stand this much higher while the window fills (default 0.5)\n"
-        "  --carpet-min <s>   Seconds before it may open (default 3)\n");
+        "  --carpet-min <s>   Seconds before it may open (default 3)\n"
+        "  --carpet-first <s> Before that, from this many seconds on, the rate so far\n"
+        "                     against the warmest thresholds (default 0.25, 0 off)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -118,6 +127,8 @@ int main(int argc, char ** argv) {
     float fine = -1.0f, fineLo = -1.0f, fineHi = -1.0f, fineAlpha = -1.0f, fineQ = -1.0f;
     float fineFloor = -1.0f, fineMid = -1.0f, fineP0 = -1.0f, fineP1 = -1.0f;
     float micro = -1.0f, microMs = -1.0f, microAlpha = -1.0f, microQ = -1.0f;
+    float mid = -1.0f, midLo = -1.0f, midPeak = -1.0f, midP0 = -1.0f, midP1 = -1.0f, midYield = -1.0f;
+    float carpetFirst = -1.0f;
     float flank = -1.0f, flankPadMs = -1.0f, flankHz = -1.0f, flankEdge0 = -1.0f, flankEdge1 = -1.0f;
     float flankShut = -1.0f, flankWide = -1.0f, flankShutGain = -1.0f, flankHold = -1.0f;
     float carpet = -1.0f, carpetPeak = -1.0f, carpetWin = -1.0f, carpetQ = -1.0f;
@@ -162,6 +173,13 @@ int main(int argc, char ** argv) {
         else if (a == "--micro-ms") microMs = v;
         else if (a == "--micro-alpha") microAlpha = v;
         else if (a == "--micro-q") microQ = v;
+        else if (a == "--mid") mid = v;
+        else if (a == "--mid-lo") midLo = v;
+        else if (a == "--mid-peak") midPeak = v;
+        else if (a == "--mid-p0") midP0 = v;
+        else if (a == "--mid-p1") midP1 = v;
+        else if (a == "--mid-yield") midYield = v;
+        else if (a == "--carpet-first") carpetFirst = v;
         else if (a == "--flank") flank = v;
         else if (a == "--flank-pad-ms") flankPadMs = v;
         else if (a == "--flank-hz") flankHz = v;
@@ -222,6 +240,13 @@ int main(int argc, char ** argv) {
     if (microMs >= 0.0f) cfg.microMs = microMs;
     if (microAlpha >= 0.0f) cfg.microAlpha = microAlpha;
     if (microQ >= 0.0f) cfg.microQ = microQ;
+    if (mid >= 0.0f) cfg.mid = (int)mid;
+    if (midLo >= 0.0f) cfg.midLo = midLo;
+    if (midPeak >= 0.0f) cfg.midPeak = midPeak;
+    if (midP0 >= 0.0f) cfg.midPeriodic0 = midP0;
+    if (midP1 >= 0.0f) cfg.midPeriodic1 = midP1;
+    if (midYield >= 0.0f) cfg.midYield = (int)midYield;
+    if (carpetFirst >= 0.0f) cfg.carpetFirst = carpetFirst;
     if (flank >= 0.0f) cfg.flank = (int)flank;
     if (flankPadMs >= 0.0f) cfg.flankPadMs = flankPadMs;
     if (flankHz >= 0.0f) cfg.flankHz = flankHz;
@@ -299,7 +324,7 @@ int main(int argc, char ** argv) {
     }
 
     uint64_t repaired = 0, seen = 0, clamped = 0, reclamped = 0, flSpans = 0, flSkipped = 0;
-    uint64_t carpetOpen = 0;
+    uint64_t carpetOpen = 0, midCuts = 0;
     for (unsigned c = 0; c < channels; ++c) {
         repaired += chans[c]->repairedSamples();
         seen += chans[c]->seenSamples();
@@ -308,6 +333,7 @@ int main(int argc, char ** argv) {
         flSpans += chans[c]->flankSpans();
         flSkipped += chans[c]->flankSkipped();
         carpetOpen += chans[c]->carpetOpenBlocks();
+        midCuts += chans[c]->midFrames();
     }
 
     if (delta) {
@@ -352,6 +378,10 @@ int main(int argc, char ** argv) {
         if (cfg.carpet) {
             printf("  carpet: key open over %.1f%% of the stream\n",
                    seen ? 100.0 * (double)(carpetOpen * declick::kBlock) / (double)seen : 0.0);
+        }
+        // The mid stage: fine-stage frames it cut something from.
+        if (cfg.mid && cfg.fine) {
+            printf("  mid: %llu frames cut\n", (unsigned long long)midCuts);
         }
     }
     return 0;

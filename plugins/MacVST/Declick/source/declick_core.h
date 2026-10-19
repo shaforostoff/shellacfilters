@@ -323,6 +323,43 @@ struct Config {
     int    microN       = 32;        //!< fineN / 4, from the sample rate alone
     int    microM       = 17;        //!< frames either side, from microMs and the rate
 
+    //! The mid stage. Not user-facing; declick_cli sweeps it as --mid,
+    //! --mid-lo, --mid-peak, --mid-p0, --mid-p1 and --mid-yield.
+    //! A shellac click's 2-4.5 kHz part outlasts its run. On four Pugliese
+    //! .m4a, measured against vinyl copies of the same records warped onto
+    //! them, 96-98% of the 2-4.5 kHz click impulses had a repaired run within
+    //! 0.5 ms, but the run was the onset, a median 5 samples, while the band
+    //! stayed above its level 3 ms away for +-0.6-0.9 ms around it: the AR
+    //! model predicts that ringing, so it is never flagged, and the repair
+    //! left 56-85% of its energy, where the decrackled version left 4-35%.
+    //! Interpolating a wider span took 1.5-11% of the music at 2-3 kHz; the
+    //! fine stage's clip moved down to the band with no guard took 21-59% of
+    //! the record's own 2-4.5 kHz events.
+    //! What tells the two apart in the .m4a alone is how the band's envelope
+    //! repeats: by the fine guard's statistic on this band (+-24 ms, lags of
+    //! 2.5-12 ms), 0.21-0.24 at the clicks, 0.81-0.83 at the record's own
+    //! events. So the fine stage's frames also take the bins from midLo up to
+    //! fineLo, clipped as its own are - fineAlpha times the louder of the
+    //! fineQ quantiles either side, floor fineFloor, under its key - but only
+    //! in frames that hold, or neighbour, a repaired run that peaked at
+    //! midPeak sigma or more, and backing off as this band's envelope
+    //! repeats, from midPeriodic0 (none) to midPeriodic1 (all). In the body
+    //! stage's band, where the body key is open, it yields to that stage by
+    //! the key (midYield): the two read the same audio, and their cuts would
+    //! add on one click. No latency added.
+    //! Against the vinyl it took a median 30-72% of the click impulses' energy
+    //! where the stages before took 15-44%, and 1-5% at the record's own
+    //! events, as before; 0.3-1.7% of the music at 2-3 kHz (before 0.2-0.9%,
+    //! the decrackled version 0.4-2.3%). Heard as right against a stronger guard
+    //! (0.4-0.6) and a lower key; the Malvon master, Olga, El Marne and 51 of
+    //! a 98-song sample are untouched, as their keys never open.
+    int    mid          = 1;
+    double midLo        = 2000.0;
+    double midPeak      = 4.0;       //!< sigma
+    double midPeriodic0 = 0.3;
+    double midPeriodic1 = 0.5;
+    int    midYield     = 1;
+
     //! The flank repair. Not user-facing; declick_cli sweeps it as --flank,
     //! --flank-pad-ms, --flank-hz, --flank-edge0 and --flank-edge1.
     //! On a transfer band-limited near 11 kHz - the .m4a copies of D'Arienzo's
@@ -439,6 +476,18 @@ struct Config {
     double carpetRate1  = 150.0;
     double carpetWarm   = 0.5;       //!< thresholds x (1 + this x the window's empty share)
     int    carpetMin    = 3;         //!< seconds, 1 .. carpetWin
+    //! The key's first seconds. Its first rate needs a whole second, and it
+    //! may not open before carpetMin, so on a crackly record the stages it
+    //! opens stayed off for three seconds, and those were heard as noisier
+    //! than the rest (*La vida me engano*: 25 and 13 impulses a second left at
+    //! 7-10 kHz in its first two seconds, 0-2 after). So from carpetFirst
+    //! seconds until carpetMin, the key follows the rate of runs at
+    //! carpetPeak sigma over everything seen so far, against the thresholds
+    //! raised by the whole of carpetWarm: 25 and 13 became 4 and 0. On a
+    //! 98-song sample 51 songs change, only in their first three seconds and
+    //! by -46 to -116 dB, mostly the run-in at the needle drop; the Malvon
+    //! master and Olga are untouched. 0 turns it off.
+    double carpetFirst  = 0.25;      //!< seconds
 
     double rate         = 44100.0;   //!< the sample rate compute() was given
 
@@ -490,14 +539,16 @@ struct Config {
     //! configure(), which reallocates and therefore resets.
     //!
     //! Only `order`, `maxRun`, `madWindow`, `body`, `bodyN`, `fineN`,
-    //! `fineM`, `microN`, `microM`, `flankStage` and `flankHalf` size anything
-    //! or set the latency (`pad` and `latency` are derived from them);
-    //! thresholds, depth, wet, delta, passes and whether the fine and micro
-    //! stages run are read per block and can change under a live stream.
+    //! `fineM`, `microN`, `microM`, `mid`, `midLo`, `flankStage` and
+    //! `flankHalf` size anything or set the latency (`pad` and `latency` are
+    //! derived from them); thresholds, depth, wet, delta, passes and whether
+    //! the fine and micro stages run are read per block and can change under
+    //! a live stream.
     bool structurallyEquals(const Config & o) const {
         return order == o.order && maxRun == o.maxRun && madWindow == o.madWindow
             && body == o.body && bodyN == o.bodyN && fineN == o.fineN
             && fineM == o.fineM && microN == o.microN && microM == o.microM
+            && mid == o.mid && midLo == o.midLo
             && flankStage == o.flankStage
             && flankHalf == o.flankHalf && flankHz == o.flankHz && rate == o.rate;
     }
@@ -673,6 +724,10 @@ public:
     //! Config::micro.
     uint64_t microFrames() const { return m_mCuts; }
 
+    //! Diagnostics for the mid stage: frames it took something from. See
+    //! Config::mid.
+    uint64_t midFrames() const { return m_dCuts; }
+
     //! Diagnostics: total bytes this channel is holding. Nothing in the
     //! processing path adds to this - see the buffer envelope in Config.
     size_t heapBytes() const;
@@ -682,8 +737,9 @@ private:
     void outPush(double v);
     //! The dry/wet (or delta) mix of one finished sample, into the output ring.
     void emitMixed(double y, double d);
-    //! One repaired sample and its dry counterpart, into the body stage.
-    void bodyPush(double y, double d);
+    //! One repaired sample and its dry counterpart, into the body stage, and
+    //! whether it lies in a run the mid stage counts.
+    void bodyPush(double y, double d, uint8_t strong);
     //! The frame starting at stage sample `start` is complete: transform it,
     //! and cut the one two hops before it.
     void bodyHop(uint64_t start);
@@ -744,6 +800,8 @@ private:
 
     AlignedBuf m_win;             //!< sliding window of input/repaired audio
     std::vector<uint8_t> m_flag;  //!< parallel to m_win: repair mask
+    //! Parallel to m_win: in a run repaired at Config::midPeak sigma or more.
+    std::vector<uint8_t> m_strong;
     AlignedBuf m_dry;             //!< untouched copy, for the dry/wet mix
     //! m_win with every repair in full, whatever its Config::softMin gain:
     //! what repairRun() solves against. Solved against m_win, a run's context
@@ -823,6 +881,7 @@ private:
     //! m_bBeta as it stood when it was repaired, which is what the body and
     //! fine stages see while it goes through them.
     std::vector<double> m_stY, m_stD;
+    std::vector<uint8_t> m_stS;
     bool   m_stHave = false;
     double m_bBetaPrev = 0.0;
     uint64_t m_flSpans = 0, m_flSkipped = 0;
@@ -895,16 +954,16 @@ private:
     std::vector<double> m_fStRe, m_fStIm;  //!< N/2's twiddles, stage by stage
     std::vector<double> m_fTwRe, m_fTwIm;  //!< N's, for the packing, k <= N/2
     std::vector<int>    m_fRev;            //!< bit reversal of N/2
-    std::vector<double> m_fMag;            //!< m_fSlots x m_fNb
-    std::vector<double> m_fXRe, m_fXIm;    //!< m_fSlots x m_fNb
+    std::vector<double> m_fMag;            //!< m_fSlots x (m_dNb + m_fNb)
+    std::vector<double> m_fXRe, m_fXIm;    //!< m_fSlots x (m_dNb + m_fNb)
     //! Per bin, the magnitudes of the last fineM frames, kept sorted: a hop
     //! moves one value out and one in.
-    std::vector<double> m_fSorted;   //!< m_fNb x fineM, a place of pad either side
+    std::vector<double> m_fSorted;   //!< (m_dNb + m_fNb) x fineM, a place of pad either side
     //! The fineQ quantile of each window of fineM frames, by the frame that
     //! ends it: frame f in row f % m_fQSlots. The windows before and after
     //! the cut frame are two of these, fineM + 1 frames apart, so each window
     //! is ranked once rather than twice.
-    std::vector<double> m_fQ;        //!< m_fQSlots x m_fNb
+    std::vector<double> m_fQ;        //!< m_fQSlots x (m_dNb + m_fNb)
     std::vector<double> m_fE;        //!< the guard's envelope per frame, m_fESlots
     std::vector<double> m_fSeg;      //!< 2 m_fW + 1 of it, around the cut frame
     //! What the fine stage alone removes, a ring like m_bR: the micro stage
@@ -914,6 +973,18 @@ private:
     std::vector<double> m_fKeep;
     std::vector<uint64_t> m_fKeepAt;
     size_t m_fKeepMask = 0;
+
+    //! The mid stage; see Config::mid. Its m_dNb bins come first in the fine
+    //! stage's band, which then starts at bin m_fK0 - m_dNb: the per-bin rings
+    //! above hold m_dNb + m_fNb. The first m_dYieldNb of them are in the body
+    //! stage's band. Its guard's envelope, as m_fE; and per hop of the body
+    //! stage's count, whether a sample in it lay in a run of midPeak sigma.
+    int    m_dNb = 0, m_dYieldNb = 0;
+    std::vector<double> m_dE;
+    std::vector<uint8_t> m_dRun;
+    size_t m_dRunMask = 0;
+    int    m_fHShift = 0;         //!< m_fH = 1 << this
+    uint64_t m_dCuts = 0;
 
     //! The micro stage; see Config::micro. As the fine stage, at microN, hop
     //! microN/2, its input m_bY - m_fR read m_mLag samples behind the body
@@ -946,6 +1017,7 @@ private:
     //! A fixed array: twenty numbers a second need no allocation.
     int    m_cBlk = 0;
     double m_cRuns = 0.0, m_cSamp = 0.0;
+    double m_cTotRuns = 0.0, m_cTotSamp = 0.0;   //!< since the start, for carpetFirst
     double m_cRing[kCarpetMax];
     int    m_cPos = 0, m_cHave = 0;
     double m_cKey = 0.0;
