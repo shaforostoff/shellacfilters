@@ -340,11 +340,11 @@ int main() {
         ch.configure(cfg);
     }
 
-    // The crackle floor stage, off by default, runs on the output under the key the
-    // fine stage follows, which the clicks above hold open. It holds its
-    // buffers only while it is on, so turning it on is a configure() - outside
-    // the counted region, like the rest of this test's setup - and after that
-    // it must cut frames and allocate nothing.
+    // The crackle floor stage, on by default (so in every case above), runs on
+    // the output under the key the fine stage follows, which the clicks above
+    // hold open. It holds its buffers only while it is on, so turning it on or
+    // off is a configure() - outside the counted region, like the rest of this
+    // test's setup - and it must cut frames and allocate nothing.
     // Then with its top shelf, which follows the floor further up and keeps a
     // ring of its ratios.
     for (int shelf = 0; shelf <= 1; ++shelf) {

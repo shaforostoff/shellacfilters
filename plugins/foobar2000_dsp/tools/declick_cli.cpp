@@ -106,7 +106,7 @@ void usage() {
         "                     so far (default 0.5)\n"
         "  --crackle-floor <0|1>\n"
         "                     Lowers the floor dense crackle forms, a spectral denoiser\n"
-        "                     on the output under the fine stage's key (default 0)\n"
+        "                     on the output under the fine stage's key (default 1)\n"
         "  --crackle-floor-lo <Hz>\n"
         "                     Where it starts, ramped in over the half octave below (default 1000)\n"
         "  --crackle-floor-hi <Hz>\n"

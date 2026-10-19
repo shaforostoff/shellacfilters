@@ -302,6 +302,11 @@ same build from 153× to 106× with AVX2 and from 85× to 66× with SSE2. Those
 are other runs on a different day, so set them against each other, not
 against the figures above. The Mac table below is of the body stage alone;
 the one after it has the fine stage on.
+The [crackle floor stage](#the-floor-under-dense-crackle-the-crackle-floor-stage-on),
+on by default since 2026-10-19, costs ~5% where its key is shut (that clip
+178× → 170× with AVX2, *Ahora no me conoces* 191× → 181×) and ~20% where it
+is open (*El rodeo* 113× → 94×), best of seven interleaved. None of the
+tables below include it.
 
 On the Macs, with the body stage included, the three builds taking turns:
 
@@ -347,14 +352,15 @@ because what it was losing was branch mispredictions, which an M1 is far
 better at hiding. **Every output is byte-identical** to what the same build
 produced before, on both machines and with either kernel set: what changed is
 how the work is laid out, not the arithmetic.
-Latency ~106 ms (4656 samples at 44.1 kHz, ~70 ms of it the body stage and
-11.6 ms the [flank repair](#band-limited-transfers-the-flank-repair)'s hold),
+Latency ~140 ms (6192 samples at 44.1 kHz: ~70 ms of it the body stage, 35 ms
+the [crackle floor stage](#the-floor-under-dense-crackle-the-crackle-floor-stage-on)
+and 11.6 ms the [flank repair](#band-limited-transfers-the-flank-repair)'s hold),
 reported to foobar2000 so visualisations stay in sync. Note
 that `config().latency` is a buffering delay, not a shift: that many samples
 must go in before the first block comes out, but the emitted stream is aligned
 with the input. The component reads ahead rather than holding the output back —
 it feeds every chunk in and emits whatever the pipeline has finished — so what
-those 106 ms describe is how far ahead of the listener the decoder is running,
+those 140 ms describe is how far ahead of the listener the decoder is running,
 which is exactly what `get_latency()` exists to tell the core.
 
 **Nothing is carried from one track to the next.** Every record has its own
@@ -2165,7 +2171,7 @@ twenty numbers a second. On the Zen 4, best of 15 interleaved runs:
   * *El rodeo*: 135× → 104×, about *El abrojito*'s 94×;
   * *El abrojito*, already open: 94× → 92×.
 
-### The floor under dense crackle: the crackle floor stage (off)
+### The floor under dense crackle: the crackle floor stage (on)
 
 **What was heard.** After the key above, *El rodeo* and *El abrojito* still
 kept "the majority of crackle": a fine sizzle, and a duller frying. The user
@@ -2186,7 +2192,9 @@ heard the decrackled version keep too much as well.
 in b525d0a7f): a spectral denoiser on the finished output, under the key the
 fine stage follows. It is named for what it lowers, the floor that dense
 crackle forms. It is not a general denoiser: it leaves the hiss above 4.5 kHz
-and everything under 1 kHz, and it rests where the key is shut.
+and everything under 1 kHz, and it rests where the key is shut. On by default
+since its mid-song openings were fixed (below); it has no control of its own in
+the plug-ins, and `--crackle-floor 0` turns it off in `declick_cli`.
 
 * **Frames:** an STFT of ~23 ms (1024 at 44.1 kHz), hop N/4, Hann either side.
 * **The band:** from `crackleFloorLo` (1 kHz), ramped in over the half octave
@@ -2206,7 +2214,7 @@ and everything under 1 kHz, and it rests where the key is shut.
   * A stretch of pure noise gets one steady cut rather than bins that
     twinkle: the cut flickers half as much as a per-bin gain does.
 
-**How it was chosen, and why it is off.**
+**How it was chosen.**
 
 * **Folder 5:** strengths from −4 to −15 dB, with a per-bin gain. Only the
   gentlest was liked; the stronger ones "remove the crackle better, but
@@ -2216,9 +2224,11 @@ and everything under 1 kHz, and it rests where the key is shut.
   or even less loud" was liked better: the sound should breathe.
 * **The stage as first committed** was A, the full removal, over the whole
   band. Heard as taking crackle, but leaving high-frequency noise that feels
-  unnatural on music played by people. So it is off.
+  unnatural on music played by people. So it was turned off.
 * **Folder 8:** why the top sounds unnatural, and four remedies. The top
   left untouched was liked best, and that is now the default.
+* **Folder 10:** the fix for a key that opens mid-song (below). Heard, and
+  the stage was then turned on by default.
 
 **The top band: left as it was.** The user: "usually it doesn't bother me,
 but when the Denoise stage is applied, the leftover noise feels unnatural".
@@ -3337,8 +3347,8 @@ wrong pre-roll makes the core zero-fill mid-stream. Around it, the things an AU
 has to get right that a VST does not:
 
 * `GetLatency()` and `GetTailTime()` are **seconds**, not samples, and both have
-  to come back out as `cfg.latency` at the rate in force — 4656 samples at the
-  shipping default, 4368 after dropping to order 32, 7936 at 96 kHz;
+  to come back out as `cfg.latency` at the rate in force — 6192 samples at the
+  shipping default, 5904 after dropping to order 32, 11008 at 96 kHz;
 * `PropertyChanged(kAudioUnitProperty_Latency)` is what an AU says instead of
   `audioMasterIOChanged`, so it must fire **exactly once** for Max repair or
   Model order and **never** for the other five, for Dehum's seven, or across a
@@ -4068,7 +4078,7 @@ and a compiler would not:
 | `resvd1`, `resvd2`, `future[56]` | left zeroed, as the host expects |
 | the deprecated `process` | a no-op function, not a null pointer, because a host old enough to call it will not check first |
 | opcode routing | all seven parameter names arrive at the right index; displays and labels stay inside `kVstMaxParamStrLen` in a buffer bigger than promised |
-| the latency contract | Declick declares 4656 samples at 44.1 kHz with `effGetTailSize` matching, and calls `audioMasterIOChanged` twice for the two structural parameters; Dehum declares 0 and calls it **never** |
+| the latency contract | Declick declares 6192 samples at 44.1 kHz with `effGetTailSize` matching, and calls `audioMasterIOChanged` twice for the two structural parameters; Dehum declares 0 and calls it **never** |
 | `main` | exported as well as `VSTPluginMain`, for hosts that predate the rename, and reaching the same plug-in when called. On Windows the `.def` makes them one address and that is asserted too; the `.so` gets a forwarder instead, because there is no `.def` to alias with |
 | `effClose` | 24 open/close cycles do not accumulate private bytes. This is a contract, not a nicety: the host frees nothing, so a shim that forgets the `delete` leaks the whole instance on every plug-in scan, and Dehum carries ~400 kB of analysis state per channel |
 

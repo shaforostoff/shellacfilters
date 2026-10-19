@@ -523,10 +523,11 @@ struct Config {
     double fanoFirst    = 0.5;       //!< seconds
     int    fanoBlocks   = 1;         //!< repair blocks per bin, from the rate
 
-    //! The crackle floor stage (named `denoise` in b525d0a7f). Off: not
-    //! user-facing yet. declick_cli turns it on with --crackle-floor 1 and
-    //! sweeps --crackle-floor-lo, -hi, -beta, -min, -q, -win and -release, and
-    //! the shelf's --crackle-floor-shelf, -shelf-gain, -shelf-x0, -shelf-x1 and
+    //! The crackle floor stage (named `denoise` in b525d0a7f). On by default
+    //! since its mid-song openings were fixed, with no control of its own in
+    //! the plug-ins. declick_cli turns it off with --crackle-floor 0 and sweeps
+    //! --crackle-floor-lo, -hi, -beta, -min, -q, -win and -release, and the
+    //! shelf's --crackle-floor-shelf, -shelf-gain, -shelf-x0, -shelf-x1 and
     //! -shelf-release.
     //! On a dense carpet - 600-900 runs a second on Pugliese's *El rodeo* and
     //! *El abrojito* - the crackle merges into a floor, heard as sizzle and
@@ -589,7 +590,7 @@ struct Config {
     //! crackleFloorLatency. Where its key is open it costs 20-30% more than
     //! the rest of the core (the full band 80-95%); where it is shut, 1-3%
     //! more than when the history waited there.
-    int    crackleFloor        = 0;
+    int    crackleFloor        = 1;
     double crackleFloorLo      = 1000.0;
     double crackleFloorHi      = 4500.0;  //!< Hz; <= 0 for no upper edge
     double crackleFloorBeta    = 1.2;
