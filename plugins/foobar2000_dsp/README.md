@@ -2301,14 +2301,54 @@ kept as an option.
 * **Latency:** `bodyDelay(crackleFloorN)` more, 1536 samples at 44.1 kHz.
 * **Off,** the output is the build before it to the bit; so is it with
   `crackleFloorHi = 0`.
-* **Where its key is shut,** it transforms nothing: the floor's history waits
-  and the five frames start again when it opens.
-  * So where the key first opens mid-song, that history holds only a few
-    frames, and they are the music's.
-  * *Y_ahora*'s key opens at 82 s, on loud music. For ~3 s the stage takes
-    up to 0.8–1.5 dB of 1–3 kHz, and what it takes follows the music's
-    spectrum (r 0.80).
-  * Known, and one reason the stage stays off.
+* **Where its key is shut,** it cuts nothing, and the output is its input
+  to the bit.
+* **The floor's history under a shut key.** It used to wait there, and the
+  five frames started again when the key opened.
+  * So where the key opened again mid-song, the first-second rule threw out
+    the little the history held, and the window was a few frames of the
+    music. *Y_ahora*'s key opens at 82 s, on loud music: for ~3 s the stage
+    took up to 0.8–1.5 dB of 1–3 kHz, following the music's spectrum (r 0.80).
+  * Now, after the stream's first two seconds, the history goes on under a
+    shut key. Of every 16 hops the first five are transformed and their
+    power taken once, standing for the four values the open key would have
+    taken. The window is still the last 6 s, whatever the key did.
+  * The first-second rule leaves out only what was taken in the first two
+    seconds. Those seconds are as before: the history waits there while the
+    key is shut, so a record's start is cut as it was.
+  * **A full window alone took more** where the old history had kept a lower
+    floor from the key's last opening: *x_carpeta* at 54 s −91 → −44 dB re
+    its 1–4.5 kHz band, *s12*, *s33*, *s39*, *s64*. A floor taken under the
+    open key is the crackle's; one taken while it was shut may be the
+    music's.
+  * **So after the key opens again,** until the window has been renewed under
+    it (6 s of open key), the floor is no higher than it stood when the key
+    last shut. Not in the first two seconds.
+* **The 109-song check set with the stage on** (the 101 songs, the four
+  Pugliese and four voice / crackle songs):
+  * With the stage off, all 109 are the build before to the bit.
+  * With it on, 72 are the build before to the bit. Among them are *El rodeo*,
+    *El abrojito*, the other two Pugliese, *El Marne*, *Malvón* (both), *Olga*
+    and both *La tablada*. Over the whole song, none of the 37 that change
+    loses more than before. *Bien milonga* and *A tu recuerdo* lose the same
+    to 0.01 dB, and the others less.
+  * Removal at 1–4.5 kHz in the 3 s after a mid-song opening, dB re the band,
+    before → now:
+
+| | at | before | now |
+|---|---|---|---|
+| *Y_ahora* | 83 s | −12.9 | −76.6 |
+| s54 | 78 s | −13.2 | −29.8 |
+| s78 | 70 s | −16.4 | −47.7 |
+| s32 | 62 s | −17.0 | −41.7 |
+| s51 | 10 s | −17.3 | −42.7 |
+| s13 | 220 s | −19.9 | −47.4 |
+| s72 | 69 s | −22.3 | −37.4 |
+| *Cadenas* | 31 s | −23.5 | −32.1 |
+| s21 | 31 s | −25.4 | −52.1 |
+
+  * The most any second takes over before: +3.7 dB (s76 at 127 s, at
+    −45 dB re the band).
 * **CPU when on** (Zen 4, realtime multiples, best of 7 interleaved):
 
 | | off | on (top untouched) | + shelf | no upper edge |
@@ -2318,7 +2358,9 @@ kept as an option.
 | *El abrojito* | 96× | 81× | 67× | 54× |
 
   Most of the cost is the floor's history: a sorted window of 259 values per
-  followed bin, every fourth hop.
+  followed bin, every fourth hop. Its going on under a shut key costs 1–3 %
+  (*Pa que bailen* 172 → 170×, *Y_ahora* 187 → 181×, measured beside the
+  build before; *El rodeo*, whose key stays open, 94× both).
 
 ---
 

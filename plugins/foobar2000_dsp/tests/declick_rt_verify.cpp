@@ -115,8 +115,9 @@ struct Rng {
 };
 
 //! Clicks every 700 samples, so interpolate() runs constantly and its scratch
-//! is asked for every run length the detector can produce.
-std::vector<double> signal(int n, double rate) {
+//! is asked for every run length the detector can produce; none from sample
+//! `quietFrom` to `quietTo`, if given.
+std::vector<double> signal(int n, double rate, int quietFrom = 0, int quietTo = 0) {
     std::vector<double> v((size_t)n, 0.0);
     Rng rng(22222u);
     for (int i = 0; i < n; ++i) {
@@ -124,7 +125,7 @@ std::vector<double> signal(int n, double rate) {
         v[(size_t)i] = 0.30 * sin(6.283185307179586 * 220.0 * t)
                      + 0.15 * sin(6.283185307179586 * 661.0 * t)
                      + rng.centred() * 2.0e-3;
-        if (i % 700 == 0) {
+        if (i % 700 == 0 && !(i >= quietFrom && i < quietTo)) {
             // Vary the burst length, so the longest run the scratch has to hold
             // turns up late rather than in the first block.
             const int len = 1 + (i / 700) % 12;
@@ -359,6 +360,42 @@ int main() {
         const bool ran = ch.crackleFloorFrames() > 0;
         printf("  %-50s %-4s %llu frames cut\n", "... and it ran",
                ran ? "ok" : "FAIL", (unsigned long long)ch.crackleFloorFrames());
+        if (!ran) ++g_failures;
+        ch.configure(cfg);
+    }
+
+    // Where the key shuts after the stream's first two seconds the stage's
+    // floor history goes on, a value every few hops standing for four, and
+    // after it opens again the floor is kept under the one it shut with: the
+    // window lets several values go at once, and a second floor is kept.
+    // Clicks for 4 s, none for 6 s, clicks again: the key must shut and open
+    // again, the stage cut after it, and none of it allocate.
+    {
+        const std::vector<double> gated = signal(R * 15, rate, 4 * R, 10 * R);
+        Config cn;
+        cn.crackleFloor = 1;
+        cn.compute(Params::defaults(), rate);
+        ch.configure(cn);
+        ch.prime();
+        arm();
+        // Shut is a tenth of a second the stage cuts nothing in.
+        bool shut = false, reopened = false;
+        uint64_t cutsShut = 0, cuts = 0;
+        for (int s0 = 0; s0 < 15 * R; s0 += R / 10) {
+            perSample(ch, gated, s0, s0 + R / 10);
+            const uint64_t now = ch.crackleFloorFrames();
+            if (!shut && s0 >= 4 * R && s0 < 10 * R && now == cuts) {
+                shut = true;
+                cutsShut = now;
+            }
+            if (shut && s0 >= 10 * R && now > cuts) reopened = true;
+            cuts = now;
+        }
+        requireQuiet("the crackle floor stage, key shut and open again");
+        const bool ran = shut && reopened && ch.crackleFloorFrames() > cutsShut;
+        printf("  %-50s %-4s shut %s, open again %s, %llu frames cut after\n", "... and it ran",
+               ran ? "ok" : "FAIL", shut ? "yes" : "no", reopened ? "yes" : "no",
+               (unsigned long long)(ch.crackleFloorFrames() - cutsShut));
         if (!ran) ++g_failures;
         ch.configure(cfg);
     }

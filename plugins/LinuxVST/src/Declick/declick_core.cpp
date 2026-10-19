@@ -1842,6 +1842,8 @@ void Channel::configure(const Config & cfg) {
         m_nRing.assign(nt * W, 0.0);
         m_nSorted.assign(nt * (W + 2), 0.0);
         m_nFloor.assign(nt, 0.0);
+        m_nSaved.assign(nt, 0.0);
+        m_nAt.assign(W, 0);
         m_nG.assign(nt, 1.0);
         m_nWf.assign(nb, 0.0);
         m_nWs.assign(m_nShelf ? nb : 0, 0.0);
@@ -1889,7 +1891,8 @@ void Channel::configure(const Config & cfg) {
         m_nRe.clear(); m_nIm.clear(); m_nStRe.clear(); m_nStIm.clear();
         m_nTwRe.clear(); m_nTwIm.clear(); m_nRev.clear();
         m_nP.clear(); m_nPb.clear(); m_nXRe.clear(); m_nXIm.clear();
-        m_nRing.clear(); m_nSorted.clear(); m_nFloor.clear(); m_nG.clear();
+        m_nRing.clear(); m_nSorted.clear(); m_nFloor.clear(); m_nSaved.clear(); m_nG.clear();
+        m_nAt.clear();
         m_nWf.clear(); m_nWs.clear();
     }
 
@@ -1937,7 +1940,8 @@ size_t Channel::heapBytes() const {
             + m_nTwRe.capacity() + m_nTwIm.capacity()
             + m_nP.capacity() + m_nPb.capacity() + m_nXRe.capacity() + m_nXIm.capacity()
             + m_nRing.capacity() + m_nSorted.capacity()
-            + m_nFloor.capacity() + m_nG.capacity() + m_nWf.capacity()
+            + m_nFloor.capacity() + m_nSaved.capacity() + m_nAt.capacity()
+            + m_nG.capacity() + m_nWf.capacity()
             + m_nWs.capacity()) * sizeof(double)
            + m_flag.capacity() + m_strong.capacity() + m_stS.capacity() + m_dRun.capacity()
            + m_runs.capacity() * sizeof(int)
@@ -2014,6 +2018,8 @@ void Channel::reset() {
     std::fill(m_nR.begin(), m_nR.end(), 0.0);
     std::fill(m_nG.begin(), m_nG.end(), 1.0);
     std::fill(m_nFloor.begin(), m_nFloor.end(), 0.0);
+    std::fill(m_nSaved.begin(), m_nSaved.end(), 0.0);
+    std::fill(m_nAt.begin(), m_nAt.end(), (uint64_t)0);
     m_nT = 0;
     m_nNextHop = (uint64_t)m_nN;
     m_nHist = 0;
@@ -2022,6 +2028,12 @@ void Channel::reset() {
     m_nHave = 0;
     m_nPos = 0;
     m_nTaken = 0;
+    m_nEarly = 0;
+    m_nShutHops = 0;
+    m_nSinceOpen = 0;
+    m_nOpen = false;
+    m_nHasSaved = false;
+    m_nKeep = false;
     m_nCuts = 0;
     m_nShelfG = 1.0;
     m_nDHave = 0;
@@ -2844,22 +2856,60 @@ void Channel::crackleFloorPush(double y, double d) {
     }
 }
 
+//! Takes `out` from the n sorted values at m, which close up behind it.
+static void sortedTake(double * m, int n, double out) {
+    const int j = (int)(std::lower_bound(m, m + n, out) - m);
+    memmove(m + j, m + j + 1, (size_t)(n - 1 - j) * sizeof(double));
+}
+
 //! The newest frame starts at sample `start` of the stage's input; the one cut
 //! is two hops before it, the middle of the five whose power the gain is
 //! averaged over. Transforms are packed as in fineHop(), and the band reaches
-//! the Nyquist bin as that stage's can. Under the key the fine stage follows;
-//! where it is shut, nothing is transformed - the floor's history waits where
-//! it was, and the five frames start again - and the output is the input to the
-//! bit. Only what is taken out is transformed back. See Config::crackleFloor.
+//! the Nyquist bin as that stage's can. Under the key the fine stage follows.
+//! Where it is shut nothing is cut, and the output is the input to the bit.
+//! In the stream's first two seconds nothing is transformed there either: the
+//! floor's history waits, and the five frames start again when the key opens,
+//! so a record's start is cut as it was. From then on the history goes on
+//! under a shut key at a quarter of the cost: of every kShutCycle hops the
+//! first five are transformed and their power taken once, standing for the
+//! kShutCycle / kFloorDec values the open key would have taken (most of the
+//! cost is the sorted history, not the transforms). Only what is taken out is
+//! transformed back. See Config::crackleFloor.
 void Channel::crackleFloorHop(uint64_t start) {
     const double key = dmax(m_bBeta, m_cKey);
-    if (!(key > 0.0)) {
-        m_nHist = 0;           // the frames have a hole; start them again
-        m_nDHave = 0;
-        m_nDPos = 0;
-        return;
+    const bool open = key > 0.0;
+    const bool late = (double)start >= 2.0 * m_cfg.rate;
+    const int W = m_cfg.crackleFloorHist;
+    const int nt = m_nTop;
+    bool shutTake = false;
+    if (!open) {
+        if (m_nOpen) {
+            // The floor as the cut last used it, for the next opening.
+            if (m_nHave > 0) {
+                const bool kept = m_nKeep && m_nSinceOpen < (uint64_t)W;
+                for (int b = 0; b < nt; ++b) {
+                    const double f = m_nFloor[(size_t)b];
+                    m_nSaved[(size_t)b] = kept ? dmin(f, m_nSaved[(size_t)b]) : f;
+                }
+                m_nHasSaved = true;
+            }
+            m_nOpen = false;
+            m_nShutHops = 0;
+        }
+        const uint64_t ph = late ? m_nShutHops++ % (uint64_t)kShutCycle : (uint64_t)kShutCycle;
+        if (ph >= (uint64_t)kFloorFrames) {
+            m_nHist = 0;           // the frames have a hole; start them again
+            m_nDHave = 0;
+            m_nDPos = 0;
+            return;
+        }
+        shutTake = ph == (uint64_t)kFloorFrames - 1;
+    } else if (!m_nOpen) {
+        m_nOpen = true;
+        m_nKeep = late && m_nHasSaved;
+        m_nSinceOpen = 0;
     }
-    const int N = m_nN, H = m_nH, M = N / 2, nb = m_nNb, nt = m_nTop, m0 = m_nM0;
+    const int N = m_nN, H = m_nH, M = N / 2, nb = m_nNb, m0 = m_nM0;
     const size_t mask = m_nMask, nbs = (size_t)nb;
     double * re = &m_nRe[0];
     double * im = &m_nIm[0];
@@ -2933,49 +2983,71 @@ void Channel::crackleFloorHop(uint64_t start) {
     const double * cxi = &m_nXIm[(size_t)cs * nbs];
     for (int b = 0; b < nb; ++b) frameEnergy += Pq[2][b];
 
-    // The floor's history: every fourth cut frame, each bin's power averaged
-    // over the five frames, into the bin's ring and its sorted copy - unless
-    // the frame is silent, which carries no floor (a host's pre-roll is). The
-    // window leaves out the stream's first second, and before two seconds are
-    // in, the first half of what has been taken: a record that fades in - the
-    // TangoTunes transfers do, over ~0.5 s from 30 dB under their crackle -
-    // would otherwise hold the quantile under the floor until the fade was a
-    // tenth of the window, 5 s in, and the stage would start that late. Once
-    // crackleFloorHist values follow that second, it is the last
-    // crackleFloorHist.
-    const int W = m_cfg.crackleFloorHist;
-    const bool take = (m_nCutCount % (uint64_t)kFloorDec) == 0 && frameEnergy > 0.0;
+    // The floor's history: every fourth cut frame (under a shut key, the fifth
+    // of every kShutCycle hops), each bin's power averaged over the five
+    // frames, into the bin's ring and its sorted copy - unless the frame is
+    // silent, which carries no floor (a host's pre-roll is). The window leaves
+    // out the stream's first second, and before two seconds are in, the first
+    // half of what has been taken: a record that fades in - the TangoTunes
+    // transfers do, over ~0.5 s from 30 dB under their crackle - would
+    // otherwise hold the quantile under the floor until the fade was a tenth
+    // of the window, 5 s in, and the stage would start that late. Once
+    // crackleFloorHist takes follow that second, it is the last
+    // crackleFloorHist. Takes are counted as the open key makes them, so a
+    // value taken under a shut key stands for four; and only what was taken
+    // in the first two seconds is ever left out.
+    const bool take = (open ? (m_nCutCount % (uint64_t)kFloorDec) == 0 : shutTake) && frameEnergy > 0.0;
     const int g0 = (m_nK0 - 1 - m0 > 0) ? m_nK0 - 1 - m0 : 0;
     if (take) {
-        ++m_nTaken;
+        m_nTaken += open ? 1 : (uint64_t)(kShutCycle / kFloorDec);
+        if (!late) m_nEarly = m_nTaken;
+        if (open) ++m_nSinceOpen;
         const int have = m_nHave, pos = m_nPos;
         const uint64_t perSec = (uint64_t)(m_cfg.rate / (double)(m_nH * (int)kFloorDec));
-        const uint64_t drop = (m_nTaken / 2 < perSec) ? m_nTaken / 2 : perSec;
+        uint64_t drop = (m_nTaken / 2 < perSec) ? m_nTaken / 2 : perSec;
+        if (drop > m_nEarly) drop = m_nEarly;
         int L = (m_nTaken - drop > (uint64_t)W) ? W : (int)(m_nTaken - drop);
         if (L < 1) L = 1;
-        const bool grow = have < L;              // else one in, the oldest out
-        const int n = grow ? have + 1 : have;
+        // The values that fall out of the window, oldest first. Under the open
+        // key that is none while the window grows, else one, as it was before
+        // a shut key's values could be in it.
+        const uint64_t after = m_nTaken - (uint64_t)L;
         const int old = (pos - have + W) % W;
+        int out = 0;
+        while (out < have && m_nAt[(size_t)((old + out) % W)] <= after) ++out;
+        const int n = have - out + 1;
         int rank = (int)((double)n * m_cfg.crackleFloorQ);
         if (rank > n - 1) rank = n - 1;
         for (int b = g0; b < nt; ++b) {
             const double in = (Pq[0][b] + Pq[1][b] + Pq[2][b] + Pq[3][b] + Pq[4][b]) / 5.0;
             double * ring = &m_nRing[(size_t)b * (size_t)W];
             double * srt = &m_nSorted[(size_t)b * (size_t)(W + 2) + 1];   // a pad either side
-            if (grow) {
+            int held = have;
+            for (int i = 0; i + 1 < out; ++i) sortedTake(srt, held--, ring[(old + i) % W]);
+            if (out == 0) {
                 int j = 0;
-                while (j < have && srt[j] < in) ++j;
-                memmove(srt + j + 1, srt + j, (size_t)(have - j) * sizeof(double));
+                while (j < held && srt[j] < in) ++j;
+                memmove(srt + j + 1, srt + j, (size_t)(held - j) * sizeof(double));
                 srt[j] = in;
             } else {
-                sortedReplace(srt, have, ring[old], in);
+                sortedReplace(srt, held, ring[(old + out - 1) % W], in);
             }
             ring[pos] = in;
             m_nFloor[(size_t)b] = srt[rank];
         }
+        m_nAt[(size_t)pos] = m_nTaken;
         m_nPos = (pos + 1 < W) ? pos + 1 : 0;
-        if (grow) m_nHave = have + 1;
+        m_nHave = n;
     }
+    if (!open) return;     // a shut key's frames only feed the history
+
+    // After a shut stretch, until the window has been renewed under the open
+    // key, the floor is no higher than it stood when the key shut: one taken
+    // under the open key is the crackle's, the shut stretch's may be the
+    // music's. Not in the first two seconds, which are cut as before.
+    const bool kept = m_nKeep && m_nSinceOpen < (uint64_t)W;
+    const double * Fl = &m_nFloor[0];
+    const double * Sv = &m_nSaved[0];
     // The gain: Wiener's, on the power over 7 bins x 5 frames against beta x
     // the floor, never below crackleFloorMin; it rises at once and falls back
     // with the release.
@@ -2984,7 +3056,7 @@ void Channel::crackleFloorHop(uint64_t start) {
         const bool first = m_nCutCount == 0;
         for (int b = g0; b < nt; ++b) {
             const double s = (Bq[0][b] + Bq[1][b] + Bq[2][b] + Bq[3][b] + Bq[4][b]) / 35.0;
-            const double nf = m_nFloor[(size_t)b] * beta + 1e-30;
+            const double nf = (kept ? dmin(Fl[b], Sv[b]) : Fl[b]) * beta + 1e-30;
             const double x = dmax(s / nf - 1.0, 0.0);
             const double g0v = dmax(x / (1.0 + x), gmin);
             double & g = m_nG[(size_t)b];
@@ -3000,7 +3072,7 @@ void Channel::crackleFloorHop(uint64_t start) {
         double sp = 0.0, sf = 0.0;
         for (int b = m_nKd0; b <= m_nKd1; ++b) {
             sp += Pn[b];
-            sf += m_nFloor[(size_t)b];
+            sf += kept ? dmin(Fl[b], Sv[b]) : Fl[b];
         }
         m_nDRing[m_nDPos] = sp / (sf + 1e-30);
         m_nDPos = (m_nDPos + 1 < (int)kShelfMed) ? m_nDPos + 1 : 0;

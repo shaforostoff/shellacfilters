@@ -548,7 +548,11 @@ struct Config {
     //! half of it): the TangoTunes transfers fade in over ~0.5 s from 30 dB
     //! under their crackle, and those frames held the quantile under the floor
     //! for seconds, so the stage started late. Where the key is shut nothing is
-    //! transformed and the history waits.
+    //! cut. In the stream's first two seconds the history then waits, as it
+    //! always did, so a record's start is cut as before; from then on it goes
+    //! on under the shut key too, a quarter as often (each value standing for
+    //! four), so the window is the last crackleFloorWin seconds whatever the
+    //! key did.
     //! Heard as the prototype's "A", which looked ahead and behind +-3 s for the
     //! floor; this looks behind only, and takes 0.7 dB more. It brought
     //! *El rodeo*'s quiet floor from 12.2 to 9.6 dB over the copy at 2-3 kHz,
@@ -566,14 +570,25 @@ struct Config {
     //! crackleFloorHi / sqrt 2, none from crackleFloorHi up, and the top is
     //! left as it was. Of the four remedies heard, that was liked best.
     //! crackleFloorHi <= 0 cuts to Nyquist as before.
-    //! Known, and one reason it stays off: where the key first opens
-    //! mid-song, the floor's history holds a few frames of the music itself.
-    //! *Y_ahora*'s opens at 82 s on loud music, and for ~3 s the stage takes
-    //! up to 0.8-1.5 dB of 1-3 kHz that follows the music's spectrum.
+    //! The history used to wait wherever the key was shut, so where the key
+    //! opened again mid-song the first-second rule threw out what it held,
+    //! and the window was a few frames of the music itself: *Y_ahora*'s
+    //! opens at 82 s on loud music, and for ~3 s the stage took up to
+    //! 0.8-1.5 dB of 1-3 kHz, following the music's spectrum. Now the history
+    //! goes on under a shut key, and the first-second rule leaves out only
+    //! what was taken in the first two seconds. On its own that took more
+    //! than before where the old history had kept a lower floor from the last
+    //! opening: a floor taken under the open key is the crackle's, one taken
+    //! while it was shut may be the music's. So after the key opens again,
+    //! until the window has been renewed under it, the floor is no higher
+    //! than it stood when the key last shut (not in the first two seconds,
+    //! which are cut as before). On the 109-song check set the stage then
+    //! takes no more than before from any song, over the whole song.
     //! The floor is followed only as far up as the cut needs (~0.4 MB a
     //! channel at 44.1 kHz rather than ~2.2 MB). The stage adds
     //! crackleFloorLatency. Where its key is open it costs 20-30% more than
-    //! the rest of the core (the full band 80-95%).
+    //! the rest of the core (the full band 80-95%); where it is shut, 1-3%
+    //! more than when the history waited there.
     int    crackleFloor        = 0;
     double crackleFloorLo      = 1000.0;
     double crackleFloorHi      = 4500.0;  //!< Hz; <= 0 for no upper edge
@@ -1180,10 +1195,12 @@ private:
     //! m_nNb - 1: the last five frames' transform and power, the per-bin cut's
     //! weight (the band ramped in and out) and the shelf's. Per followed bin,
     //! the first m_nTop of those: the power summed over 7 bins, the floor's
-    //! history as a ring and kept sorted, the floor, the gain with its
-    //! release. The shelf: its bins m_nKd0 .. m_nKd1 (relative), the last
-    //! kShelfMed ratios, its gain. Held only while the stage is on.
-    enum { kFloorFrames = 5, kFloorDec = 4, kShelfMed = 9 };
+    //! history as a ring and kept sorted, the floor, the floor as it stood
+    //! when the key last shut, the gain with its release. Per place in the
+    //! ring, the take it stands at. The shelf: its bins m_nKd0 .. m_nKd1
+    //! (relative), the last kShelfMed ratios, its gain. Held only while the
+    //! stage is on.
+    enum { kFloorFrames = 5, kFloorDec = 4, kShelfMed = 9, kShutCycle = 16 };
     int    m_nN = 0, m_nH = 0;
     size_t m_nMask = 0;
     uint64_t m_nT = 0;
@@ -1198,7 +1215,13 @@ private:
     int    m_nSlot = 0;
     uint64_t m_nCutCount = 0;     //!< frames whose gain has been worked out
     int    m_nHave = 0, m_nPos = 0;  //!< floor values held, and where the next goes
-    uint64_t m_nTaken = 0;        //!< floor values taken since the start
+    uint64_t m_nTaken = 0;        //!< takes since the start; a shut key's value stands for kShutCycle / kFloorDec
+    uint64_t m_nEarly = 0;        //!< of those, the ones in the stream's first two seconds
+    uint64_t m_nShutHops = 0;     //!< hops since the key shut
+    uint64_t m_nSinceOpen = 0;    //!< floor values taken since the key opened
+    bool   m_nOpen = false;       //!< the key was open at the last hop
+    bool   m_nHasSaved = false;   //!< m_nSaved holds a floor
+    bool   m_nKeep = false;       //!< this opening keeps under m_nSaved
     double m_nNorm = 1.0;
     double m_nRel = 0.0;          //!< the release's step, per hop
     uint64_t m_nCuts = 0;
@@ -1211,7 +1234,8 @@ private:
     std::vector<double> m_nP, m_nPb, m_nXRe, m_nXIm;   //!< kFloorFrames x m_nNb
     std::vector<double> m_nRing;     //!< m_nTop x crackleFloorHist
     std::vector<double> m_nSorted;   //!< m_nTop x (crackleFloorHist + 2), padded either side
-    std::vector<double> m_nFloor, m_nG;   //!< m_nTop
+    std::vector<double> m_nFloor, m_nSaved, m_nG;   //!< m_nTop
+    std::vector<uint64_t> m_nAt;     //!< crackleFloorHist
     std::vector<double> m_nWf, m_nWs;     //!< m_nNb
 
     std::vector<double> m_madRing; //!< |forward residual| history
