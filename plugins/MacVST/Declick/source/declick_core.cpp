@@ -1152,7 +1152,23 @@ void Config::compute(const Params & pIn, double sampleRate) {
     if (flankHalf < 1) flankHalf = 1;
     if (flankPad + flankHalf >= (int)kBlock) flank = 0;
     flankStage = flank ? (int)kBlock : 0;
-    latency = pad + (int)kBlock + bodyLatency + flankStage;
+
+    // The denoise stage's frames span ~23 ms at any rate: the power of two
+    // nearest 0.0232 * rate. Its cut frame trails the newest by two hops, as
+    // the body stage's does, so its delay is that stage's for its length. It
+    // runs on the finished output, so the delay adds to the rest.
+    {
+        const double want = 0.0232 * sampleRate;
+        int n = 64;
+        while (n < 32768 && want >= 1.4142135623730951 * (double)n) n *= 2;
+        denoiseN = n;
+        denoiseHist = (int)(denoiseWin * sampleRate / (double)(n / 4) / (double)4) | 1;
+        if (denoiseHist < 1) denoiseHist = 1;
+        if (denoiseHist > 16383) denoiseHist = 16383;
+        denoiseQ = dmin(dmax(denoiseQ, 0.0), 1.0);
+    }
+    denoiseLatency = denoise ? bodyDelay(denoiseN) : 0;
+    latency = pad + (int)kBlock + bodyLatency + flankStage + denoiseLatency;
 
     // The carpet key's ring is a fixed array of kCarpetMax seconds.
     if (carpetWin < 1) carpetWin = 1;
@@ -1161,6 +1177,10 @@ void Config::compute(const Params & pIn, double sampleRate) {
     if (carpetMin > carpetWin) carpetMin = carpetWin;
     carpetQ = dmin(dmax(carpetQ, 0.0), 1.0);
     if (!(carpetFirst > 0.0)) carpetFirst = 0.0;
+    // The Poisson key's bins are ~11.6 ms: a block at 44.1 and 48 kHz, two at
+    // 88.2 and 96.
+    fanoBlocks = (int)floor(sampleRate / 44100.0 + 0.5);
+    if (fanoBlocks < 1) fanoBlocks = 1;
 
     // The fine stage's frames span ~2.9 ms at any rate: the power of two
     // nearest 0.0029 * rate. A sample is final once the frame D hops after
@@ -1748,6 +1768,92 @@ void Channel::configure(const Config & cfg) {
         }
     }
 
+    // The denoise stage, sized from denoiseN, denoiseLo and denoiseHist, and -
+    // unlike the stages above - only held while it is on, as the Wiener
+    // buffers are: its floor history is ~2 MB a channel at 44.1 kHz, and it is
+    // off unless asked for. Turning it on or off is a structural change, so it
+    // goes through configure().
+    if (cfg.denoise) {
+        const int N = cfg.denoiseN;
+        const int H = N / 4, M = N / 2;
+        m_nN = N;
+        m_nH = H;
+        size_t ring = 1;
+        while (ring < (size_t)Config::bodyDelay(N) + 1) ring <<= 1;
+        m_nMask = ring - 1;
+        const double binHz = cfg.rate / (double)N;
+        // The band ramps in over the half octave below denoiseLo: the first
+        // bin is the first above denoiseLo / sqrt 2. Kept from four below it,
+        // for the 7-bin sums of the bin below the band, whose gain the 3-bin
+        // average at its edge reads.
+        const double lo = cfg.denoiseLo / 1.4142135623730951;
+        int k0 = (int)floor(lo / binHz) + 1;
+        if (k0 < 1) k0 = 1;
+        if (k0 > M) k0 = M;
+        m_nK0 = k0;
+        m_nM0 = (k0 - 4 > 0) ? k0 - 4 : 0;
+        m_nNb = M - m_nM0 + 1;
+        const size_t nb = (size_t)m_nNb, W = (size_t)cfg.denoiseHist;
+        m_nY.assign(ring, 0.0);
+        m_nD.assign(ring, 0.0);
+        m_nR.assign(ring, 0.0);
+        m_nWin.assign((size_t)N, 0.0);
+        m_nRe.assign((size_t)M, 0.0);
+        m_nIm.assign((size_t)M, 0.0);
+        m_nStRe.assign((size_t)M, 0.0);
+        m_nStIm.assign((size_t)M, 0.0);
+        m_nTwRe.assign((size_t)M + 1, 0.0);
+        m_nTwIm.assign((size_t)M + 1, 0.0);
+        m_nRev.assign((size_t)M, 0);
+        m_nP.assign((size_t)kDenoiseFrames * nb, 0.0);
+        m_nPb.assign((size_t)kDenoiseFrames * nb, 0.0);
+        m_nXRe.assign((size_t)kDenoiseFrames * nb, 0.0);
+        m_nXIm.assign((size_t)kDenoiseFrames * nb, 0.0);
+        m_nRing.assign(nb * W, 0.0);
+        m_nSorted.assign(nb * (W + 2), 0.0);
+        m_nFloor.assign(nb, 0.0);
+        m_nG.assign(nb, 1.0);
+        m_nWf.assign(nb, 0.0);
+        for (int b = 0; b < m_nNb; ++b) {
+            const double f = (double)(m_nM0 + b) * binHz;
+            const double w = log2(dmax(f, 1.0) / lo) / 0.5;
+            m_nWf[(size_t)b] = dmin(dmax(w, 0.0), 1.0);
+        }
+        const double twoPi = 6.283185307179586;
+        for (int i = 0; i < N; ++i)              // periodic Hann, as scipy's
+            m_nWin[(size_t)i] = 0.5 - 0.5 * cos(twoPi * (double)i / (double)N);
+        double norm = 0.0;
+        for (int i = 0; i < N; i += H) norm += m_nWin[(size_t)i] * m_nWin[(size_t)i];
+        m_nNorm = (norm > 0.0) ? norm : 1.0;
+        for (int k = 0; k <= M; ++k) {
+            m_nTwRe[(size_t)k] = cos(twoPi * (double)k / (double)N);
+            m_nTwIm[(size_t)k] = sin(twoPi * (double)k / (double)N);
+        }
+        for (int half = 1; half < M; half <<= 1) {
+            for (int k = 0; k < half; ++k) {
+                const double a = twoPi * (double)k / (double)(2 * half);
+                m_nStRe[(size_t)(half - 1 + k)] = cos(a);
+                m_nStIm[(size_t)(half - 1 + k)] = sin(a);
+            }
+        }
+        int bits = 0;
+        while ((1 << bits) < M) ++bits;
+        for (int i = 0; i < M; ++i) {
+            int r = 0;
+            for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
+            m_nRev[(size_t)i] = r;
+        }
+        m_nRel = (cfg.denoiseRelease > 0.0) ? exp(-(double)H / cfg.rate / cfg.denoiseRelease) : 0.0;
+    } else {
+        m_nN = 0;
+        m_nNb = 0;
+        m_nY.clear(); m_nD.clear(); m_nR.clear(); m_nWin.clear();
+        m_nRe.clear(); m_nIm.clear(); m_nStRe.clear(); m_nStIm.clear();
+        m_nTwRe.clear(); m_nTwIm.clear(); m_nRev.clear();
+        m_nP.clear(); m_nPb.clear(); m_nXRe.clear(); m_nXIm.clear();
+        m_nRing.clear(); m_nSorted.clear(); m_nFloor.clear(); m_nG.clear(); m_nWf.clear();
+    }
+
     // The output ring. Between one pull and the next a caller can push maxBlock
     // samples, which emit at most maxBlock + kBlock, on top of the up to kBlock
     // already waiting.
@@ -1786,11 +1892,18 @@ size_t Channel::heapBytes() const {
             + m_flGain.capacity() + m_flAcc.capacity() + m_flHp.capacity()
             + m_stY.capacity() + m_stD.capacity()
             + m_wSpec.capacity() + m_wWin.capacity() + m_wRe.capacity() + m_wIm.capacity()
-            + m_wStRe.capacity() + m_wStIm.capacity()) * sizeof(double)
+            + m_wStRe.capacity() + m_wStIm.capacity()
+            + m_nY.capacity() + m_nD.capacity() + m_nR.capacity() + m_nWin.capacity()
+            + m_nRe.capacity() + m_nIm.capacity() + m_nStRe.capacity() + m_nStIm.capacity()
+            + m_nTwRe.capacity() + m_nTwIm.capacity()
+            + m_nP.capacity() + m_nPb.capacity() + m_nXRe.capacity() + m_nXIm.capacity()
+            + m_nRing.capacity() + m_nSorted.capacity()
+            + m_nFloor.capacity() + m_nG.capacity() + m_nWf.capacity()) * sizeof(double)
            + m_flag.capacity() + m_strong.capacity() + m_stS.capacity() + m_dRun.capacity()
            + m_runs.capacity() * sizeof(int)
            + (m_bRev.capacity() + m_bCount.capacity() + m_fRev.capacity()
-              + m_mRev.capacity() + m_flRun.capacity() + m_flOrder.capacity() + m_wRev.capacity()) * sizeof(int);
+              + m_mRev.capacity() + m_flRun.capacity() + m_flOrder.capacity() + m_wRev.capacity()
+              + m_nRev.capacity()) * sizeof(int);
 }
 
 bool Channel::retune(const Config & cfg) {
@@ -1851,6 +1964,25 @@ void Channel::reset() {
     m_cOpen = 0;
     m_cTotRuns = 0.0;
     m_cTotSamp = 0.0;
+    m_cBin = 0.0;
+    m_cBinBlk = 0;
+    m_cS1 = m_cS2 = m_cBinN = 0.0;
+    m_cTotS1 = m_cTotS2 = m_cTotBinN = 0.0;
+    std::fill(m_cFRing, m_cFRing + kCarpetMax, 0.0);
+    std::fill(m_nY.begin(), m_nY.end(), 0.0);
+    std::fill(m_nD.begin(), m_nD.end(), 0.0);
+    std::fill(m_nR.begin(), m_nR.end(), 0.0);
+    std::fill(m_nG.begin(), m_nG.end(), 1.0);
+    std::fill(m_nFloor.begin(), m_nFloor.end(), 0.0);
+    m_nT = 0;
+    m_nNextHop = (uint64_t)m_nN;
+    m_nHist = 0;
+    m_nSlot = 0;
+    m_nCutCount = 0;
+    m_nHave = 0;
+    m_nPos = 0;
+    m_nTaken = 0;
+    m_nCuts = 0;
     std::fill(m_dRun.begin(), m_dRun.end(), (uint8_t)0);
     m_dCuts = 0;
     m_fNextHop = (uint64_t)m_fN;
@@ -2605,7 +2737,7 @@ void Channel::emitMixed(double y, double d) {
 //! the frame two hops later arrives.
 void Channel::bodyPush(double y, double d, uint8_t strong) {
     if (!m_cfg.body) {
-        emitMixed(y, d);
+        finishSample(y, d);
         return;
     }
     const uint64_t t = m_bT++;
@@ -2641,7 +2773,216 @@ void Channel::bodyPush(double y, double d, uint8_t strong) {
     const uint64_t D = (uint64_t)m_cfg.bodyLatency;
     if (t >= D) {
         const size_t u = (size_t)(t - D) & m_bMask;
-        emitMixed(m_bY[u] - m_bR[u], m_bD[u]);
+        finishSample(m_bY[u] - m_bR[u], m_bD[u]);
+    }
+}
+
+void Channel::finishSample(double y, double d) {
+    if (m_cfg.denoise) denoisePush(y, d);
+    else emitMixed(y, d);
+}
+
+//! Every sample comes out Config::denoiseLatency samples after it went in, as
+//! in bodyPush(): the last frame covering it is cut two hops later.
+void Channel::denoisePush(double y, double d) {
+    const uint64_t t = m_nT++;
+    const size_t i = (size_t)t & m_nMask;
+    m_nY[i] = y;
+    m_nD[i] = d;
+    m_nR[i] = 0.0;
+    if (t + 1 == m_nNextHop) {
+        m_nNextHop += (uint64_t)m_nH;
+        denoiseHop(t + 1 - (uint64_t)m_nN);
+    }
+    const uint64_t D = (uint64_t)m_cfg.denoiseLatency;
+    if (t >= D) {
+        const size_t u = (size_t)(t - D) & m_nMask;
+        emitMixed(m_nY[u] - m_nR[u], m_nD[u]);
+    }
+}
+
+//! The newest frame starts at sample `start` of the stage's input; the one cut
+//! is two hops before it, the middle of the five whose power the gain is
+//! averaged over. Transforms are packed as in fineHop(), and the band reaches
+//! the Nyquist bin as that stage's can. Under the key the fine stage follows;
+//! where it is shut, nothing is transformed - the floor's history waits where
+//! it was, and the five frames start again - and the output is the input to
+//! the bit. Only what is taken out is transformed back. See Config::denoise.
+void Channel::denoiseHop(uint64_t start) {
+    const double key = dmax(m_bBeta, m_cKey);
+    if (!(key > 0.0)) {
+        m_nHist = 0;           // the frames have a hole; start them again
+        return;
+    }
+    const int N = m_nN, H = m_nH, M = N / 2, nb = m_nNb, m0 = m_nM0;
+    const size_t mask = m_nMask, nbs = (size_t)nb;
+    double * re = &m_nRe[0];
+    double * im = &m_nIm[0];
+    const double * win = &m_nWin[0];
+    const int * rev = &m_nRev[0];
+    const double * twRe = &m_nTwRe[0];
+    const double * twIm = &m_nTwIm[0];
+    {
+        const double * y = &m_nY[0];
+        for (int i = 0; i < M; ++i) {
+            const size_t at = (size_t)(start + 2 * (uint64_t)i);
+            re[rev[i]] = y[at & mask] * win[2 * i];
+            im[rev[i]] = y[(at + 1) & mask] * win[2 * i + 1];
+        }
+    }
+    fftRadix2(re, im, M, &m_nStRe[0], &m_nStIm[0], false, g_kernels->fftPair, g_kernels->fftOne);
+    const int slot = m_nSlot;
+    double * P = &m_nP[(size_t)slot * nbs];
+    double * xr = &m_nXRe[(size_t)slot * nbs];
+    double * xi = &m_nXIm[(size_t)slot * nbs];
+    for (int b = 0; b < nb; ++b) {
+        // X[k] = E + e^(-2 pi i k / N) O, as in fineHop(); the Nyquist bin
+        // folds onto Z[0].
+        const int k = m0 + b;
+        const int kk = k & (M - 1), mk = (M - kk) & (M - 1);
+        const double zr = re[kk], zi = im[kk];
+        const double cr = re[mk], ci = -im[mk];
+        const double er = 0.5 * (zr + cr), ei = 0.5 * (zi + ci);
+        const double our = 0.5 * (zi - ci), oui = -0.5 * (zr - cr);
+        const double c = twRe[k], sn = twIm[k];
+        const double vr = er + c * our + sn * oui;
+        const double vi = ei + c * oui - sn * our;
+        xr[b] = vr;
+        xi[b] = vi;
+        P[b] = vr * vr + vi * vi;
+    }
+    // The power over 7 bins, nearest at the Nyquist end (and at DC, which only
+    // a very low rate reaches); from the bin below the band, whose gain the
+    // 3-bin average at the band's edge reads.
+    {
+        double * Pb = &m_nPb[(size_t)slot * nbs];
+        const int g0 = (m_nK0 - 1 - m0 > 0) ? m_nK0 - 1 - m0 : 0;
+        for (int b = g0; b < nb; ++b) {
+            double s = 0.0;
+            for (int j = -3; j <= 3; ++j) {
+                int kb = b + j;
+                if (kb + m0 < 0) kb = -m0;
+                if (kb > nb - 1) kb = nb - 1;
+                s += P[kb];
+            }
+            Pb[b] = s;
+        }
+    }
+    m_nSlot = (slot + 1) % (int)kDenoiseFrames;
+    if (m_nHist < (int)kDenoiseFrames) {
+        ++m_nHist;
+        if (m_nHist < (int)kDenoiseFrames) return;
+    }
+
+    // The cut frame c is the middle of the five: slot (slot - 2) mod 5.
+    const double * Pq[kDenoiseFrames];
+    const double * Bq[kDenoiseFrames];
+    double frameEnergy = 0.0;
+    for (int q = 0; q < (int)kDenoiseFrames; ++q) {
+        const int sl = (slot - q + (int)kDenoiseFrames) % (int)kDenoiseFrames;
+        Pq[q] = &m_nP[(size_t)sl * nbs];
+        Bq[q] = &m_nPb[(size_t)sl * nbs];
+    }
+    const int cs = (slot - 2 + (int)kDenoiseFrames) % (int)kDenoiseFrames;
+    const double * cxr = &m_nXRe[(size_t)cs * nbs];
+    const double * cxi = &m_nXIm[(size_t)cs * nbs];
+    for (int b = 0; b < nb; ++b) frameEnergy += Pq[2][b];
+
+    // The floor's history: every fourth cut frame, each bin's power averaged
+    // over the five frames, into the bin's ring and its sorted copy - unless
+    // the frame is silent, which carries no floor (a host's pre-roll is).
+    // The window leaves out the stream's first second, and before two seconds
+    // are in, the first half of what has been taken: a record that fades in -
+    // the TangoTunes transfers do, over ~0.5 s from 30 dB under their crackle -
+    // would otherwise hold the quantile under the floor until the fade was a
+    // tenth of the window, 5 s in, and the stage would start that late. Once
+    // denoiseHist values follow that second, it is the last denoiseHist.
+    const int W = m_cfg.denoiseHist;
+    const bool take = (m_nCutCount % (uint64_t)kDenoiseDec) == 0 && frameEnergy > 0.0;
+    const int g0 = (m_nK0 - 1 - m0 > 0) ? m_nK0 - 1 - m0 : 0;
+    if (take) {
+        ++m_nTaken;
+        const int have = m_nHave, pos = m_nPos;
+        const uint64_t perSec = (uint64_t)(m_cfg.rate / (double)(m_nH * (int)kDenoiseDec));
+        const uint64_t drop = (m_nTaken / 2 < perSec) ? m_nTaken / 2 : perSec;
+        int L = (m_nTaken - drop > (uint64_t)W) ? W : (int)(m_nTaken - drop);
+        if (L < 1) L = 1;
+        const bool grow = have < L;              // else one in, the oldest out
+        const int n = grow ? have + 1 : have;
+        const int old = (pos - have + W) % W;
+        int rank = (int)((double)n * m_cfg.denoiseQ);
+        if (rank > n - 1) rank = n - 1;
+        for (int b = g0; b < nb; ++b) {
+            const double in = (Pq[0][b] + Pq[1][b] + Pq[2][b] + Pq[3][b] + Pq[4][b]) / 5.0;
+            double * ring = &m_nRing[(size_t)b * (size_t)W];
+            double * srt = &m_nSorted[(size_t)b * (size_t)(W + 2) + 1];   // a pad either side
+            if (grow) {
+                int j = 0;
+                while (j < have && srt[j] < in) ++j;
+                memmove(srt + j + 1, srt + j, (size_t)(have - j) * sizeof(double));
+                srt[j] = in;
+            } else {
+                sortedReplace(srt, have, ring[old], in);
+            }
+            ring[pos] = in;
+            m_nFloor[(size_t)b] = srt[rank];
+        }
+        m_nPos = (pos + 1 < W) ? pos + 1 : 0;
+        if (grow) m_nHave = have + 1;
+    }
+    // The gain: Wiener's, on the power over 7 bins x 5 frames against beta x
+    // the floor, never below denoiseMin; it rises at once and falls back with
+    // the release.
+    {
+        const double beta = m_cfg.denoiseBeta, gmin = m_cfg.denoiseMin, a = m_nRel;
+        const bool first = m_nCutCount == 0;
+        for (int b = g0; b < nb; ++b) {
+            const double s = (Bq[0][b] + Bq[1][b] + Bq[2][b] + Bq[3][b] + Bq[4][b]) / 35.0;
+            const double nf = m_nFloor[(size_t)b] * beta + 1e-30;
+            const double x = dmax(s / nf - 1.0, 0.0);
+            const double g0v = dmax(x / (1.0 + x), gmin);
+            double & g = m_nG[(size_t)b];
+            g = first ? g0v : dmax(g0v, a * g + (1.0 - a) * g0v);
+        }
+    }
+    ++m_nCutCount;
+
+    // The cut, scaled by the key.
+    memset(re, 0, (size_t)M * sizeof(double));
+    memset(im, 0, (size_t)M * sizeof(double));
+    bool any = false;
+    const double * G = &m_nG[0];
+    for (int b = m_nK0 - m0; b < nb; ++b) {
+        // The gain averaged over 3 bins, nearest at the Nyquist end.
+        const double gs = (G[b - 1] + G[b] + G[(b + 1 < nb) ? b + 1 : b]) / 3.0;
+        const double cut = (1.0 - gs) * m_nWf[(size_t)b] * key;
+        if (!(cut > 0.0)) continue;
+        // Packed for the inverse as in fineHop(): bin k takes X + i X e^(2 pi
+        // i k/N), its mirror the conjugates; the Nyquist bin is its own.
+        const int k = m0 + b;
+        const double vr = cut * cxr[b], vi = cut * cxi[b];
+        const double c = twRe[k], sn = twIm[k];
+        const double ur = vr * c - vi * sn, ui = vr * sn + vi * c;
+        const int kr = rev[k & (M - 1)];
+        re[kr] += vr - ui;
+        im[kr] += vi + ur;
+        if (k != N - k) {
+            const int mr = rev[M - k];
+            re[mr] += vr + ui;
+            im[mr] += ur - vi;
+        }
+        any = true;
+    }
+    if (!any) return;
+    ++m_nCuts;
+    fftRadix2(re, im, M, &m_nStRe[0], &m_nStIm[0], true, g_kernels->fftPair, g_kernels->fftOne);
+    const double g = 1.0 / ((double)N * m_nNorm);
+    double * r = &m_nR[0];
+    const uint64_t from = start - 2 * (uint64_t)H;
+    for (int i = 0; i < M; ++i) {
+        const size_t at = (size_t)(from + 2 * (uint64_t)i);
+        r[at & mask]       += re[i] * win[2 * i] * g;
+        r[(at + 1) & mask] += im[i] * win[2 * i + 1] * g;
     }
 }
 
@@ -2676,25 +3017,44 @@ double Channel::bodyKey() const {
 void Channel::carpetBlock() {
     m_cRuns += m_cBlk;
     m_cSamp += (double)kBlock;
-    // Before carpetMin seconds are in, from carpetFirst on: the rate over
-    // everything seen so far, against the thresholds at their warmest.
     m_cTotRuns += m_cBlk;
     m_cTotSamp += (double)kBlock;
+    // The Poisson key's bins: each finished bin's count into the sums, the
+    // second's and the stream's.
+    if (m_cfg.carpetFano) {
+        m_cBin += (double)m_cBlk;
+        if (++m_cBinBlk >= m_cfg.fanoBlocks) {
+            m_cS1 += m_cBin;
+            m_cS2 += m_cBin * m_cBin;
+            m_cBinN += 1.0;
+            m_cTotS1 += m_cBin;
+            m_cTotS2 += m_cBin * m_cBin;
+            m_cTotBinN += 1.0;
+            m_cBin = 0.0;
+            m_cBinBlk = 0;
+        }
+    }
+    // Before carpetMin seconds are in, from carpetFirst on: the rate over
+    // everything seen so far, against the thresholds at their warmest; and
+    // from fanoFirst on, the runs' Fano factor over it too.
     if (m_cfg.carpetFirst > 0.0 && m_cHave < m_cfg.carpetMin
         && m_cTotSamp >= m_cfg.carpetFirst * m_cfg.rate) {
         const double K = m_cTotRuns * 44100.0 / m_cTotSamp;
         const double wf = 1.0 + m_cfg.carpetWarm;
-        const double span = wf * (m_cfg.carpetRate1 - m_cfg.carpetRate0);
-        m_cKey = (span > 0.0) ? dmin(dmax((K - wf * m_cfg.carpetRate0) / span, 0.0), 1.0)
-                              : (K >= wf * m_cfg.carpetRate1 ? 1.0 : 0.0);
+        double key = carpetRamp(K, wf);
+        if (m_cTotSamp >= m_cfg.fanoFirst * m_cfg.rate)
+            key = dmax(key, fanoKey(K, fanoOf(m_cTotS1, m_cTotS2, m_cTotBinN), wf));
+        m_cKey = key;
     }
     if (m_cSamp < m_cfg.rate) return;
     const int W = m_cfg.carpetWin;
     m_cRing[m_cPos] = m_cRuns * 44100.0 / m_cSamp;
+    m_cFRing[m_cPos] = fanoOf(m_cS1, m_cS2, m_cBinN);
     if (++m_cPos >= W) m_cPos = 0;
     if (m_cHave < W) ++m_cHave;
     m_cRuns = 0.0;
     m_cSamp = 0.0;
+    m_cS1 = m_cS2 = m_cBinN = 0.0;
     if (m_cHave < m_cfg.carpetMin) return;
     double v[kCarpetMax];
     for (int k = 0; k < m_cHave; ++k) v[k] = m_cRing[k];
@@ -2706,9 +3066,42 @@ void Channel::carpetBlock() {
     // Less history, more evidence asked: the thresholds start carpetWarm
     // higher and come down to their own as the ring fills.
     const double wf = 1.0 + m_cfg.carpetWarm * (double)(W - m_cHave) / (double)W;
+    double key = carpetRamp(K, wf);
+    if (m_cfg.carpetFano) {
+        // The median of the seconds' Fano factors, as K is taken of the rates.
+        for (int k = 0; k < m_cHave; ++k) v[k] = m_cFRing[k];
+        std::sort(v, v + m_cHave);
+        const double fp = 0.5 * (double)(m_cHave - 1);
+        const int fl = (int)floor(fp);
+        const double ff = fp - fl;
+        const double F = (fl + 1 < m_cHave) ? v[fl] + ff * (v[fl + 1] - v[fl]) : v[fl];
+        key = dmax(key, fanoKey(K, F, wf));
+    }
+    m_cKey = key;
+}
+
+double Channel::carpetRamp(double K, double wf) const {
     const double span = wf * (m_cfg.carpetRate1 - m_cfg.carpetRate0);
-    if (!(span > 0.0)) { m_cKey = K >= wf * m_cfg.carpetRate1 ? 1.0 : 0.0; return; }
-    m_cKey = dmin(dmax((K - wf * m_cfg.carpetRate0) / span, 0.0), 1.0);
+    if (!(span > 0.0)) return K >= wf * m_cfg.carpetRate1 ? 1.0 : 0.0;
+    return dmin(dmax((K - wf * m_cfg.carpetRate0) / span, 0.0), 1.0);
+}
+
+//! A second with no runs at all has no Fano factor; it reads as far from
+//! Poisson, which keeps the key shut on silence.
+double Channel::fanoOf(double s1, double s2, double n) {
+    const double mu = (n > 0.0) ? s1 / n : 0.0;
+    return (mu > 0.0) ? (s2 / n - mu * mu) / mu : 1e9;
+}
+
+double Channel::fanoKey(double K, double F, double wf) const {
+    if (!m_cfg.carpetFano) return 0.0;
+    const double ps = wf * (m_cfg.fanoRate1 - m_cfg.fanoRate0);
+    const double pr = (ps > 0.0) ? dmin(dmax((K - wf * m_cfg.fanoRate0) / ps, 0.0), 1.0)
+                                 : (K >= wf * m_cfg.fanoRate1 ? 1.0 : 0.0);
+    const double fs = m_cfg.fano0 - m_cfg.fano1;
+    const double pf = (fs > 0.0) ? dmin(dmax((m_cfg.fano0 - F) / fs, 0.0), 1.0)
+                                 : (F <= m_cfg.fano1 ? 1.0 : 0.0);
+    return pr * pf;
 }
 
 //! The newest frame starts at sample `start` of the stage's input, and the

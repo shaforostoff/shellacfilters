@@ -1794,6 +1794,8 @@ and *Si supiera*.
   * *Yo quiero* takes 1.3 dB more, *Amarras* and *Viejo ciego* 0.2–0.3 dB,
     *Hotel Victoria* 0.1–0.2 dB.
 * **Off:** `declick_cli --carpet 0` gives the previous output to the bit.
+* **Where the count stays under the ramp** on a crackly record, the
+  [Poisson key](#crackle-that-comes-at-random-the-poisson-key) opens it.
 
 **Cost.**
 
@@ -2088,6 +2090,159 @@ seen so far, against the thresholds at their warmest, half as high again.
   65× with SSE2. The stage is 8 more bins of a transform the fine stage
   already makes, and a second guard.
 * **Memory:** about 15 kB more a channel at 44.1 kHz.
+
+### Crackle that comes at random: the Poisson key
+
+**What was left.** On Pugliese's *El rodeo* (`.m4a`, 1943) the carpet key was
+open on 46 % of the song, mean 0.19, and shut at 40–90 s and from 120 s on:
+its count of 4σ runs reads ~104 at its 20 s median, under the 110–150 ramp.
+Where it is shut, the fine, micro, mid and flank stages do nothing.
+
+* **No threshold on the count works.** At 3.2–5σ alike, *El rodeo* sits
+  among *Cornetín*, *Cachirulo* `.flac` and four 1950s sample songs, and
+  *El Marne* reaches 108 after its opening.
+* **How the runs arrive does.** A surface's crackle is a Poisson process; a
+  clean record's runs bunch on the music's attacks. The Fano factor (variance
+  over mean) of the 4σ runs' counts in ~11.6 ms bins, median over the song:
+
+| | Fano factor |
+|---|---|
+| the four Pugliese `.m4a` | 1.01–1.09 |
+| other crackly `.m4a` (Calo, D'Arienzo, Tanturi) | 1.0–1.1 |
+| *La tablada* `.flac` | 1.33 |
+| *Cachirulo* `.flac` | 1.57 |
+| the *Malvón* master | 1.61 |
+| *El Marne* | 7.6 |
+| the songs whose count is near *El rodeo*'s | 1.5–6 |
+
+**The key** (`Config::carpetFano`, on).
+
+* **The bins** are the repair blocks, two of them at 88.2 and 96 kHz: a sum
+  and a sum of squares per block.
+* **Each second's Fano factor** goes into a ring beside the carpet key's
+  rates, and its median over the window is the key's.
+* **The ramp:** ramp(carpet value, 80 → 110) × ramp(median Fano, 1.4 → 1.2),
+  with the carpet key's warm-up. The carpet key is the larger of this and its
+  own ramp.
+* **Its first seconds.** From 0.5 s (`fanoFirst`) until the key may open as
+  before, it reads the counts so far, as the early carpet key does from
+  0.25 s. Not from 0.25 s: over a quarter second the factor is rough, and
+  *La tablada*'s `.flac` read 1.28 there, at its needle drop.
+* **Off:** `declick_cli --carpet-fano 0` gives the build before it to the bit.
+
+**On *El rodeo*:**
+
+* **The key:** mean 0.19 → 0.72, open on 99 % of the song. Weakest at 90–130 s
+  (0.1–0.6), where its runs bunch more.
+* **Impulses over 8× their ±20 ms median, quiet third,** 2–3 / 3–4.5 /
+  4.5–7 kHz: 27 / 28 / 15 → 22 / 22 / 11. Its vinyl copy has 5 / 6 / 4; the
+  decrackled version 11 / 7 / 3.
+* **Heard** as the base of every floor-stage audition (below), and asked for
+  on by default.
+
+**Records it must not touch** (the 101-song check set):
+
+* **Bit-identical to the build before it:** 99 of 101, among them the
+  *Malvón* master and `.m4a`, *Olga*, *El Marne*, *La tablada* (both copies)
+  and *Cachirulo* `.m4a`.
+* **The two that change:**
+  * *Bien milonga* (1951, crackly; the carpet key already opened on 82 % of
+    it): −53 dB, mean key 0.49 → 0.68.
+  * *Cachirulo* `.flac`: −78 dB, on 4 % of its seconds.
+* **Outside the set:**
+  * *Llévame carretero* −41 dB, key 0.38 → 0.69;
+  * *Nada más que un corazón* −45 dB, 0.50 → 0.92: its shut second half is
+    open now;
+  * *El abrojito* −47 dB and *El día de tu ausencia* −56 dB, their keys
+    already open.
+
+**Cost:** two additions and a multiply per repair block, and a second sort of
+twenty numbers a second. On the Zen 4, best of 15 interleaved runs:
+
+* ***Pa que bailen*, keys shut:** 168× → 162–166×. The same code from two
+  builds spans that, so it is layout, not work.
+* **Where it opens the stages,** what they cost wherever they open:
+  * *El rodeo*: 135× → 104×, about *El abrojito*'s 94×;
+  * *El abrojito*, already open: 94× → 92×.
+
+### The floor under dense crackle: a denoise stage (off)
+
+**What was heard.** After the key above, *El rodeo* and *El abrojito* still
+kept "the majority of crackle": a fine sizzle, and a duller frying. The user
+heard the decrackled version keep too much as well.
+
+* **It is not separate clicks.** Over 8× their surroundings *El abrojito*'s
+  output had no more impulses than its vinyl copy in any loudness third.
+* **It is a floor.** At 600–900 runs a second the crackle merges into one.
+  The fine, micro and mid clips cut only what stands above it.
+  * *El abrojito*'s quiet passages were still 5 dB over its vinyl copy at
+    4.5–7 kHz.
+  * *El rodeo*'s were 12–13 dB over its copy at 2–7 kHz, and Declick took
+    about 1 dB of that.
+* **The body stage**, opened by the carpet key, took 6–9 % of the music at
+  1–3 kHz against the copies. It stays on the body key.
+
+**The stage** (`Config::denoise`, `--denoise 1`): a spectral denoiser on the
+finished output, under the key the fine stage follows.
+
+* **Frames:** an STFT of ~23 ms (1024 at 44.1 kHz), hop N/4, Hann either side.
+* **The band:** from `denoiseLo` (1 kHz) up, ramped in over the half octave
+  below.
+* **The noise floor:** per bin, the 10th percentile of its power, smoothed
+  over 5 frames, every fourth frame over the last 6 s.
+  * A record that fades in would hold that quantile under the floor for
+    seconds. The TangoTunes transfers fade in over ~0.5 s from 30 dB under
+    their crackle. So the window leaves out the first second, and before 2 s
+    the first half of what it has.
+  * It then cuts from the first half second: −12 to −32 dB of 1–10 kHz there
+    on the four Pugliese, against a song median of −31 to −33 dB.
+* **The gain:** Wiener's, on the power over 7 bins × 5 frames (~300 Hz ×
+  29 ms) against 1.2 × the floor, never below −10 dB.
+  * It rises at once and falls back over 60 ms, then is averaged over 3 bins.
+  * A stretch of pure noise gets one steady cut rather than bins that
+    twinkle: the cut flickers half as much as a per-bin gain does.
+
+**How it was chosen, and why it is off.**
+
+* **Folder 5:** strengths from −4 to −15 dB, with a per-bin gain. Only the
+  gentlest was liked; the stronger ones "remove the crackle better, but
+  instead I hear a typical digital denoiser leftover".
+* **Folder 6:** the smoothed gain above, at −10 dB ("A").
+* **Folder 7:** A's removal kept at −3 to −20 dB rather than removed. "−10
+  or even less loud" was liked better: the sound should breathe.
+* **The stage as committed** is A, the full removal. Heard as taking crackle,
+  but leaving high-frequency noise that feels unnatural on music played by
+  people. So it is off.
+
+**Against the prototype heard.**
+
+* The prototype looked ±3 s around a frame for the floor; the stage looks
+  behind only.
+* Over the whole song that takes 0.7 dB more than A did on *El rodeo* and
+  *El abrojito*, removals correlating 0.90 and 0.78.
+* Against the same prototype looking behind only: within 0.06–0.15 dB,
+  correlating 0.96–1.00.
+
+| | *El rodeo*'s quiet floor over its vinyl, 2–3 kHz | *El abrojito*'s music taken, 1–2 / 2–3 / 3–4.5 kHz |
+|---|---|---|
+| without it | 12.2 dB | 0.4 / 1.1 / 1.2 % |
+| with it (A) | 9.6 dB | 1.1 / 1.9 / 1.7 % |
+| the decrackled version | 11.1 dB | 0.3 / 2.3 / 0.8 % |
+
+**What it holds.**
+
+* **Buffers** only while it is on, as the Wiener path's are: ~2.2 MB a
+  channel at 44.1 kHz, mostly the floor's history and its sorted copy.
+  Turning it on or off is a structural change, through `configure()`.
+* **Latency:** `bodyDelay(denoiseN)` more, 1536 samples at 44.1 kHz.
+* **Off,** the output is the build before it to the bit.
+* **Where its key is shut,** it transforms nothing: the floor's history waits
+  and the five frames start again when it opens.
+* **CPU when on** (Zen 4, best of 7 interleaved):
+  * key shut: *Pa que bailen* 161× → 157×;
+  * key open: *El abrojito* 92× → 52×, *El rodeo* 104× → 56×.
+  * Most of that is the floor's history: a sorted window of 259 per bin,
+    for ~500 bins, every fourth hop.
 
 ---
 

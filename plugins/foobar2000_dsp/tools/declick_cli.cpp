@@ -95,7 +95,23 @@ void usage() {
         "  --carpet-warm <x>  Thresholds stand this much higher while the window fills (default 0.5)\n"
         "  --carpet-min <s>   Seconds before it may open (default 3)\n"
         "  --carpet-first <s> Before that, from this many seconds on, the rate so far\n"
-        "                     against the warmest thresholds (default 0.25, 0 off)\n");
+        "                     against the warmest thresholds (default 0.25, 0 off)\n"
+        "  --carpet-fano <0|1> The Poisson key: the carpet key also opens where the\n"
+        "                     runs come at random, as a surface's crackle does (default 1)\n"
+        "  --fano-rate0 <x>   Its runs per second where it starts to open (default 80)\n"
+        "  --fano-rate1 <x>   ... and where it is fully open (default 110)\n"
+        "  --fano0 <x>        Fano factor of the runs where it starts to open (default 1.4)\n"
+        "  --fano1 <x>        ... and where it is fully open (default 1.2)\n"
+        "  --fano-first <s>   Before carpet-min, from this many seconds on, by the runs\n"
+        "                     so far (default 0.5)\n"
+        "  --denoise <0|1>    A spectral denoiser on the output, under the fine stage's\n"
+        "                     key; leaves an unnatural high-frequency noise (default 0)\n"
+        "  --denoise-lo <Hz>  Where it starts, ramped in over the half octave below (default 1000)\n"
+        "  --denoise-beta <x> Cut against this many times the noise floor (default 1.2)\n"
+        "  --denoise-min <0..1> Deepest cut of a bin, as a gain (default 0.32)\n"
+        "  --denoise-q <0..1> Quantile of a bin's power that is its floor (default 0.1)\n"
+        "  --denoise-win <s>  Seconds of history the floor is taken over (default 6)\n"
+        "  --denoise-release <s> Time constant the cut comes back with (default 0.06)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -129,6 +145,9 @@ int main(int argc, char ** argv) {
     float micro = -1.0f, microMs = -1.0f, microAlpha = -1.0f, microQ = -1.0f;
     float mid = -1.0f, midLo = -1.0f, midPeak = -1.0f, midP0 = -1.0f, midP1 = -1.0f, midYield = -1.0f;
     float carpetFirst = -1.0f;
+    float carpetFano = -1.0f, fanoRate0 = -1.0f, fanoRate1 = -1.0f, fano0 = -1.0f, fano1 = -1.0f, fanoFirst = -1.0f;
+    float denoise = -1.0f, denoiseLo = -1.0f, denoiseBeta = -1.0f, denoiseMin = -1.0f;
+    float denoiseQ = -1.0f, denoiseWin = -1.0f, denoiseRelease = -1.0f;
     float flank = -1.0f, flankPadMs = -1.0f, flankHz = -1.0f, flankEdge0 = -1.0f, flankEdge1 = -1.0f;
     float flankShut = -1.0f, flankWide = -1.0f, flankShutGain = -1.0f, flankHold = -1.0f;
     float carpet = -1.0f, carpetPeak = -1.0f, carpetWin = -1.0f, carpetQ = -1.0f;
@@ -180,6 +199,19 @@ int main(int argc, char ** argv) {
         else if (a == "--mid-p1") midP1 = v;
         else if (a == "--mid-yield") midYield = v;
         else if (a == "--carpet-first") carpetFirst = v;
+        else if (a == "--carpet-fano") carpetFano = v;
+        else if (a == "--fano-rate0") fanoRate0 = v;
+        else if (a == "--fano-rate1") fanoRate1 = v;
+        else if (a == "--fano0") fano0 = v;
+        else if (a == "--fano1") fano1 = v;
+        else if (a == "--fano-first") fanoFirst = v;
+        else if (a == "--denoise") denoise = v;
+        else if (a == "--denoise-lo") denoiseLo = v;
+        else if (a == "--denoise-beta") denoiseBeta = v;
+        else if (a == "--denoise-min") denoiseMin = v;
+        else if (a == "--denoise-q") denoiseQ = v;
+        else if (a == "--denoise-win") denoiseWin = v;
+        else if (a == "--denoise-release") denoiseRelease = v;
         else if (a == "--flank") flank = v;
         else if (a == "--flank-pad-ms") flankPadMs = v;
         else if (a == "--flank-hz") flankHz = v;
@@ -247,6 +279,19 @@ int main(int argc, char ** argv) {
     if (midP1 >= 0.0f) cfg.midPeriodic1 = midP1;
     if (midYield >= 0.0f) cfg.midYield = (int)midYield;
     if (carpetFirst >= 0.0f) cfg.carpetFirst = carpetFirst;
+    if (carpetFano >= 0.0f) cfg.carpetFano = (int)carpetFano;
+    if (fanoRate0 >= 0.0f) cfg.fanoRate0 = fanoRate0;
+    if (fanoRate1 >= 0.0f) cfg.fanoRate1 = fanoRate1;
+    if (fano0 >= 0.0f) cfg.fano0 = fano0;
+    if (fano1 >= 0.0f) cfg.fano1 = fano1;
+    if (fanoFirst >= 0.0f) cfg.fanoFirst = fanoFirst;
+    if (denoise >= 0.0f) cfg.denoise = (int)denoise;
+    if (denoiseLo >= 0.0f) cfg.denoiseLo = denoiseLo;
+    if (denoiseBeta >= 0.0f) cfg.denoiseBeta = denoiseBeta;
+    if (denoiseMin >= 0.0f) cfg.denoiseMin = denoiseMin;
+    if (denoiseQ >= 0.0f) cfg.denoiseQ = denoiseQ;
+    if (denoiseWin >= 0.0f) cfg.denoiseWin = denoiseWin;
+    if (denoiseRelease >= 0.0f) cfg.denoiseRelease = denoiseRelease;
     if (flank >= 0.0f) cfg.flank = (int)flank;
     if (flankPadMs >= 0.0f) cfg.flankPadMs = flankPadMs;
     if (flankHz >= 0.0f) cfg.flankHz = flankHz;
@@ -324,7 +369,7 @@ int main(int argc, char ** argv) {
     }
 
     uint64_t repaired = 0, seen = 0, clamped = 0, reclamped = 0, flSpans = 0, flSkipped = 0;
-    uint64_t carpetOpen = 0, midCuts = 0;
+    uint64_t carpetOpen = 0, midCuts = 0, denoiseCuts = 0;
     for (unsigned c = 0; c < channels; ++c) {
         repaired += chans[c]->repairedSamples();
         seen += chans[c]->seenSamples();
@@ -334,6 +379,7 @@ int main(int argc, char ** argv) {
         flSkipped += chans[c]->flankSkipped();
         carpetOpen += chans[c]->carpetOpenBlocks();
         midCuts += chans[c]->midFrames();
+        denoiseCuts += chans[c]->denoiseFrames();
     }
 
     if (delta) {
@@ -382,6 +428,10 @@ int main(int argc, char ** argv) {
         // The mid stage: fine-stage frames it cut something from.
         if (cfg.mid && cfg.fine) {
             printf("  mid: %llu frames cut\n", (unsigned long long)midCuts);
+        }
+        // The denoise stage: frames it cut something from.
+        if (cfg.denoise) {
+            printf("  denoise: %llu frames cut\n", (unsigned long long)denoiseCuts);
         }
     }
     return 0;

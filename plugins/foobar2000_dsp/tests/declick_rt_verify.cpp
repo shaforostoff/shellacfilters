@@ -339,6 +339,27 @@ int main() {
         ch.configure(cfg);
     }
 
+    // The denoise stage, off by default, runs on the output under the key the
+    // fine stage follows, which the clicks above hold open. It holds its
+    // buffers only while it is on, so turning it on is a configure() - outside
+    // the counted region, like the rest of this test's setup - and after that
+    // it must cut frames and allocate nothing.
+    {
+        Config cn;
+        cn.denoise = 1;
+        cn.compute(Params::defaults(), rate);
+        ch.configure(cn);
+        ch.prime();
+        arm();
+        perSample(ch, sig, 0, 6 * R);
+        requireQuiet("the denoise stage, under the body key");
+        const bool ran = ch.denoiseFrames() > 0;
+        printf("  %-50s %-4s %llu frames cut\n", "... and it ran",
+               ran ? "ok" : "FAIL", (unsigned long long)ch.denoiseFrames());
+        if (!ran) ++g_failures;
+        ch.configure(cfg);
+    }
+
     // --- parameter changes -------------------------------------------------
     arm();
     const bool retuned = ch.retune(cTune);
@@ -391,8 +412,10 @@ int main() {
             chan.push_back(std::unique_ptr<Channel>(new Channel()));
         }
         // Two Channel objects and nothing else. The constructor must not size a
-        // pipeline it is about to be told the real shape of.
-        requireUnder("constructing two Channels brings no buffers", 8u * 1024u);
+        // pipeline it is about to be told the real shape of. An object is ~5 kB:
+        // the carpet key's two rings of kCarpetMax seconds and every stage's
+        // vector handles; a pipeline would be hundreds.
+        requireUnder("constructing two Channels brings no buffers", 12u * 1024u);
 
         for (size_t c = 0; c < chan.size(); ++c) chan[c]->configure(cfg);
         pushChunks(chan, sig, 2 * R, sink);

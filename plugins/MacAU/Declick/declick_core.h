@@ -488,6 +488,84 @@ struct Config {
     //! by -46 to -116 dB, mostly the run-in at the needle drop; the Malvon
     //! master and Olga are untouched. 0 turns it off.
     double carpetFirst  = 0.25;      //!< seconds
+    //! The Poisson key, a second ramp for the carpet key. Not user-facing;
+    //! declick_cli sweeps it as --carpet-fano, --fano-rate0, --fano-rate1,
+    //! --fano0 and --fano1.
+    //! On Pugliese's *El rodeo* (.m4a, 1943) the carpet count reads ~104 at
+    //! its median, under the 110-150 ramp, and the stages the key opens were
+    //! off at 40-90 s and from 120 s on. No threshold on the count separates
+    //! it from clean records: *El Marne* reaches 108 after its opening. How the
+    //! runs arrive does. A surface's crackle is a Poisson process, and a clean
+    //! record's runs bunch on the music's attacks. So the runs at carpetPeak
+    //! sigma are also counted in bins of ~11.6 ms (a repair block, or as many
+    //! as make that at the rate), and each second's Fano factor (variance /
+    //! mean of those counts) goes into a ring beside the rates. The key also
+    //! opens as far as ramp(K, fanoRate0 .. fanoRate1) x ramp(median Fano,
+    //! fano0 down to fano1), K the carpet value above, with the same warm-up;
+    //! the carpet key is the larger of the two. Over the songs: the four
+    //! Pugliese read 1.01-1.09, other crackly .m4a 1.0-1.1, *El Marne* 7.6,
+    //! *Cachirulo* .flac 1.57, the Malvon master 1.61, *La tablada* .flac
+    //! 1.33, and every song whose count is near *El rodeo*'s 1.5-6.
+    //! *El rodeo*'s key goes from a mean of 0.19 to 0.72, open on 99% of the
+    //! song. Of a 101-song check set 99 are bit-identical, among them the
+    //! Malvon master, *Olga*, *El Marne* and *La tablada*; *Bien milonga* (1951,
+    //! crackly) changes by -53 dB and *Cachirulo* .flac by -78 dB on 4% of its
+    //! seconds. From fanoFirst until carpetMin it reads the counts so far, as
+    //! the carpet key does from carpetFirst, so on *El rodeo* it is open from
+    //! 0.5 s, not 3 s. Not from carpetFirst: over a quarter second the Fano
+    //! factor is too rough, and *La tablada*'s .flac read 1.28 there, at the
+    //! needle drop. 0 turns it off.
+    int    carpetFano   = 1;
+    double fanoRate0    = 80.0;      //!< runs per second, per 44.1k samples
+    double fanoRate1    = 110.0;
+    double fano0        = 1.4;       //!< Fano factor where it starts to open
+    double fano1        = 1.2;       //!< ... and where it is fully open
+    double fanoFirst    = 0.5;       //!< seconds
+    int    fanoBlocks   = 1;         //!< repair blocks per bin, from the rate
+
+    //! The denoise stage. Off: not user-facing, and not good enough to be on.
+    //! declick_cli turns it on with --denoise 1 and sweeps --denoise-lo,
+    //! --denoise-beta, --denoise-min, --denoise-q, --denoise-win and
+    //! --denoise-release.
+    //! On a dense carpet - 600-900 runs a second on Pugliese's *El rodeo* and
+    //! *El abrojito* - the crackle merges into a floor, heard as sizzle and
+    //! frying, and the click stages cut only what stands above it. Against
+    //! vinyl copies of the two, *El abrojito*'s output already had no more
+    //! clicks standing out than the copy, but its floor at 4.5-7 kHz was 5 dB
+    //! over the copy's; *El rodeo*'s was 12-13 dB over at 2-7 kHz.
+    //! So this is a spectral denoiser on the finished output, under the key the
+    //! fine stage follows. An STFT of ~23 ms (hop N/4, Hann either side); per
+    //! bin from denoiseLo up (ramped in over the half octave below), the noise
+    //! floor is the denoiseQ quantile of the bin's power, smoothed over 5
+    //! frames, every fourth frame over the last denoiseWin seconds. The gain is
+    //! Wiener's on the power averaged over 7 bins x 5 frames (~300 Hz x 29 ms)
+    //! against denoiseBeta x that floor, never below denoiseMin, rising at once
+    //! and falling back over denoiseRelease, then averaged over 3 bins: a
+    //! stretch of pure noise gets one steady cut rather than bins that twinkle.
+    //! The history leaves out the stream's first second (before 2 s, the first
+    //! half of it): the TangoTunes transfers fade in over ~0.5 s from 30 dB
+    //! under their crackle, and those frames held the quantile under the floor
+    //! for seconds, so the stage started late. Where the key is shut nothing is
+    //! transformed and the history waits.
+    //! Heard as the prototype's "A", which looked ahead and behind +-3 s for the
+    //! floor; this looks behind only, and takes 0.7 dB more. It brought
+    //! *El rodeo*'s quiet floor from 12.2 to 9.6 dB over the copy at 2-3 kHz,
+    //! for 1.1-1.9% of *El abrojito*'s music at 1-4.5 kHz (before 0.4-1.2%).
+    //! Heard as removing crackle, but leaving high-frequency noise that feels
+    //! unnatural - a digital denoiser's sound, on music played by people - and
+    //! so it stays off. Its buffers (~2.2 MB a channel at 44.1 kHz) are only
+    //! held while it is on, as the Wiener path's are; it adds denoiseLatency,
+    //! and where its key is open it costs ~75% more than the rest of the core.
+    int    denoise        = 0;
+    double denoiseLo      = 1000.0;
+    double denoiseBeta    = 1.2;
+    double denoiseMin     = 0.32;    //!< about -10 dB
+    double denoiseQ       = 0.1;
+    double denoiseWin     = 6.0;     //!< seconds of history
+    double denoiseRelease = 0.06;    //!< seconds
+    int    denoiseN       = 1024;    //!< from the sample rate alone
+    int    denoiseHist    = 259;     //!< floor values over denoiseWin, from the rate
+    int    denoiseLatency = 0;       //!< bodyDelay(denoiseN) if denoise, else 0
 
     double rate         = 44100.0;   //!< the sample rate compute() was given
 
@@ -539,18 +617,21 @@ struct Config {
     //! configure(), which reallocates and therefore resets.
     //!
     //! Only `order`, `maxRun`, `madWindow`, `body`, `bodyN`, `fineN`,
-    //! `fineM`, `microN`, `microM`, `mid`, `midLo`, `flankStage` and
-    //! `flankHalf` size anything or set the latency (`pad` and `latency` are
-    //! derived from them); thresholds, depth, wet, delta, passes and whether
-    //! the fine and micro stages run are read per block and can change under
-    //! a live stream.
+    //! `fineM`, `microN`, `microM`, `mid`, `midLo`, `flankStage`,
+    //! `flankHalf` and the denoise stage's `denoise`, `denoiseN`,
+    //! `denoiseLo` and `denoiseHist` size anything or set the latency (`pad`
+    //! and `latency` are derived from them); thresholds, depth, wet, delta,
+    //! passes and whether the fine and micro stages run are read per block and
+    //! can change under a live stream.
     bool structurallyEquals(const Config & o) const {
         return order == o.order && maxRun == o.maxRun && madWindow == o.madWindow
             && body == o.body && bodyN == o.bodyN && fineN == o.fineN
             && fineM == o.fineM && microN == o.microN && microM == o.microM
             && mid == o.mid && midLo == o.midLo
             && flankStage == o.flankStage
-            && flankHalf == o.flankHalf && flankHz == o.flankHz && rate == o.rate;
+            && flankHalf == o.flankHalf && flankHz == o.flankHz
+            && denoise == o.denoise && denoiseN == o.denoiseN
+            && denoiseLo == o.denoiseLo && denoiseHist == o.denoiseHist && rate == o.rate;
     }
 };
 
@@ -728,6 +809,10 @@ public:
     //! Config::mid.
     uint64_t midFrames() const { return m_dCuts; }
 
+    //! Diagnostics for the denoise stage: frames it took something from. See
+    //! Config::denoise.
+    uint64_t denoiseFrames() const { return m_nCuts; }
+
     //! Diagnostics: total bytes this channel is holding. Nothing in the
     //! processing path adds to this - see the buffer envelope in Config.
     size_t heapBytes() const;
@@ -751,6 +836,20 @@ private:
     double bodyBeta() const;
     //! The carpet key, once per repair block; see Config::carpet.
     void carpetBlock();
+    //! The carpet ramp of a carpet value K, and the Poisson key's of K and a
+    //! Fano factor F, with the thresholds raised by wf; see Config::carpetFano.
+    double carpetRamp(double K, double wf) const;
+    double fanoKey(double K, double F, double wf) const;
+    //! The Fano factor of n bins whose counts sum to s1, their squares to s2.
+    static double fanoOf(double s1, double s2, double n);
+    //! A finished sample: into the denoise stage if it is on, else out.
+    void finishSample(double y, double d);
+    //! One finished sample and its dry counterpart, into the denoise stage;
+    //! out denoiseLatency samples later. See Config::denoise.
+    void denoisePush(double y, double d);
+    //! The denoise stage's frame starting at its sample `start` is complete:
+    //! transform it, and cut the one two hops before it.
+    void denoiseHop(uint64_t start);
     //! The fine stage's frame starting at stage sample `start` is complete:
     //! transform it, and cut the one fineM hops before it. See Config::fine.
     void fineHop(uint64_t start);
@@ -1022,6 +1121,46 @@ private:
     int    m_cPos = 0, m_cHave = 0;
     double m_cKey = 0.0;
     uint64_t m_cOpen = 0;
+    //! The Poisson key; see Config::carpetFano. The bin being counted and its
+    //! blocks so far; the sums of the finished bins' counts and their squares,
+    //! over the second being counted and since the start; each second's Fano
+    //! factor, beside m_cRing.
+    double m_cBin = 0.0;
+    int    m_cBinBlk = 0;
+    double m_cS1 = 0.0, m_cS2 = 0.0, m_cBinN = 0.0;
+    double m_cTotS1 = 0.0, m_cTotS2 = 0.0, m_cTotBinN = 0.0;
+    double m_cFRing[kCarpetMax];
+
+    //! The denoise stage; see Config::denoise. Rings of the finished audio
+    //! (m_nY), its dry counterpart (m_nD) and what the stage removes (m_nR),
+    //! indexed by its sample count m_nT. Per kept bin, m_nM0 .. N/2: the last
+    //! five frames' power, transform and power summed over 7 bins; the floor's
+    //! history as a ring and kept sorted; the floor; the gain with its release;
+    //! the weight that ramps the band in. Held only while the stage is on.
+    enum { kDenoiseFrames = 5, kDenoiseDec = 4 };
+    int    m_nN = 0, m_nH = 0;
+    size_t m_nMask = 0;
+    uint64_t m_nT = 0;
+    uint64_t m_nNextHop = 0;      //!< as m_bNextHop
+    int    m_nK0 = 0, m_nM0 = 0, m_nNb = 0;
+    int    m_nHist = 0;           //!< consecutive frames transformed, to 5
+    int    m_nSlot = 0;
+    uint64_t m_nCutCount = 0;     //!< frames whose gain has been worked out
+    int    m_nHave = 0, m_nPos = 0;  //!< floor values held, and where the next goes
+    uint64_t m_nTaken = 0;        //!< floor values taken since the start
+    double m_nNorm = 1.0;
+    double m_nRel = 0.0;          //!< the release's step, per hop
+    uint64_t m_nCuts = 0;
+    std::vector<double> m_nY, m_nD, m_nR;
+    std::vector<double> m_nWin;
+    std::vector<double> m_nRe, m_nIm;
+    std::vector<double> m_nStRe, m_nStIm;
+    std::vector<double> m_nTwRe, m_nTwIm;
+    std::vector<int>    m_nRev;
+    std::vector<double> m_nP, m_nPb, m_nXRe, m_nXIm;   //!< kDenoiseFrames x m_nNb
+    std::vector<double> m_nRing;     //!< m_nNb x denoiseHist
+    std::vector<double> m_nSorted;   //!< m_nNb x (denoiseHist + 2), a place of pad either side
+    std::vector<double> m_nFloor, m_nG, m_nWf;   //!< m_nNb
 
     std::vector<double> m_madRing; //!< |forward residual| history
     int    m_madPos = 0;
