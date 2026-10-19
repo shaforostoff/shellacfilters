@@ -1176,6 +1176,20 @@ void Config::compute(const Params & pIn, double sampleRate) {
         fineN = n;
     }
 
+    // The micro stage's frames are a quarter of the fine stage's, at hop N/2,
+    // and its background spans microMs either side, in hops as the prototype
+    // rounds it. It starts on a sample once the fine stage's removal of it is
+    // final, microLag() on, and its own is final microM hops and a frame after
+    // that: all of it within the body stage's delay, as for the fine stage, or
+    // it stays off. It does fit at every rate, by about half the delay.
+    {
+        microN = fineN / 4;
+        if (microN < 4) microN = 4;
+        microM = (int)floor(microMs * 1e-3 * sampleRate / (double)(microN / 2) + 0.5);
+        if (microM < 1) microM = 1;
+        if (microLag() + microM * (microN / 2) + microN - 1 > bodyDelay(bodyN)) micro = 0;
+    }
+
     // The envelope the buffers are sized from. Same clamps as maxRun above, but
     // at Params::sanitize()'s 20 ms ceiling and kMaxOrder, so no parameter
     // setting at this sample rate can outgrow them.
@@ -1571,6 +1585,79 @@ void Channel::configure(const Config & cfg) {
             for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
             m_fRev[(size_t)i] = r;
         }
+        m_fR.assign(m_bY.size(), 0.0);
+    }
+
+    // The micro stage, sized from microN and microM - so from the sample rate -
+    // and allocated whether or not it is on, like the fine stage. Its band, its
+    // floor and its guard's split are the fine stage's.
+    {
+        const int N = cfg.microN;
+        m_mN = N;
+        m_mH = N / 2;
+        m_mLag = (uint64_t)cfg.microLag();
+        const double binHz = cfg.rate / (double)N;
+        m_mK0 = (int)ceil(cfg.fineLo / binHz);
+        if (m_mK0 < 1) m_mK0 = 1;
+        int k1 = (int)floor(cfg.fineHi / binHz);
+        if (k1 > N / 2) k1 = N / 2;
+        m_mNb = (m_mK0 <= k1) ? (k1 - m_mK0 + 1) : 0;   // an empty band: no cut
+        int kMid = (int)ceil(cfg.fineMid / binHz);
+        m_mNbLow = kMid - m_mK0;
+        if (m_mNbLow < 0) m_mNbLow = 0;
+        if (m_mNbLow > m_mNb) m_mNbLow = m_mNb;
+        m_mSlots = cfg.microM + 2;
+        m_mQSlots = cfg.microM + 2;
+        m_mWin.assign((size_t)N, 0.0);
+        m_mRe.assign((size_t)(N / 2), 0.0);
+        m_mIm.assign((size_t)(N / 2), 0.0);
+        m_mStRe.assign((size_t)(N / 2), 0.0);
+        m_mStIm.assign((size_t)(N / 2), 0.0);
+        m_mTwRe.assign((size_t)(N / 2 + 1), 0.0);
+        m_mTwIm.assign((size_t)(N / 2 + 1), 0.0);
+        m_mRev.assign((size_t)(N / 2), 0);
+        m_mMag.assign((size_t)m_mSlots * (size_t)m_mNb, 0.0);
+        m_mXRe.assign((size_t)m_mSlots * (size_t)m_mNb, 0.0);
+        m_mXIm.assign((size_t)m_mSlots * (size_t)m_mNb, 0.0);
+        m_mSorted.assign((size_t)m_mNb * (size_t)cfg.microM + 2, 0.0);
+        m_mQ.assign((size_t)m_mQSlots * (size_t)m_mNb, 0.0);
+        // The fine stage's guard by frame, back as far as a micro frame being
+        // cut can reach: the fine frames between it and the newest the fine
+        // stage has cut by then, with room to spare.
+        {
+            const int fH = cfg.fineN / 4;
+            const int back = (N / 2 + cfg.microM * m_mH + cfg.fineN) / (fH > 0 ? fH : 1) + 8;
+            size_t slots = 1;
+            while (slots < (size_t)(2 * back)) slots <<= 1;
+            m_fKeep.assign(slots, 0.0);
+            m_fKeepAt.assign(slots, 0);
+            m_fKeepMask = slots - 1;
+        }
+
+        const double twoPi = 6.283185307179586;
+        for (int i = 0; i < N; ++i)              // square root of the periodic Hann
+            m_mWin[(size_t)i] = sqrt(0.5 - 0.5 * cos(twoPi * (double)i / (double)N));
+        double norm = 0.0;
+        for (int i = 0; i < N; i += m_mH) norm += m_mWin[(size_t)i] * m_mWin[(size_t)i];
+        m_mNorm = (norm > 0.0) ? norm : 1.0;
+        for (int k = 0; k <= N / 2; ++k) {
+            m_mTwRe[(size_t)k] = cos(twoPi * (double)k / (double)N);
+            m_mTwIm[(size_t)k] = sin(twoPi * (double)k / (double)N);
+        }
+        for (int half = 1; half < N / 2; half <<= 1) {
+            for (int k = 0; k < half; ++k) {
+                const double a = twoPi * (double)k / (double)(2 * half);
+                m_mStRe[(size_t)(half - 1 + k)] = cos(a);
+                m_mStIm[(size_t)(half - 1 + k)] = sin(a);
+            }
+        }
+        int bits = 0;
+        while ((1 << bits) < N / 2) ++bits;
+        for (int i = 0; i < N / 2; ++i) {
+            int r = 0;
+            for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
+            m_mRev[(size_t)i] = r;
+        }
     }
 
     // The flank repair: a run list for the block, the corrections aligned with
@@ -1664,13 +1751,19 @@ size_t Channel::heapBytes() const {
             + m_fXRe.capacity() + m_fXIm.capacity()
             + m_fSorted.capacity() + m_fQ.capacity()
             + m_fE.capacity() + m_fSeg.capacity()
+            + m_fR.capacity() + m_fKeep.capacity() + m_fKeepAt.capacity()
+            + m_mWin.capacity() + m_mRe.capacity() + m_mIm.capacity()
+            + m_mStRe.capacity() + m_mStIm.capacity()
+            + m_mTwRe.capacity() + m_mTwIm.capacity() + m_mMag.capacity()
+            + m_mXRe.capacity() + m_mXIm.capacity()
+            + m_mSorted.capacity() + m_mQ.capacity()
             + m_flGain.capacity() + m_flAcc.capacity() + m_flHp.capacity()
             + m_stY.capacity() + m_stD.capacity()
             + m_wSpec.capacity() + m_wWin.capacity() + m_wRe.capacity() + m_wIm.capacity()
             + m_wStRe.capacity() + m_wStIm.capacity()) * sizeof(double)
            + m_flag.capacity() + m_runs.capacity() * sizeof(int)
            + (m_bRev.capacity() + m_bCount.capacity() + m_fRev.capacity()
-              + m_flRun.capacity() + m_flOrder.capacity() + m_wRev.capacity()) * sizeof(int);
+              + m_mRev.capacity() + m_flRun.capacity() + m_flOrder.capacity() + m_wRev.capacity()) * sizeof(int);
 }
 
 bool Channel::retune(const Config & cfg) {
@@ -1731,6 +1824,13 @@ void Channel::reset() {
     m_fNextHop = (uint64_t)m_fN;
     m_fHist = 0;
     m_fFrame = 0;
+    std::fill(m_fR.begin(), m_fR.end(), 0.0);
+    std::fill(m_fKeep.begin(), m_fKeep.end(), 0.0);
+    std::fill(m_fKeepAt.begin(), m_fKeepAt.end(), (uint64_t)0);
+    m_mNextHop = (uint64_t)m_mN;
+    m_mHist = 0;
+    m_mFrame = 0;
+    m_mCuts = 0;
     std::fill(m_flAcc.begin(), m_flAcc.end(), 0.0);
     m_flN = 0;
     m_flEnd = -(1 << 30);
@@ -2474,6 +2574,7 @@ void Channel::bodyPush(double y, double d) {
     m_bY[i] = y;
     m_bD[i] = d;
     m_bR[i] = 0.0;              // no frame has reached it yet
+    m_fR[i] = 0.0;
     const uint64_t N = (uint64_t)m_bN;
     if (t + 1 == m_bNextHop) {
         m_bNextHop += (uint64_t)m_bH;
@@ -2483,6 +2584,16 @@ void Channel::bodyPush(double y, double d) {
         m_fNextHop += (uint64_t)m_fH;
         if (m_cfg.fine) fineHop(t + 1 - (uint64_t)m_fN);
         else m_fHist = 0;
+    }
+    // The micro stage runs m_mLag behind: on the samples whose fine removal
+    // is final. Its count advances whether or not it is on, as the others do.
+    if (t >= m_mLag) {
+        const uint64_t tm = t - m_mLag;
+        if (tm + 1 == m_mNextHop) {
+            m_mNextHop += (uint64_t)m_mH;
+            if (m_cfg.micro && m_cfg.fine) microHop(tm + 1 - (uint64_t)m_mN);
+            else m_mHist = 0;
+        }
     }
     const uint64_t D = (uint64_t)m_cfg.bodyLatency;
     if (t >= D) {
@@ -2816,6 +2927,14 @@ void Channel::fineHop(uint64_t start) {
                             : (best >= m_cfg.finePeriodic1 ? 1.0 : 0.0);
         keep = dmin(dmax(keep, 0.0), 1.0);
     }
+    // The micro stage's frames near this one back off as it does. Kept by the
+    // cut frame's place on the hop grid, not by its number: frames are only
+    // numbered while the key is open.
+    {
+        const uint64_t gpos = (start - (uint64_t)D * (uint64_t)H) / (uint64_t)H;
+        m_fKeep[(size_t)gpos & m_fKeepMask] = keep;
+        m_fKeepAt[(size_t)gpos & m_fKeepMask] = gpos + 1;
+    }
 
     const double alpha = m_cfg.fineAlpha, floorG = m_cfg.fineFloor;
     memset(re, 0, (size_t)M * sizeof(double));
@@ -2852,7 +2971,149 @@ void Channel::fineHop(uint64_t start) {
     // the 1/M it is missing is a 1/N here, as in bodyHop().
     const double g = 1.0 / ((double)N * m_fNorm);
     double * r = &m_bR[0];
+    double * fr = &m_fR[0];
     const uint64_t from = start - (uint64_t)D * (uint64_t)H;
+    for (int i = 0; i < M; ++i) {
+        const size_t at = (size_t)(from + 2 * (uint64_t)i);
+        const double v0 = re[i] * win[2 * i] * g, v1 = im[i] * win[2 * i + 1] * g;
+        r[at & mask]        += v0;
+        r[(at + 1) & mask]  += v1;
+        fr[at & mask]       += v0;
+        fr[(at + 1) & mask] += v1;
+    }
+}
+
+//! The newest frame starts at sample `start` of the micro stage's count, the
+//! body stage's less m_mLag, where the fine stage's removal is final; the one
+//! cut here microM hops before it, between its two background windows. The
+//! input is the fine stage's output, m_bY less m_fR, and what this takes out
+//! goes to m_bR with the rest. Transforms, quantiles and the cut are as in
+//! fineHop(), at a quarter of the frame and hop N/2; the guard is the fine
+//! stage's, for the frame of its own nearest this one's centre, and where the
+//! fine stage has not cut that frame this one is not cut either. See
+//! Config::micro.
+void Channel::microHop(uint64_t start) {
+    const int N = m_mN, H = m_mH, nb = m_mNb, S = m_mSlots, Mm = m_cfg.microM;
+    const int D = Mm;
+    const size_t mask = m_bMask;
+    const double beta = (nb > 0) ? dmax(m_bBeta, m_cKey) : 0.0;
+    if (beta <= 0.0) {
+        m_mHist = 0;
+        return;
+    }
+    const int M = N / 2;
+    double * re = &m_mRe[0];
+    double * im = &m_mIm[0];
+    const double * y = &m_bY[0];
+    const double * fr = &m_fR[0];
+    const double * win = &m_mWin[0];
+    const int * rev = &m_mRev[0];
+    const double * twRe = &m_mTwRe[0];
+    const double * twIm = &m_mTwIm[0];
+    for (int i = 0; i < M; ++i) {
+        const size_t at = (size_t)(start + 2 * (uint64_t)i);
+        re[rev[i]] = (y[at & mask] - fr[at & mask]) * win[2 * i];
+        im[rev[i]] = (y[(at + 1) & mask] - fr[(at + 1) & mask]) * win[2 * i + 1];
+    }
+    fftRadix2(re, im, M, &m_mStRe[0], &m_mStIm[0], false, g_kernels->fftPair, g_kernels->fftOne);
+    const uint64_t f = m_mFrame++;
+    const size_t nbs = (size_t)nb;
+    const size_t sl = (size_t)(f % (uint64_t)S) * nbs;
+    {
+        double * mg = &m_mMag[sl];
+        double * xr = &m_mXRe[sl];
+        double * xi = &m_mXIm[sl];
+        for (int b = 0; b < nb; ++b) {
+            const int k = m_mK0 + b;
+            const int kk = k & (M - 1), mk = (M - kk) & (M - 1);
+            const double zr = re[kk], zi = im[kk];
+            const double cr = re[mk], ci = -im[mk];
+            const double er = 0.5 * (zr + cr), ei = 0.5 * (zi + ci);
+            const double our = 0.5 * (zi - ci), oui = -0.5 * (zr - cr);
+            const double c = twRe[k], sn = twIm[k];
+            const double vr = er + c * our + sn * oui;
+            const double vi = ei + c * oui - sn * our;
+            xr[b] = vr;
+            xi[b] = vi;
+            mg[b] = sqrt(vr * vr + vi * vi);
+        }
+    }
+    if (m_mHist < 2 * D + 1) ++m_mHist;
+    if (m_mHist < Mm) return;
+
+    const double q = m_cfg.microQ;
+    const uint64_t QS = (uint64_t)m_mQSlots;
+    const double * mag = &m_mMag[sl];
+    double * srt = &m_mSorted[1];
+    double * qNew = &m_mQ[(size_t)(f % QS) * nbs];
+    if (m_mHist == Mm) {
+        for (int j = 0; j < Mm; ++j) {
+            const double * pj = &m_mMag[(size_t)((f - (uint64_t)j) % (uint64_t)S) * nbs];
+            for (int b = 0; b < nb; ++b) srt[(size_t)b * (size_t)Mm + (size_t)j] = pj[b];
+        }
+        for (int b = 0; b < nb; ++b) {
+            double * w = srt + (size_t)b * (size_t)Mm;
+            std::sort(w, w + Mm);
+            qNew[b] = sortedQuantile(w, Mm, q);
+        }
+    } else {
+        const double * gone = &m_mMag[(size_t)((f - (uint64_t)Mm) % (uint64_t)S) * nbs];
+        g_kernels->sortedRow(srt, Mm, nb, gone, mag);
+        for (int b = 0; b < nb; ++b)
+            qNew[b] = sortedQuantile(srt + (size_t)b * (size_t)Mm, Mm, q);
+    }
+    if (m_mHist < 2 * D + 1) return;
+
+    const uint64_t c = f - (uint64_t)D;
+    const uint64_t from = start - (uint64_t)D * (uint64_t)H;
+    // The guard: the fine frame whose centre is nearest this frame's.
+    double keep = 1.0;
+    if (m_mNbLow > 0) {
+        const int fN = m_fN, fH = m_fH;
+        const uint64_t centre = from + (uint64_t)(N / 2);
+        if (centre < (uint64_t)(fN / 2)) return;
+        const uint64_t cf = (centre - (uint64_t)(fN / 2) + (uint64_t)(fH / 2)) / (uint64_t)fH;
+        if (m_fKeepAt[(size_t)cf & m_fKeepMask] != cf + 1) return;   // the fine stage did not cut it
+        keep = m_fKeep[(size_t)cf & m_fKeepMask];
+    }
+    const size_t cs = (size_t)(c % (uint64_t)S) * nbs;
+    const double * cmag = &m_mMag[cs];
+    const double * cxr = &m_mXRe[cs];
+    const double * cxi = &m_mXIm[cs];
+    const double * qBefore = &m_mQ[(size_t)((c - 1) % QS) * nbs];
+    const double * qAfter = &m_mQ[(size_t)((c + (uint64_t)Mm) % QS) * nbs];
+
+    const double alpha = m_cfg.microAlpha, floorG = m_cfg.fineFloor;
+    memset(re, 0, (size_t)M * sizeof(double));
+    memset(im, 0, (size_t)M * sizeof(double));
+    bool any = false;
+    for (int b = 0; b < nb; ++b) {
+        const double h = dmax(qBefore[b], qAfter[b]);
+        double g = alpha * h / (cmag[b] + 1e-20);
+        if (g > 1.0) g = 1.0;
+        if (g < floorG) g = floorG;
+        if (b < m_mNbLow) g = 1.0 - (1.0 - keep) * (1.0 - g);
+        const double cut = (1.0 - g) * beta;
+        if (!(cut > 0.0)) continue;
+        const int k = m_mK0 + b;
+        const double vr = cut * cxr[b], vi = cut * cxi[b];
+        const double cc = twRe[k], sn = twIm[k];
+        const double ur = vr * cc - vi * sn, ui = vr * sn + vi * cc;
+        const int kr = rev[k & (M - 1)];
+        re[kr] += vr - ui;
+        im[kr] += vi + ur;
+        if (k != N - k) {
+            const int mr = rev[M - k];
+            re[mr] += vr + ui;
+            im[mr] += ur - vi;
+        }
+        any = true;
+    }
+    if (!any) return;
+    ++m_mCuts;
+    fftRadix2(re, im, M, &m_mStRe[0], &m_mStIm[0], true, g_kernels->fftPair, g_kernels->fftOne);
+    const double g = 1.0 / ((double)N * m_mNorm);
+    double * r = &m_bR[0];
     for (int i = 0; i < M; ++i) {
         const size_t at = (size_t)(from + 2 * (uint64_t)i);
         r[at & mask]       += re[i] * win[2 * i] * g;

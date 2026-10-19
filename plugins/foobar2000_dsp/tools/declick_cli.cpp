@@ -63,6 +63,11 @@ void usage() {
         "                     a voice's period (default 8000; fine-lo turns it off)\n"
         "  --fine-p0 <x>      Periodicity where it starts to back off (default 0.1)\n"
         "  --fine-p1 <x>      ... and where it has backed off entirely (default 0.3)\n"
+        "  --micro <0|1>      The fine stage's clip again on its output, at a quarter\n"
+        "                     of its frame, under its key and guard (default 1)\n"
+        "  --micro-ms <x>     Its background, ms either side (default 6)\n"
+        "  --micro-alpha <x>  Clip a bin to this many times its background (default 2)\n"
+        "  --micro-q <0..1>   Quantile the background is taken at (default 0.2)\n"
         "  --flank <0|1>      Repair the flanks of runs again, above flank-hz, on\n"
         "                     band-limited transfers under the body key (default 1)\n"
         "  --flank-pad-ms <x> How far each run is widened either side (default 0.18)\n"
@@ -70,7 +75,7 @@ void usage() {
         "  --flank-edge0 <Hz> -40 dB edge at or below which the pad is full (default 13000)\n"
         "  --flank-edge1 <Hz> ... and at or above which there is none (default 15000)\n"
         "  --flank-shut <0..1> Its strength where the key is shut, band-limited only (default 0)\n"
-        "  --flank-wide <0..1> Share of the pad a full-band transfer gets under the key (default 0)\n"
+        "  --flank-wide <0..1> Share of the pad a full-band transfer gets under the key (default 1)\n"
         "  --flank-shut-gain <0..1> ... where it is shut, only runs repaired at this gain or more (default 0)\n"
         "  --flank-hold <s>   Seconds it fades out over once the key shuts (default 12)\n"
         "  --carpet <0|1>     The carpet key: opens the fine stage and the flank repair\n"
@@ -112,6 +117,7 @@ int main(int argc, char ** argv) {
     float bodyRate0 = -1.0f, bodyRate1 = -1.0f, bodyRelease = -1.0f;
     float fine = -1.0f, fineLo = -1.0f, fineHi = -1.0f, fineAlpha = -1.0f, fineQ = -1.0f;
     float fineFloor = -1.0f, fineMid = -1.0f, fineP0 = -1.0f, fineP1 = -1.0f;
+    float micro = -1.0f, microMs = -1.0f, microAlpha = -1.0f, microQ = -1.0f;
     float flank = -1.0f, flankPadMs = -1.0f, flankHz = -1.0f, flankEdge0 = -1.0f, flankEdge1 = -1.0f;
     float flankShut = -1.0f, flankWide = -1.0f, flankShutGain = -1.0f, flankHold = -1.0f;
     float carpet = -1.0f, carpetPeak = -1.0f, carpetWin = -1.0f, carpetQ = -1.0f;
@@ -152,6 +158,10 @@ int main(int argc, char ** argv) {
         else if (a == "--fine-mid") fineMid = v;
         else if (a == "--fine-p0") fineP0 = v;
         else if (a == "--fine-p1") fineP1 = v;
+        else if (a == "--micro") micro = v;
+        else if (a == "--micro-ms") microMs = v;
+        else if (a == "--micro-alpha") microAlpha = v;
+        else if (a == "--micro-q") microQ = v;
         else if (a == "--flank") flank = v;
         else if (a == "--flank-pad-ms") flankPadMs = v;
         else if (a == "--flank-hz") flankHz = v;
@@ -208,6 +218,10 @@ int main(int argc, char ** argv) {
     if (fineMid >= 0.0f) cfg.fineMid = fineMid;
     if (fineP0 >= 0.0f) cfg.finePeriodic0 = fineP0;
     if (fineP1 >= 0.0f) cfg.finePeriodic1 = fineP1;
+    if (micro >= 0.0f) cfg.micro = (int)micro;
+    if (microMs >= 0.0f) cfg.microMs = microMs;
+    if (microAlpha >= 0.0f) cfg.microAlpha = microAlpha;
+    if (microQ >= 0.0f) cfg.microQ = microQ;
     if (flank >= 0.0f) cfg.flank = (int)flank;
     if (flankPadMs >= 0.0f) cfg.flankPadMs = flankPadMs;
     if (flankHz >= 0.0f) cfg.flankHz = flankHz;

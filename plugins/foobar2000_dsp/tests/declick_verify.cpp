@@ -270,9 +270,12 @@ void testInverseDiagonal() {
 
 // -------------------------------------------------------------------------
 
+//! `tweak`, if given, edits the Config before compute() derives the rest of it
+//! from `p` and the rate, so a stage it turns off is off in the latency too.
 std::vector<double> runChannel(const std::vector<double> & in, const Params & p,
-                               double sr) {
+                               double sr, void (*tweak)(Config &) = 0) {
     Config cfg;
+    if (tweak) tweak(cfg);
     cfg.compute(p, sr);
     Channel ch;
     ch.configure(cfg);
@@ -424,10 +427,15 @@ void testStreaming() {
         // Checking against that ceiling rather than against a loose floor is
         // what makes this test mean something: it says the interpolation is
         // accurate enough that the subtraction fraction is the only thing
-        // holding it back.
+        // holding it back. So it is the repair alone: these clicks, 44 a
+        // second at up to 0.75, open the body key, and the stages after the
+        // repair then take more of their top band - the body, fine and micro
+        // stages and the flank repair took it from 5.0 to 5.6 dB before the
+        // micro stage, and to 5.9 with it.
         Params p0 = p;
         p0.depth = 0.0f;
-        const double red = reduction(runChannel(dirty, p0, sr));
+        const double red = reduction(runChannel(dirty, p0, sr,
+                                                [](Config & c) { c.body = 0; c.flank = 0; }));
         Config probe2;
         probe2.compute(p0, sr);
         const double ceiling = -20.0 * log10(1.0 - probe2.wienerMax);

@@ -293,6 +293,36 @@ struct Config {
     double finePeriodic0 = 0.1;
     double finePeriodic1 = 0.3;
 
+    //! The micro stage. Not user-facing; declick_cli sweeps it as --micro,
+    //! --micro-ms, --micro-alpha and --micro-q.
+    //! On a dense carpet the crackle's micro-clicks come closer together than
+    //! the fine stage's 2.9 ms frame: on five Calo .m4a, measured against
+    //! vinyl transfers of the same records warped onto them, those above 8
+    //! times their floor came 350-500 a second, a median 1.5-1.75 ms apart,
+    //! 67-80% of the gaps shorter than the frame. The fine stage's background
+    //! is then made of clicks, and in passages with no voice the output kept
+    //! 53-86 such events a second where the decrackled version kept 15-26.
+    //! So the fine stage's clip runs again on its output, at a quarter of its
+    //! frame (~0.73 ms, hop N/2), with a background of the louder of the
+    //! microQ quantiles over microMs either side, over the fine stage's band
+    //! and under its key, floor and voice guard: below fineMid it backs off as
+    //! far as the fine stage's guard did for the frame nearest. It reads the
+    //! fine stage's output once that is final, so its delay is the fine
+    //! stage's plus microM hops and a frame, and that fits inside the body
+    //! stage's: it adds no latency. It needs the fine stage, and is off when
+    //! that is. Against the vinyl, with the wide pad below, 7-10 kHz came
+    //! 0.3-1.7 dB closer and the strong events left fell by 7-50%; nothing
+    //! moved below 3 kHz. A variant with a guard that read the voice's period
+    //! from the 0.2-3.5 kHz band was liked more on those five, but took 1.25-2
+    //! times a decrackled version's voice; this one, with the fine stage's own
+    //! guard, was chosen as the safer.
+    int    micro        = 1;
+    double microMs      = 6.0;
+    double microAlpha   = 2.0;
+    double microQ       = 0.2;
+    int    microN       = 32;        //!< fineN / 4, from the sample rate alone
+    int    microM       = 17;        //!< frames either side, from microMs and the rate
+
     //! The flank repair. Not user-facing; declick_cli sweeps it as --flank,
     //! --flank-pad-ms, --flank-hz, --flank-edge0 and --flank-edge1.
     //! On a transfer band-limited near 11 kHz - the .m4a copies of D'Arienzo's
@@ -348,10 +378,15 @@ struct Config {
     //! strong runs alone did nothing for *Amarras*.
     double flankShutGain = 0.0;
     //! Where the key is open: the share of the pad a full-band transfer gets.
-    //! 0: on *No esta*, *Ruisenor* and *Cornetin* what it would take
-    //! correlates as much with what the decrackled version keeps as with what
-    //! it removes.
-    double flankWide    = 0.0;
+    //! It was 0 because on *No esta*, *Ruisenor* and *Cornetin* what it took
+    //! correlated as much with what the decrackled version keeps as with what
+    //! it removes. Against vinyl transfers of five Calo .m4a, warped onto
+    //! them, the full pad brought the three whose body key opens 0.1-0.3 dB
+    //! closer at 3-4.5 kHz and 0.2-0.6 dB at 4.5-7 kHz, and their quietest
+    //! third's 3-4.5 kHz crackle left from 56-64% to 42-52%, for 1.7-3.1% of
+    //! the music at 3-4.5 kHz, where the decrackled version takes 1.3-2.9%.
+    //! See Config::micro, which it was heard with.
+    double flankWide    = 1.0;
     int    flankPad     = 8;         //!< from flankPadMs and the rate
     int    flankHalf    = 63;        //!< the high-pass's half length, from the rate
     //! Samples the repaired audio waits before the body stage, for the flank
@@ -446,19 +481,24 @@ struct Config {
     int fineWindow(int n) const;
     int fineDelay(int n) const;
 
+    //! The micro stage reads the fine stage's output this many samples after
+    //! the stage takes a sample in: when the fine removal of it is final.
+    int microLag() const { return fineDelay(fineN) * (fineN / 4) + fineN - 1; }
+
     //! True if `o` needs exactly the buffers this config already has, i.e. it
     //! can be swapped into a running Channel with retune() instead of
     //! configure(), which reallocates and therefore resets.
     //!
     //! Only `order`, `maxRun`, `madWindow`, `body`, `bodyN`, `fineN`,
-    //! `fineM`, `flankStage` and `flankHalf` size anything or set the latency
-    //! (`pad` and `latency` are derived from them); thresholds, depth, wet,
-    //! delta, passes and whether the fine stage runs are read per block and
-    //! can change under a live stream.
+    //! `fineM`, `microN`, `microM`, `flankStage` and `flankHalf` size anything
+    //! or set the latency (`pad` and `latency` are derived from them);
+    //! thresholds, depth, wet, delta, passes and whether the fine and micro
+    //! stages run are read per block and can change under a live stream.
     bool structurallyEquals(const Config & o) const {
         return order == o.order && maxRun == o.maxRun && madWindow == o.madWindow
             && body == o.body && bodyN == o.bodyN && fineN == o.fineN
-            && fineM == o.fineM && flankStage == o.flankStage
+            && fineM == o.fineM && microN == o.microN && microM == o.microM
+            && flankStage == o.flankStage
             && flankHalf == o.flankHalf && flankHz == o.flankHz && rate == o.rate;
     }
 };
@@ -629,6 +669,10 @@ public:
     uint64_t carpetOpenBlocks() const { return m_cOpen; }
     double carpetKey() const { return m_cKey; }
 
+    //! Diagnostics for the micro stage: frames it took something from. See
+    //! Config::micro.
+    uint64_t microFrames() const { return m_mCuts; }
+
     //! Diagnostics: total bytes this channel is holding. Nothing in the
     //! processing path adds to this - see the buffer envelope in Config.
     size_t heapBytes() const;
@@ -654,6 +698,10 @@ private:
     //! The fine stage's frame starting at stage sample `start` is complete:
     //! transform it, and cut the one fineM hops before it. See Config::fine.
     void fineHop(uint64_t start);
+    //! The micro stage's frame starting at stage sample `start` is complete
+    //! (its fine removal is final): transform it, and cut the one microM hops
+    //! before it. See Config::micro.
+    void microHop(uint64_t start);
     void growOut();               //!< only reachable by overrunning maxBlock
     void processBlock();          //!< repairs m_win[m_pad .. m_pad+kBlock)
     void detect(int from, int to, int pass);
@@ -859,6 +907,34 @@ private:
     std::vector<double> m_fQ;        //!< m_fQSlots x m_fNb
     std::vector<double> m_fE;        //!< the guard's envelope per frame, m_fESlots
     std::vector<double> m_fSeg;      //!< 2 m_fW + 1 of it, around the cut frame
+    //! What the fine stage alone removes, a ring like m_bR: the micro stage
+    //! reads m_bY less this. And the guard's back-off for each frame it cut,
+    //! with the frame's number + 1, for the micro stage's frames near it.
+    std::vector<double> m_fR;
+    std::vector<double> m_fKeep;
+    std::vector<uint64_t> m_fKeepAt;
+    size_t m_fKeepMask = 0;
+
+    //! The micro stage; see Config::micro. As the fine stage, at microN, hop
+    //! microN/2, its input m_bY - m_fR read m_mLag samples behind the body
+    //! stage's count.
+    int    m_mN = 0, m_mH = 0;
+    int    m_mK0 = 0, m_mNb = 0, m_mNbLow = 0;
+    int    m_mSlots = 0, m_mQSlots = 0;
+    int    m_mHist = 0;
+    uint64_t m_mLag = 0;
+    uint64_t m_mFrame = 0;
+    uint64_t m_mNextHop = 0;      //!< in the micro stage's count, m_bT - m_mLag
+    uint64_t m_mCuts = 0;
+    double m_mNorm = 1.0;
+    std::vector<double> m_mWin;
+    std::vector<double> m_mRe, m_mIm;
+    std::vector<double> m_mStRe, m_mStIm;
+    std::vector<double> m_mTwRe, m_mTwIm;
+    std::vector<int>    m_mRev;
+    std::vector<double> m_mMag, m_mXRe, m_mXIm;  //!< m_mSlots x m_mNb
+    std::vector<double> m_mSorted;   //!< m_mNb x microM, a place of pad either side
+    std::vector<double> m_mQ;        //!< m_mQSlots x m_mNb
     //! bodyBeta() as of the latest repair block. It only changes there, and
     //! the fine stage, hopping every N/4 samples, cannot afford to rescan
     //! Config::bodyRelease seconds of key for it each time.

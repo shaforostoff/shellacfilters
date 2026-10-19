@@ -1612,10 +1612,14 @@ against every repair in full, at its own gain. Only the difference above
 3 kHz is kept, through a 127-tap Kaiser-windowed high-pass. Below that the
 audio is exactly what the repair made of it.
 
-* **Band-limited transfers only.** Every fourth block's spectrum goes into a
-  ten-second average. From three seconds on, its −40 dB edge — the highest
-  frequency within 40 dB of its 2–5 kHz level — sets the pad: full at 13 kHz
-  and below, none at 15 kHz and above. A full-band record gets none.
+* **Band-limited transfers only**, as first built. Every fourth block's
+  spectrum goes into a ten-second average. From three seconds on, its −40 dB
+  edge — the highest frequency within 40 dB of its 2–5 kHz level — sets the
+  pad: full at 13 kHz and below, none at 15 kHz and above. A full-band record
+  got none. Since [the micro
+  stage](#micro-clicks-closer-than-the-fine-frame-the-micro-stage) every
+  transfer gets the full pad where the body key is open (`--flank-wide 1`);
+  the edge still sets it in the fade after the key shuts.
 * **The key, and a fade after it.** It acts where the body stage's key is
   open, and once the key shuts it fades out over 12 s (`--flank-hold`). The
   key counts runs that peak at 6σ, and a dense carpet inflates σ until few
@@ -1632,7 +1636,9 @@ audio is exactly what the repair made of it.
   * And a pad for full-band transfers under the key (`--flank-wide`). On *No
     está*, *Ruiseñor* and *Cornetín* what it took beyond the stage
     correlated as much with what the decrackled version keeps as with what it
-    removes. It stays off.
+    removes, so it was left off. Measured later against vinyl copies rather
+    than a decrackled version, it helped, and it is now on: see [the micro
+    stage](#micro-clicks-closer-than-the-fine-frame-the-micro-stage).
 * **Off below 32 kHz**, where a low sample rate cannot be told from a
   band-limited transfer.
 * **Each run on its own.** Merged into one span where their pads met, a
@@ -1795,6 +1801,137 @@ and *Si supiera*.
   second.
 * **Where it opens,** the stages it opens: +44 % on *Yo quiero*, +20 % on
   *Viejo ciego*, as on a record whose body key is open.
+
+### Micro-clicks closer than the fine frame: the micro stage
+
+**What was left.** Five Calo `.m4a` were named as not clean enough: *A las
+siete en el café*, *Margarita Gauthier*, *Tristezas de la calle Corrientes*,
+*Gime el viento* and *Trasnochando*. Each also exists as a vinyl transfer, a
+different copy of the record, so its crackle is independent. Each copy was
+warped onto its `.m4a` with a speed search (the vinyl runs 0.04–2.4 % slow),
+then the Viterbi path that follows wow, and EQ-matched every 2 s. 86–96 % of
+each song lines up, and below 3 kHz the vinyl is a waveform reference. Against
+it:
+
+* **The clicks are found.** A run lies within 0.25 ms of 75–89 % of the crackle
+  cores above 4 kHz.
+* **Their spacing beats the fine stage.** At 8 times their floor they come
+  350–505 a second, a median 1.5–1.75 ms apart, and 67–80 % of the gaps are
+  shorter than the fine stage's 2.9 ms frame. Its background, a 20th
+  percentile over 12 ms, is then made of clicks.
+* **So quiet passages are where it fell behind.** Where the vinyl has no voice
+  in its top band, the output kept 53–86 crackle events a second above 16
+  times their floor. The decrackled version kept 15–26. Worst at song ends and
+  pauses: 107–121 a second against 2–3 at 2:57–2:58 of *A las siete*.
+* **The surface sets the trigger.** On these `.m4a` the core's σ is 2.0–3.4
+  times what it is on the vinyl, in quiet and loud passages alike, and 7–11 %
+  of samples are in a run (the vinyl: 3.1–3.7 %).
+
+**The stage** (`Config::micro`). The fine stage's clip runs again, on the fine
+stage's output, at a quarter of its frame: 32 samples at 44.1 and 48 kHz (64
+at 96 kHz), ~0.73 ms, at hop N/2.
+
+* **The background** is the louder of the 20th percentiles over 6 ms before
+  and 6 ms after (`--micro-ms`).
+* **Shared with the fine stage:** the band (4.5–20 kHz), the clip at twice the
+  background, the −18 dB floor and the key.
+* **The voice guard is the fine stage's.** Below 8 kHz the cut backs off as
+  far as the fine stage's guard did for its frame nearest this one's centre,
+  and where the fine stage did not cut that frame this one is not cut.
+* **Where it sits.** It reads the repaired audio less the fine stage's own
+  removal, which the stage now keeps in a ring of its own, once that removal is
+  final: 1183 samples on at 44.1 kHz. Its own is final 17 hops and a frame
+  later, 1486 in all, inside the body stage's 3072. It adds no latency.
+* **It needs the fine stage**, and is off when that is.
+
+**And the wide pad.** The [flank repair](#band-limited-transfers-the-flank-repair)'s
+pad now goes to full-band transfers as well where the body key is open
+(`Config::flankWide` 0 → 1). It had been left off on what it took from three
+full-band songs, judged against their decrackled versions. Against the vinyl,
+on the three of these five whose body key opens:
+
+* 3–4.5 kHz came 0.1–0.3 dB closer, and 4.5–7 kHz 0.2–0.6 dB;
+* the quietest third's 3–4.5 kHz crackle left went from 56–64 % to 42–52 %;
+* it took 1.7–3.1 % of the music at 3–4.5 kHz, where the decrackled version
+  takes 1.3–2.9 %.
+
+Against the vinyl, dB of (output − vinyl) re the vinyl per band (lower is
+closer); the share of the `.m4a`'s excess left in the quietest third of each
+song at 3–4.5 / 4.5–7 / 7–10 kHz; events above 16 times their floor left a
+second; and the voice taken: the projection of the removal on the vinyl at
+4.5–7 kHz, in the frames where the vinyl's top band repeats with a voice's
+period, as a share of its amplitude.
+
+| | | 3–4.5 | 4.5–7 | 7–10 kHz | quiet left | events/s | voice taken |
+|---|---|---|---|---|---|---|---|
+| *A las siete* | before | −9.9 | −4.1 | +3.9 | 56 / 41 / 33 % | 102 | 2.5 % |
+| | **now** | **−10.1** | **−4.7** | **+2.2** | **42 / 29 / 20 %** | **51** | 6.8 % |
+| | decrackled | −9.5 | −4.4 | +2.7 | 42 / 26 / 19 % | 66 | 6.4 % |
+| *Margarita* | before | −9.9 | −4.7 | +0.9 | 75 / 63 / 56 % | 69 | 1.1 % |
+| | **now** | **−10.0** | **−4.9** | **−0.3** | **70 / 56 / 41 %** | **53** | 1.9 % |
+| | decrackled | −9.7 | −5.2 | −0.2 | 56 / 42 / 37 % | 46 | 4.0 % |
+| *Tristezas* | before | −10.2 | −4.9 | +0.6 | 64 / 52 / 46 % | 91 | 2.1 % |
+| | **now** | **−10.3** | **−5.2** | **−0.3** | **52 / 42 / 34 %** | **62** | 4.5 % |
+| | decrackled | −10.0 | −5.1 | +0.2 | 46 / 34 / 32 % | 66 | 4.2 % |
+| *Gime el viento* | before | −11.6 | −6.2 | −2.1 | 80 / 70 / 63 % | 74 | 0.7 % |
+| | **now** | −11.6 | **−6.3** | **−2.4** | **78 / 66 / 57 %** | **69** | 1.0 % |
+| | decrackled | −11.3 | −6.3 | −2.7 | 64 / 50 / 43 % | 65 | 2.2 % |
+| *Trasnochando* | before | −8.2 | −3.8 | +0.8 | 62 / 49 / 41 % | 102 | 1.4 % |
+| | **now** | **−8.5** | **−4.5** | **−0.7** | **47 / 37 / 26 %** | **56** | 4.2 % |
+| | decrackled | −8.2 | −4.2 | −0.1 | 46 / 32 / 23 % | 64 | 4.0 % |
+
+Below 3 kHz the output is the same as before to 0.1 dB. The C++ stage's
+removal correlates 0.989–0.997 with its Python prototype's, at the same level
+to 0.1 dB. *Gime el viento* barely moves: its carpet key reads 86–145 runs a
+second, inside its 110–150 ramp, so the stages run at about a third there.
+
+**Chosen by ear**, on those five, from three versions:
+
+* the micro stage alone;
+* the micro stage and the wide pad;
+* both, with a voice guard that reads the period from the 0.2–3.5 kHz band,
+  where voice stands well above crackle, instead of from the top band. There,
+  on the two songs measured, the fine stage's guard reads 0.25–0.26 on frames
+  with no voice in them, and backs off on 94–96 % of them.
+
+The third was liked most. It took 1.25–2 times the decrackled version's
+voice, and by design it would follow the wrong source in a duet or under a
+loud bandoneón. The second was chosen as the safer.
+
+**Records it must not touch.**
+
+* **Bit-identical to the build before it:**
+  * the *Malvón* master, *Olga*, *El Marne*, *La tablada* (both copies);
+  * 52 of 99 songs in all: the 98-song sample and the *Malvón* master.
+* **The other 47** are the sample songs whose keys open at some point.
+  * The most changed: the *Malvón* and *Cachirulo* `.m4a`, −12.6 and −12.8 dB
+    of 4.5–10 kHz beyond the build before, mostly the pad.
+  * *Por una mujer* and *Jorge Duval*, band-limited 1950s transfers (edge
+    ~10.5 kHz), lose −13.5 and −16.6 dB of it to the micro stage.
+  * Out-of-range events are the same on all 99.
+* **`scripts/declick_regress.py` passes,** on the reference set and on five
+  more (*A las siete*, *Trasnochando*, *Gime el viento*, *Tu olvido*, *Malvón*
+  `.m4a`):
+  * no clamp count changed;
+  * one new event, 2 samples at 1.3 times the local range on *Voz de tango*
+    after Dehum, under the script's limit;
+  * 0.4–0.5 dB more taken from *Cachirulo* `.m4a` and *Voz de tango*, 0.25–0.54
+    dB from the five.
+* **Off:** `declick_cli --micro 0 --flank-wide 0` gives the build before it to
+  the bit.
+
+**Cost**, the two builds taking turns, best of seven, on the Zen 4:
+
+* **Where the keys stay shut,** nothing measurable: +1.0 % on the *Malvón*
+  master, +2.3 % on *Pa que bailen*.
+* **Where they open,** +24 to +38 % with AVX2 and +22 to +24 % with SSE2: *Cuatro
+  compases* 103× → 76×, *A las siete* 117× → 84×, *Tristezas* 112× → 87×,
+  *Tu olvido* (96 kHz) 40× → 33×.
+  * The micro stage is +13 to +17 % of that.
+  * The wide pad is +13 to +23 % where it is new: the flank repair, running
+    on full-band transfers too.
+* **Memory:** about 40 kB more a channel at 44.1 kHz: the fine stage's own
+  removal ring, and the micro stage's frames.
 
 ---
 

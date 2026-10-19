@@ -281,6 +281,20 @@ int main() {
         if (!ran) ++g_failures;
     }
 
+    // The micro stage runs on the fine stage's output under the same key, which
+    // the clicks above hold open; it must cut frames, and allocate nothing.
+    {
+        ch.configure(cfg);
+        ch.prime();
+        arm();
+        perSample(ch, sig, 0, 6 * R);
+        requireQuiet("the micro stage, under the body key");
+        const bool ran = ch.microFrames() > 0;
+        printf("  %-50s %-4s %llu frames cut\n", "... and it ran",
+               ran ? "ok" : "FAIL", (unsigned long long)ch.microFrames());
+        if (!ran) ++g_failures;
+    }
+
     // The carpet key opens the fine stage and the flank repair where the body
     // key is shut. Here the body key is held shut and the carpet key's ramp
     // brought down to the clicks above, about 63 a second, so that it has to
