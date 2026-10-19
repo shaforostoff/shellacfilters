@@ -1153,22 +1153,25 @@ void Config::compute(const Params & pIn, double sampleRate) {
     if (flankPad + flankHalf >= (int)kBlock) flank = 0;
     flankStage = flank ? (int)kBlock : 0;
 
-    // The denoise stage's frames span ~23 ms at any rate: the power of two
-    // nearest 0.0232 * rate. Its cut frame trails the newest by two hops, as
-    // the body stage's does, so its delay is that stage's for its length. It
+    // The crackle floor stage's frames span ~23 ms at any rate: the power of
+    // two nearest 0.0232 * rate. Its cut frame trails the newest by two hops,
+    // as the body stage's does, so its delay is that stage's for its length. It
     // runs on the finished output, so the delay adds to the rest.
     {
         const double want = 0.0232 * sampleRate;
         int n = 64;
         while (n < 32768 && want >= 1.4142135623730951 * (double)n) n *= 2;
-        denoiseN = n;
-        denoiseHist = (int)(denoiseWin * sampleRate / (double)(n / 4) / (double)4) | 1;
-        if (denoiseHist < 1) denoiseHist = 1;
-        if (denoiseHist > 16383) denoiseHist = 16383;
-        denoiseQ = dmin(dmax(denoiseQ, 0.0), 1.0);
+        crackleFloorN = n;
+        crackleFloorHist = (int)(crackleFloorWin * sampleRate / (double)(n / 4) / (double)4) | 1;
+        if (crackleFloorHist < 1) crackleFloorHist = 1;
+        if (crackleFloorHist > 16383) crackleFloorHist = 16383;
+        crackleFloorQ = dmin(dmax(crackleFloorQ, 0.0), 1.0);
+        crackleFloorShelfGain = dmin(dmax(crackleFloorShelfGain, 0.0), 1.0);
+        if (!(crackleFloorShelfX0 > 0.0)) crackleFloorShelfX0 = 5.0;
+        if (!(crackleFloorShelfX1 > crackleFloorShelfX0)) crackleFloorShelfX1 = 8.0 * crackleFloorShelfX0;
     }
-    denoiseLatency = denoise ? bodyDelay(denoiseN) : 0;
-    latency = pad + (int)kBlock + bodyLatency + flankStage + denoiseLatency;
+    crackleFloorLatency = crackleFloor ? bodyDelay(crackleFloorN) : 0;
+    latency = pad + (int)kBlock + bodyLatency + flankStage + crackleFloorLatency;
 
     // The carpet key's ring is a fixed array of kCarpetMax seconds.
     if (carpetWin < 1) carpetWin = 1;
@@ -1768,13 +1771,14 @@ void Channel::configure(const Config & cfg) {
         }
     }
 
-    // The denoise stage, sized from denoiseN, denoiseLo and denoiseHist, and -
-    // unlike the stages above - only held while it is on, as the Wiener
-    // buffers are: its floor history is ~2 MB a channel at 44.1 kHz, and it is
-    // off unless asked for. Turning it on or off is a structural change, so it
-    // goes through configure().
-    if (cfg.denoise) {
-        const int N = cfg.denoiseN;
+    // The crackle floor stage, sized from crackleFloorN, crackleFloorLo,
+    // crackleFloorHi, crackleFloorShelf and crackleFloorHist, and - unlike the
+    // stages above - only held while it is on, as the Wiener buffers are: its
+    // floor history is ~0.4 MB a channel at 44.1 kHz (~1 MB with the shelf, ~2
+    // MB with no upper edge), and it is off unless asked for. Turning it on or
+    // off is a structural change, so it goes through configure().
+    if (cfg.crackleFloor) {
+        const int N = cfg.crackleFloorN;
         const int H = N / 4, M = N / 2;
         m_nN = N;
         m_nH = H;
@@ -1782,18 +1786,44 @@ void Channel::configure(const Config & cfg) {
         while (ring < (size_t)Config::bodyDelay(N) + 1) ring <<= 1;
         m_nMask = ring - 1;
         const double binHz = cfg.rate / (double)N;
-        // The band ramps in over the half octave below denoiseLo: the first
-        // bin is the first above denoiseLo / sqrt 2. Kept from four below it,
-        // for the 7-bin sums of the bin below the band, whose gain the 3-bin
-        // average at its edge reads.
-        const double lo = cfg.denoiseLo / 1.4142135623730951;
+        // The band ramps in over the half octave below crackleFloorLo: the
+        // first bin is the first above crackleFloorLo / sqrt 2. Kept from four
+        // below it, for the 7-bin sums of the bin below the band, whose gain
+        // the 3-bin average at its edge reads.
+        const double lo = cfg.crackleFloorLo / 1.4142135623730951;
         int k0 = (int)floor(lo / binHz) + 1;
         if (k0 < 1) k0 = 1;
         if (k0 > M) k0 = M;
         m_nK0 = k0;
         m_nM0 = (k0 - 4 > 0) ? k0 - 4 : 0;
-        m_nNb = M - m_nM0 + 1;
-        const size_t nb = (size_t)m_nNb, W = (size_t)cfg.denoiseHist;
+        // The per-bin cut fades out over the half octave below crackleFloorHi
+        // and is none from its first bin kHi up. Its floor and gain are
+        // followed to four bins past kHi, so the 7-bin sums of the bins whose
+        // gains the last 3-bin average reads are whole. The shelf needs the
+        // transform to Nyquist and the floor through its band, 4-11 kHz (or
+        // 0.45 x the rate).
+        const bool hasHi = cfg.crackleFloorHi > 0.0;
+        int kTop = M;
+        if (hasHi) {
+            int kHi = (int)ceil(cfg.crackleFloorHi / binHz);
+            if (kHi < k0) kHi = k0;
+            kTop = (kHi + 4 < M) ? kHi + 4 : M;
+        }
+        m_nShelf = hasHi && cfg.crackleFloorShelf != 0 && kTop < M;
+        int kFollow = kTop;
+        if (m_nShelf) {
+            const double dHi = dmin(11000.0, 0.45 * cfg.rate);
+            int kd0 = (int)ceil(4000.0 / binHz), kd1 = (int)ceil(dHi / binHz) - 1;
+            if (kd0 < m_nM0) kd0 = m_nM0;
+            if (kd1 > M) kd1 = M;
+            if (kd1 < kd0) kd1 = kd0;
+            m_nKd0 = kd0 - m_nM0;
+            m_nKd1 = kd1 - m_nM0;
+            if (kd1 > kFollow) kFollow = kd1;
+        }
+        m_nNb = (m_nShelf ? M : kTop) - m_nM0 + 1;
+        m_nTop = kFollow - m_nM0 + 1;
+        const size_t nb = (size_t)m_nNb, nt = (size_t)m_nTop, W = (size_t)cfg.crackleFloorHist;
         m_nY.assign(ring, 0.0);
         m_nD.assign(ring, 0.0);
         m_nR.assign(ring, 0.0);
@@ -1805,20 +1835,26 @@ void Channel::configure(const Config & cfg) {
         m_nTwRe.assign((size_t)M + 1, 0.0);
         m_nTwIm.assign((size_t)M + 1, 0.0);
         m_nRev.assign((size_t)M, 0);
-        m_nP.assign((size_t)kDenoiseFrames * nb, 0.0);
-        m_nPb.assign((size_t)kDenoiseFrames * nb, 0.0);
-        m_nXRe.assign((size_t)kDenoiseFrames * nb, 0.0);
-        m_nXIm.assign((size_t)kDenoiseFrames * nb, 0.0);
-        m_nRing.assign(nb * W, 0.0);
-        m_nSorted.assign(nb * (W + 2), 0.0);
-        m_nFloor.assign(nb, 0.0);
-        m_nG.assign(nb, 1.0);
+        m_nP.assign((size_t)kFloorFrames * nb, 0.0);
+        m_nPb.assign((size_t)kFloorFrames * nb, 0.0);
+        m_nXRe.assign((size_t)kFloorFrames * nb, 0.0);
+        m_nXIm.assign((size_t)kFloorFrames * nb, 0.0);
+        m_nRing.assign(nt * W, 0.0);
+        m_nSorted.assign(nt * (W + 2), 0.0);
+        m_nFloor.assign(nt, 0.0);
+        m_nG.assign(nt, 1.0);
         m_nWf.assign(nb, 0.0);
+        m_nWs.assign(m_nShelf ? nb : 0, 0.0);
+        const double hiFade = hasHi ? cfg.crackleFloorHi / 1.4142135623730951 : 0.0;
         for (int b = 0; b < m_nNb; ++b) {
             const double f = (double)(m_nM0 + b) * binHz;
             const double w = log2(dmax(f, 1.0) / lo) / 0.5;
-            m_nWf[(size_t)b] = dmin(dmax(w, 0.0), 1.0);
+            const double in = dmin(dmax(w, 0.0), 1.0);
+            const double s = hasHi ? dmin(dmax(log2(dmax(f, 1.0) / hiFade) / 0.5, 0.0), 1.0) : 0.0;
+            m_nWf[(size_t)b] = in * (1.0 - s);
+            if (m_nShelf) m_nWs[(size_t)b] = in * s;
         }
+        m_nShelfRel = (cfg.crackleFloorShelfRelease > 0.0) ? exp(-(double)H / cfg.rate / cfg.crackleFloorShelfRelease) : 0.0;
         const double twoPi = 6.283185307179586;
         for (int i = 0; i < N; ++i)              // periodic Hann, as scipy's
             m_nWin[(size_t)i] = 0.5 - 0.5 * cos(twoPi * (double)i / (double)N);
@@ -1843,15 +1879,18 @@ void Channel::configure(const Config & cfg) {
             for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
             m_nRev[(size_t)i] = r;
         }
-        m_nRel = (cfg.denoiseRelease > 0.0) ? exp(-(double)H / cfg.rate / cfg.denoiseRelease) : 0.0;
+        m_nRel = (cfg.crackleFloorRelease > 0.0) ? exp(-(double)H / cfg.rate / cfg.crackleFloorRelease) : 0.0;
     } else {
         m_nN = 0;
         m_nNb = 0;
+        m_nTop = 0;
+        m_nShelf = false;
         m_nY.clear(); m_nD.clear(); m_nR.clear(); m_nWin.clear();
         m_nRe.clear(); m_nIm.clear(); m_nStRe.clear(); m_nStIm.clear();
         m_nTwRe.clear(); m_nTwIm.clear(); m_nRev.clear();
         m_nP.clear(); m_nPb.clear(); m_nXRe.clear(); m_nXIm.clear();
-        m_nRing.clear(); m_nSorted.clear(); m_nFloor.clear(); m_nG.clear(); m_nWf.clear();
+        m_nRing.clear(); m_nSorted.clear(); m_nFloor.clear(); m_nG.clear();
+        m_nWf.clear(); m_nWs.clear();
     }
 
     // The output ring. Between one pull and the next a caller can push maxBlock
@@ -1898,7 +1937,8 @@ size_t Channel::heapBytes() const {
             + m_nTwRe.capacity() + m_nTwIm.capacity()
             + m_nP.capacity() + m_nPb.capacity() + m_nXRe.capacity() + m_nXIm.capacity()
             + m_nRing.capacity() + m_nSorted.capacity()
-            + m_nFloor.capacity() + m_nG.capacity() + m_nWf.capacity()) * sizeof(double)
+            + m_nFloor.capacity() + m_nG.capacity() + m_nWf.capacity()
+            + m_nWs.capacity()) * sizeof(double)
            + m_flag.capacity() + m_strong.capacity() + m_stS.capacity() + m_dRun.capacity()
            + m_runs.capacity() * sizeof(int)
            + (m_bRev.capacity() + m_bCount.capacity() + m_fRev.capacity()
@@ -1983,6 +2023,9 @@ void Channel::reset() {
     m_nPos = 0;
     m_nTaken = 0;
     m_nCuts = 0;
+    m_nShelfG = 1.0;
+    m_nDHave = 0;
+    m_nDPos = 0;
     std::fill(m_dRun.begin(), m_dRun.end(), (uint8_t)0);
     m_dCuts = 0;
     m_fNextHop = (uint64_t)m_fN;
@@ -2778,13 +2821,13 @@ void Channel::bodyPush(double y, double d, uint8_t strong) {
 }
 
 void Channel::finishSample(double y, double d) {
-    if (m_cfg.denoise) denoisePush(y, d);
+    if (m_cfg.crackleFloor) crackleFloorPush(y, d);
     else emitMixed(y, d);
 }
 
-//! Every sample comes out Config::denoiseLatency samples after it went in, as
-//! in bodyPush(): the last frame covering it is cut two hops later.
-void Channel::denoisePush(double y, double d) {
+//! Every sample comes out Config::crackleFloorLatency samples after it went in,
+//! as in bodyPush(): the last frame covering it is cut two hops later.
+void Channel::crackleFloorPush(double y, double d) {
     const uint64_t t = m_nT++;
     const size_t i = (size_t)t & m_nMask;
     m_nY[i] = y;
@@ -2792,9 +2835,9 @@ void Channel::denoisePush(double y, double d) {
     m_nR[i] = 0.0;
     if (t + 1 == m_nNextHop) {
         m_nNextHop += (uint64_t)m_nH;
-        denoiseHop(t + 1 - (uint64_t)m_nN);
+        crackleFloorHop(t + 1 - (uint64_t)m_nN);
     }
-    const uint64_t D = (uint64_t)m_cfg.denoiseLatency;
+    const uint64_t D = (uint64_t)m_cfg.crackleFloorLatency;
     if (t >= D) {
         const size_t u = (size_t)(t - D) & m_nMask;
         emitMixed(m_nY[u] - m_nR[u], m_nD[u]);
@@ -2806,15 +2849,17 @@ void Channel::denoisePush(double y, double d) {
 //! averaged over. Transforms are packed as in fineHop(), and the band reaches
 //! the Nyquist bin as that stage's can. Under the key the fine stage follows;
 //! where it is shut, nothing is transformed - the floor's history waits where
-//! it was, and the five frames start again - and the output is the input to
-//! the bit. Only what is taken out is transformed back. See Config::denoise.
-void Channel::denoiseHop(uint64_t start) {
+//! it was, and the five frames start again - and the output is the input to the
+//! bit. Only what is taken out is transformed back. See Config::crackleFloor.
+void Channel::crackleFloorHop(uint64_t start) {
     const double key = dmax(m_bBeta, m_cKey);
     if (!(key > 0.0)) {
         m_nHist = 0;           // the frames have a hole; start them again
+        m_nDHave = 0;
+        m_nDPos = 0;
         return;
     }
-    const int N = m_nN, H = m_nH, M = N / 2, nb = m_nNb, m0 = m_nM0;
+    const int N = m_nN, H = m_nH, M = N / 2, nb = m_nNb, nt = m_nTop, m0 = m_nM0;
     const size_t mask = m_nMask, nbs = (size_t)nb;
     double * re = &m_nRe[0];
     double * im = &m_nIm[0];
@@ -2853,11 +2898,11 @@ void Channel::denoiseHop(uint64_t start) {
     }
     // The power over 7 bins, nearest at the Nyquist end (and at DC, which only
     // a very low rate reaches); from the bin below the band, whose gain the
-    // 3-bin average at the band's edge reads.
+    // 3-bin average at the band's edge reads, to the last followed bin.
     {
         double * Pb = &m_nPb[(size_t)slot * nbs];
         const int g0 = (m_nK0 - 1 - m0 > 0) ? m_nK0 - 1 - m0 : 0;
-        for (int b = g0; b < nb; ++b) {
+        for (int b = g0; b < nt; ++b) {
             double s = 0.0;
             for (int j = -3; j <= 3; ++j) {
                 int kb = b + j;
@@ -2868,51 +2913,52 @@ void Channel::denoiseHop(uint64_t start) {
             Pb[b] = s;
         }
     }
-    m_nSlot = (slot + 1) % (int)kDenoiseFrames;
-    if (m_nHist < (int)kDenoiseFrames) {
+    m_nSlot = (slot + 1) % (int)kFloorFrames;
+    if (m_nHist < (int)kFloorFrames) {
         ++m_nHist;
-        if (m_nHist < (int)kDenoiseFrames) return;
+        if (m_nHist < (int)kFloorFrames) return;
     }
 
     // The cut frame c is the middle of the five: slot (slot - 2) mod 5.
-    const double * Pq[kDenoiseFrames];
-    const double * Bq[kDenoiseFrames];
+    const double * Pq[kFloorFrames];
+    const double * Bq[kFloorFrames];
     double frameEnergy = 0.0;
-    for (int q = 0; q < (int)kDenoiseFrames; ++q) {
-        const int sl = (slot - q + (int)kDenoiseFrames) % (int)kDenoiseFrames;
+    for (int q = 0; q < (int)kFloorFrames; ++q) {
+        const int sl = (slot - q + (int)kFloorFrames) % (int)kFloorFrames;
         Pq[q] = &m_nP[(size_t)sl * nbs];
         Bq[q] = &m_nPb[(size_t)sl * nbs];
     }
-    const int cs = (slot - 2 + (int)kDenoiseFrames) % (int)kDenoiseFrames;
+    const int cs = (slot - 2 + (int)kFloorFrames) % (int)kFloorFrames;
     const double * cxr = &m_nXRe[(size_t)cs * nbs];
     const double * cxi = &m_nXIm[(size_t)cs * nbs];
     for (int b = 0; b < nb; ++b) frameEnergy += Pq[2][b];
 
     // The floor's history: every fourth cut frame, each bin's power averaged
     // over the five frames, into the bin's ring and its sorted copy - unless
-    // the frame is silent, which carries no floor (a host's pre-roll is).
-    // The window leaves out the stream's first second, and before two seconds
-    // are in, the first half of what has been taken: a record that fades in -
-    // the TangoTunes transfers do, over ~0.5 s from 30 dB under their crackle -
+    // the frame is silent, which carries no floor (a host's pre-roll is). The
+    // window leaves out the stream's first second, and before two seconds are
+    // in, the first half of what has been taken: a record that fades in - the
+    // TangoTunes transfers do, over ~0.5 s from 30 dB under their crackle -
     // would otherwise hold the quantile under the floor until the fade was a
     // tenth of the window, 5 s in, and the stage would start that late. Once
-    // denoiseHist values follow that second, it is the last denoiseHist.
-    const int W = m_cfg.denoiseHist;
-    const bool take = (m_nCutCount % (uint64_t)kDenoiseDec) == 0 && frameEnergy > 0.0;
+    // crackleFloorHist values follow that second, it is the last
+    // crackleFloorHist.
+    const int W = m_cfg.crackleFloorHist;
+    const bool take = (m_nCutCount % (uint64_t)kFloorDec) == 0 && frameEnergy > 0.0;
     const int g0 = (m_nK0 - 1 - m0 > 0) ? m_nK0 - 1 - m0 : 0;
     if (take) {
         ++m_nTaken;
         const int have = m_nHave, pos = m_nPos;
-        const uint64_t perSec = (uint64_t)(m_cfg.rate / (double)(m_nH * (int)kDenoiseDec));
+        const uint64_t perSec = (uint64_t)(m_cfg.rate / (double)(m_nH * (int)kFloorDec));
         const uint64_t drop = (m_nTaken / 2 < perSec) ? m_nTaken / 2 : perSec;
         int L = (m_nTaken - drop > (uint64_t)W) ? W : (int)(m_nTaken - drop);
         if (L < 1) L = 1;
         const bool grow = have < L;              // else one in, the oldest out
         const int n = grow ? have + 1 : have;
         const int old = (pos - have + W) % W;
-        int rank = (int)((double)n * m_cfg.denoiseQ);
+        int rank = (int)((double)n * m_cfg.crackleFloorQ);
         if (rank > n - 1) rank = n - 1;
-        for (int b = g0; b < nb; ++b) {
+        for (int b = g0; b < nt; ++b) {
             const double in = (Pq[0][b] + Pq[1][b] + Pq[2][b] + Pq[3][b] + Pq[4][b]) / 5.0;
             double * ring = &m_nRing[(size_t)b * (size_t)W];
             double * srt = &m_nSorted[(size_t)b * (size_t)(W + 2) + 1];   // a pad either side
@@ -2931,12 +2977,12 @@ void Channel::denoiseHop(uint64_t start) {
         if (grow) m_nHave = have + 1;
     }
     // The gain: Wiener's, on the power over 7 bins x 5 frames against beta x
-    // the floor, never below denoiseMin; it rises at once and falls back with
-    // the release.
+    // the floor, never below crackleFloorMin; it rises at once and falls back
+    // with the release.
     {
-        const double beta = m_cfg.denoiseBeta, gmin = m_cfg.denoiseMin, a = m_nRel;
+        const double beta = m_cfg.crackleFloorBeta, gmin = m_cfg.crackleFloorMin, a = m_nRel;
         const bool first = m_nCutCount == 0;
-        for (int b = g0; b < nb; ++b) {
+        for (int b = g0; b < nt; ++b) {
             const double s = (Bq[0][b] + Bq[1][b] + Bq[2][b] + Bq[3][b] + Bq[4][b]) / 35.0;
             const double nf = m_nFloor[(size_t)b] * beta + 1e-30;
             const double x = dmax(s / nf - 1.0, 0.0);
@@ -2945,17 +2991,55 @@ void Channel::denoiseHop(uint64_t start) {
             g = first ? g0v : dmax(g0v, a * g + (1.0 - a) * g0v);
         }
     }
+    // The shelf's gain (see Config::crackleFloorShelf): the newest frame's
+    // power over its band against the sum of the band's floors, the median of
+    // the last nine such ratios, smoothstep in the log from X0 to X1; it rises
+    // at once and falls back with its release.
+    if (m_nShelf) {
+        const double * Pn = Pq[0];
+        double sp = 0.0, sf = 0.0;
+        for (int b = m_nKd0; b <= m_nKd1; ++b) {
+            sp += Pn[b];
+            sf += m_nFloor[(size_t)b];
+        }
+        m_nDRing[m_nDPos] = sp / (sf + 1e-30);
+        m_nDPos = (m_nDPos + 1 < (int)kShelfMed) ? m_nDPos + 1 : 0;
+        if (m_nDHave < (int)kShelfMed) ++m_nDHave;
+        double v[kShelfMed];
+        const int n = m_nDHave;
+        for (int i = 0; i < n; ++i) {
+            const double d = m_nDRing[i];
+            int j = i;
+            while (j > 0 && v[j - 1] > d) { v[j] = v[j - 1]; --j; }
+            v[j] = d;
+        }
+        const double x0 = m_cfg.crackleFloorShelfX0, x1 = m_cfg.crackleFloorShelfX1;
+        double u = log(dmax(v[n / 2], 1e-300) / x0) / log(x1 / x0);
+        u = dmin(dmax(u, 0.0), 1.0);
+        u = u * u * (3.0 - 2.0 * u);
+        const double gs = m_cfg.crackleFloorShelfGain, g0s = gs + (1.0 - gs) * u, a = m_nShelfRel;
+        m_nShelfG = (m_nCutCount == 0) ? g0s : dmax(g0s, a * m_nShelfG + (1.0 - a) * g0s);
+    }
     ++m_nCutCount;
 
-    // The cut, scaled by the key.
+    // The cut, scaled by the key: the per-bin cut where its weight reaches,
+    // the shelf's above.
     memset(re, 0, (size_t)M * sizeof(double));
     memset(im, 0, (size_t)M * sizeof(double));
     bool any = false;
     const double * G = &m_nG[0];
+    const double * Wf = &m_nWf[0];
+    const double * Ws = m_nShelf ? &m_nWs[0] : nullptr;
+    const double shelfCut = 1.0 - m_nShelfG;
     for (int b = m_nK0 - m0; b < nb; ++b) {
-        // The gain averaged over 3 bins, nearest at the Nyquist end.
-        const double gs = (G[b - 1] + G[b] + G[(b + 1 < nb) ? b + 1 : b]) / 3.0;
-        const double cut = (1.0 - gs) * m_nWf[(size_t)b] * key;
+        double cut = 0.0;
+        if (Wf[b] > 0.0) {
+            // The gain averaged over 3 bins, nearest at the last followed bin.
+            const double gs = (G[b - 1] + G[b] + G[(b + 1 < nt) ? b + 1 : b]) / 3.0;
+            cut = (1.0 - gs) * Wf[b];
+        }
+        if (Ws) cut += shelfCut * Ws[b];
+        cut *= key;
         if (!(cut > 0.0)) continue;
         // Packed for the inverse as in fineHop(): bin k takes X + i X e^(2 pi
         // i k/N), its mirror the conjugates; the Nyquist bin is its own.

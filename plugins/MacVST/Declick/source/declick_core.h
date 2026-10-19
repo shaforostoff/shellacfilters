@@ -523,10 +523,11 @@ struct Config {
     double fanoFirst    = 0.5;       //!< seconds
     int    fanoBlocks   = 1;         //!< repair blocks per bin, from the rate
 
-    //! The denoise stage. Off: not user-facing, and not good enough to be on.
-    //! declick_cli turns it on with --denoise 1 and sweeps --denoise-lo,
-    //! --denoise-beta, --denoise-min, --denoise-q, --denoise-win and
-    //! --denoise-release.
+    //! The crackle floor stage (named `denoise` in b525d0a7f). Off: not
+    //! user-facing yet. declick_cli turns it on with --crackle-floor 1 and
+    //! sweeps --crackle-floor-lo, -hi, -beta, -min, -q, -win and -release, and
+    //! the shelf's --crackle-floor-shelf, -shelf-gain, -shelf-x0, -shelf-x1 and
+    //! -shelf-release.
     //! On a dense carpet - 600-900 runs a second on Pugliese's *El rodeo* and
     //! *El abrojito* - the crackle merges into a floor, heard as sizzle and
     //! frying, and the click stages cut only what stands above it. Against
@@ -535,13 +536,14 @@ struct Config {
     //! over the copy's; *El rodeo*'s was 12-13 dB over at 2-7 kHz.
     //! So this is a spectral denoiser on the finished output, under the key the
     //! fine stage follows. An STFT of ~23 ms (hop N/4, Hann either side); per
-    //! bin from denoiseLo up (ramped in over the half octave below), the noise
-    //! floor is the denoiseQ quantile of the bin's power, smoothed over 5
-    //! frames, every fourth frame over the last denoiseWin seconds. The gain is
-    //! Wiener's on the power averaged over 7 bins x 5 frames (~300 Hz x 29 ms)
-    //! against denoiseBeta x that floor, never below denoiseMin, rising at once
-    //! and falling back over denoiseRelease, then averaged over 3 bins: a
-    //! stretch of pure noise gets one steady cut rather than bins that twinkle.
+    //! bin from crackleFloorLo up (ramped in over the half octave below), the
+    //! noise floor is the crackleFloorQ quantile of the bin's power, smoothed
+    //! over 5 frames, every fourth frame over the last crackleFloorWin seconds.
+    //! The gain is Wiener's on the power averaged over 7 bins x 5 frames
+    //! (~300 Hz x 29 ms) against crackleFloorBeta x that floor, never below
+    //! crackleFloorMin, rising at once and falling back over
+    //! crackleFloorRelease, then averaged over 3 bins: a stretch of pure noise
+    //! gets one steady cut rather than bins that twinkle.
     //! The history leaves out the stream's first second (before 2 s, the first
     //! half of it): the TangoTunes transfers fade in over ~0.5 s from 30 dB
     //! under their crackle, and those frames held the quantile under the floor
@@ -551,21 +553,61 @@ struct Config {
     //! floor; this looks behind only, and takes 0.7 dB more. It brought
     //! *El rodeo*'s quiet floor from 12.2 to 9.6 dB over the copy at 2-3 kHz,
     //! for 1.1-1.9% of *El abrojito*'s music at 1-4.5 kHz (before 0.4-1.2%).
-    //! Heard as removing crackle, but leaving high-frequency noise that feels
-    //! unnatural - a digital denoiser's sound, on music played by people - and
-    //! so it stays off. Its buffers (~2.2 MB a channel at 44.1 kHz) are only
-    //! held while it is on, as the Wiener path's are; it adds denoiseLatency,
-    //! and where its key is open it costs ~75% more than the rest of the core.
-    int    denoise        = 0;
-    double denoiseLo      = 1000.0;
-    double denoiseBeta    = 1.2;
-    double denoiseMin     = 0.32;    //!< about -10 dB
-    double denoiseQ       = 0.1;
-    double denoiseWin     = 6.0;     //!< seconds of history
-    double denoiseRelease = 0.06;    //!< seconds
-    int    denoiseN       = 1024;    //!< from the sample rate alone
-    int    denoiseHist    = 259;     //!< floor values over denoiseWin, from the rate
-    int    denoiseLatency = 0;       //!< bodyDelay(denoiseN) if denoise, else 0
+    //! Over the whole band it was heard as removing crackle but leaving
+    //! high-frequency noise that feels unnatural. The reason is that above
+    //! ~5 kHz these records' music lies ~15 dB under the crackle, so the cut
+    //! there follows the crackle itself. At 6-10 kHz it opened 0.5 dB per dB
+    //! of the crackle's level on *El abrojito* (0.3 on *El rodeo*) and not
+    //! for the music, against the vinyl copies. It let the crackle's swells
+    //! through and pushed the bed between them down, which stretched the
+    //! band's level swings 1.3-1.5 times, as a 2-8 Hz wobble in 300 Hz
+    //! patches. Wiener's law alone does it to steady noise.
+    //! So the per-bin cut stops at crackleFloorHi: full up to
+    //! crackleFloorHi / sqrt 2, none from crackleFloorHi up, and the top is
+    //! left as it was. Of the four remedies heard, that was liked best.
+    //! crackleFloorHi <= 0 cuts to Nyquist as before.
+    //! Known, and one reason it stays off: where the key first opens
+    //! mid-song, the floor's history holds a few frames of the music itself.
+    //! *Y_ahora*'s opens at 82 s on loud music, and for ~3 s the stage takes
+    //! up to 0.8-1.5 dB of 1-3 kHz that follows the music's spectrum.
+    //! The floor is followed only as far up as the cut needs (~0.4 MB a
+    //! channel at 44.1 kHz rather than ~2.2 MB). The stage adds
+    //! crackleFloorLatency. Where its key is open it costs 20-30% more than
+    //! the rest of the core (the full band 80-95%).
+    int    crackleFloor        = 0;
+    double crackleFloorLo      = 1000.0;
+    double crackleFloorHi      = 4500.0;  //!< Hz; <= 0 for no upper edge
+    double crackleFloorBeta    = 1.2;
+    double crackleFloorMin     = 0.32;    //!< about -10 dB
+    double crackleFloorQ       = 0.1;
+    double crackleFloorWin     = 6.0;     //!< seconds of history
+    double crackleFloorRelease = 0.06;    //!< seconds
+    int    crackleFloorN       = 1024;    //!< from the sample rate alone
+    int    crackleFloorHist    = 259;     //!< floor values over crackleFloorWin
+    int    crackleFloorLatency = 0;       //!< bodyDelay(crackleFloorN), if on
+
+    //! The top shelf: off, heard and not chosen (the top untouched was liked
+    //! better), kept as an option. Above crackleFloorHi (crossfading over the
+    //! same half octave) every bin gets one gain, so nothing moves in patches.
+    //! The gain is crackleFloorShelfGain while the 4-11 kHz band as a whole
+    //! sits near its floor (the sum of its power over the sum of its floors),
+    //! and it opens to 1 from crackleFloorShelfX0 to crackleFloorShelfX1 times
+    //! that, smoothstep in the log. The ratio is a median over 9 frames, so a
+    //! crackle shorter than ~25 ms cannot open it. The 9 frames end two hops
+    //! after the cut frame, where the prototype's were centred on it, so the
+    //! shelf opens up to 12 ms late. It rises at once and falls back over
+    //! crackleFloorShelfRelease.
+    //! It takes the top's crackle down 1.5-2.4 dB with the music taken as
+    //! A's. But it still opens a little with the crackle (0.08-0.17 dB per
+    //! dB, the level swings 1.08-1.17 times), as anything driven by the top
+    //! band's own level does; only a steady cut does not, and that is a
+    //! treble cut (-4 dB took 29-39% of the 4.5-7 kHz music). Needs
+    //! crackleFloorHi > 0; it follows the floor up to 11 kHz.
+    int    crackleFloorShelf        = 0;
+    double crackleFloorShelfGain    = 0.63;   //!< about -4 dB
+    double crackleFloorShelfX0      = 5.0;
+    double crackleFloorShelfX1      = 40.0;
+    double crackleFloorShelfRelease = 0.15;   //!< seconds
 
     double rate         = 44100.0;   //!< the sample rate compute() was given
 
@@ -616,13 +658,13 @@ struct Config {
     //! can be swapped into a running Channel with retune() instead of
     //! configure(), which reallocates and therefore resets.
     //!
-    //! Only `order`, `maxRun`, `madWindow`, `body`, `bodyN`, `fineN`,
-    //! `fineM`, `microN`, `microM`, `mid`, `midLo`, `flankStage`,
-    //! `flankHalf` and the denoise stage's `denoise`, `denoiseN`,
-    //! `denoiseLo` and `denoiseHist` size anything or set the latency (`pad`
-    //! and `latency` are derived from them); thresholds, depth, wet, delta,
-    //! passes and whether the fine and micro stages run are read per block and
-    //! can change under a live stream.
+    //! Only `order`, `maxRun`, `madWindow`, `body`, `bodyN`, `fineN`, `fineM`,
+    //! `microN`, `microM`, `mid`, `midLo`, `flankStage`, `flankHalf` and the
+    //! crackle floor stage's `crackleFloor`, `crackleFloorN`, `crackleFloorLo`,
+    //! `crackleFloorHi`, `crackleFloorShelf` and `crackleFloorHist` size
+    //! anything or set the latency (`pad` and `latency` are derived from them);
+    //! thresholds, depth, wet, delta, passes and whether the fine and micro
+    //! stages run are read per block and can change under a live stream.
     bool structurallyEquals(const Config & o) const {
         return order == o.order && maxRun == o.maxRun && madWindow == o.madWindow
             && body == o.body && bodyN == o.bodyN && fineN == o.fineN
@@ -630,8 +672,9 @@ struct Config {
             && mid == o.mid && midLo == o.midLo
             && flankStage == o.flankStage
             && flankHalf == o.flankHalf && flankHz == o.flankHz
-            && denoise == o.denoise && denoiseN == o.denoiseN
-            && denoiseLo == o.denoiseLo && denoiseHist == o.denoiseHist && rate == o.rate;
+            && crackleFloor == o.crackleFloor && crackleFloorN == o.crackleFloorN
+            && crackleFloorLo == o.crackleFloorLo && crackleFloorHi == o.crackleFloorHi
+            && crackleFloorShelf == o.crackleFloorShelf && crackleFloorHist == o.crackleFloorHist && rate == o.rate;
     }
 };
 
@@ -809,9 +852,9 @@ public:
     //! Config::mid.
     uint64_t midFrames() const { return m_dCuts; }
 
-    //! Diagnostics for the denoise stage: frames it took something from. See
-    //! Config::denoise.
-    uint64_t denoiseFrames() const { return m_nCuts; }
+    //! Diagnostics for the crackle floor stage: frames it took something from.
+    //! See Config::crackleFloor.
+    uint64_t crackleFloorFrames() const { return m_nCuts; }
 
     //! Diagnostics: total bytes this channel is holding. Nothing in the
     //! processing path adds to this - see the buffer envelope in Config.
@@ -842,14 +885,14 @@ private:
     double fanoKey(double K, double F, double wf) const;
     //! The Fano factor of n bins whose counts sum to s1, their squares to s2.
     static double fanoOf(double s1, double s2, double n);
-    //! A finished sample: into the denoise stage if it is on, else out.
+    //! A finished sample: into the crackle floor stage if it is on, else out.
     void finishSample(double y, double d);
-    //! One finished sample and its dry counterpart, into the denoise stage;
-    //! out denoiseLatency samples later. See Config::denoise.
-    void denoisePush(double y, double d);
-    //! The denoise stage's frame starting at its sample `start` is complete:
-    //! transform it, and cut the one two hops before it.
-    void denoiseHop(uint64_t start);
+    //! One finished sample and its dry counterpart, into the crackle floor
+    //! stage; out crackleFloorLatency samples later. See Config::crackleFloor.
+    void crackleFloorPush(double y, double d);
+    //! The crackle floor stage's frame starting at its sample `start` is
+    //! complete: transform it, and cut the one two hops before it.
+    void crackleFloorHop(uint64_t start);
     //! The fine stage's frame starting at stage sample `start` is complete:
     //! transform it, and cut the one fineM hops before it. See Config::fine.
     void fineHop(uint64_t start);
@@ -1131,18 +1174,26 @@ private:
     double m_cTotS1 = 0.0, m_cTotS2 = 0.0, m_cTotBinN = 0.0;
     double m_cFRing[kCarpetMax];
 
-    //! The denoise stage; see Config::denoise. Rings of the finished audio
-    //! (m_nY), its dry counterpart (m_nD) and what the stage removes (m_nR),
-    //! indexed by its sample count m_nT. Per kept bin, m_nM0 .. N/2: the last
-    //! five frames' power, transform and power summed over 7 bins; the floor's
-    //! history as a ring and kept sorted; the floor; the gain with its release;
-    //! the weight that ramps the band in. Held only while the stage is on.
-    enum { kDenoiseFrames = 5, kDenoiseDec = 4 };
+    //! The crackle floor stage; see Config::crackleFloor. Rings of the finished
+    //! audio (m_nY), its dry counterpart (m_nD) and what the stage removes
+    //! (m_nR), indexed by its sample count m_nT. Per kept bin, m_nM0 .. m_nM0 +
+    //! m_nNb - 1: the last five frames' transform and power, the per-bin cut's
+    //! weight (the band ramped in and out) and the shelf's. Per followed bin,
+    //! the first m_nTop of those: the power summed over 7 bins, the floor's
+    //! history as a ring and kept sorted, the floor, the gain with its
+    //! release. The shelf: its bins m_nKd0 .. m_nKd1 (relative), the last
+    //! kShelfMed ratios, its gain. Held only while the stage is on.
+    enum { kFloorFrames = 5, kFloorDec = 4, kShelfMed = 9 };
     int    m_nN = 0, m_nH = 0;
     size_t m_nMask = 0;
     uint64_t m_nT = 0;
     uint64_t m_nNextHop = 0;      //!< as m_bNextHop
-    int    m_nK0 = 0, m_nM0 = 0, m_nNb = 0;
+    int    m_nK0 = 0, m_nM0 = 0, m_nNb = 0, m_nTop = 0;
+    bool   m_nShelf = false;
+    int    m_nKd0 = 0, m_nKd1 = 0;
+    double m_nShelfG = 1.0, m_nShelfRel = 0.0;
+    double m_nDRing[kShelfMed];
+    int    m_nDHave = 0, m_nDPos = 0;
     int    m_nHist = 0;           //!< consecutive frames transformed, to 5
     int    m_nSlot = 0;
     uint64_t m_nCutCount = 0;     //!< frames whose gain has been worked out
@@ -1157,10 +1208,11 @@ private:
     std::vector<double> m_nStRe, m_nStIm;
     std::vector<double> m_nTwRe, m_nTwIm;
     std::vector<int>    m_nRev;
-    std::vector<double> m_nP, m_nPb, m_nXRe, m_nXIm;   //!< kDenoiseFrames x m_nNb
-    std::vector<double> m_nRing;     //!< m_nNb x denoiseHist
-    std::vector<double> m_nSorted;   //!< m_nNb x (denoiseHist + 2), a place of pad either side
-    std::vector<double> m_nFloor, m_nG, m_nWf;   //!< m_nNb
+    std::vector<double> m_nP, m_nPb, m_nXRe, m_nXIm;   //!< kFloorFrames x m_nNb
+    std::vector<double> m_nRing;     //!< m_nTop x crackleFloorHist
+    std::vector<double> m_nSorted;   //!< m_nTop x (crackleFloorHist + 2), padded either side
+    std::vector<double> m_nFloor, m_nG;   //!< m_nTop
+    std::vector<double> m_nWf, m_nWs;     //!< m_nNb
 
     std::vector<double> m_madRing; //!< |forward residual| history
     int    m_madPos = 0;

@@ -2165,7 +2165,7 @@ twenty numbers a second. On the Zen 4, best of 15 interleaved runs:
   * *El rodeo*: 135× → 104×, about *El abrojito*'s 94×;
   * *El abrojito*, already open: 94× → 92×.
 
-### The floor under dense crackle: a denoise stage (off)
+### The floor under dense crackle: the crackle floor stage (off)
 
 **What was heard.** After the key above, *El rodeo* and *El abrojito* still
 kept "the majority of crackle": a fine sizzle, and a duller frying. The user
@@ -2182,12 +2182,16 @@ heard the decrackled version keep too much as well.
 * **The body stage**, opened by the carpet key, took 6–9 % of the music at
   1–3 kHz against the copies. It stays on the body key.
 
-**The stage** (`Config::denoise`, `--denoise 1`): a spectral denoiser on the
-finished output, under the key the fine stage follows.
+**The stage** (`Config::crackleFloor`, `--crackle-floor 1`; named `denoise`
+in b525d0a7f): a spectral denoiser on the finished output, under the key the
+fine stage follows. It is named for what it lowers, the floor that dense
+crackle forms. It is not a general denoiser: it leaves the hiss above 4.5 kHz
+and everything under 1 kHz, and it rests where the key is shut.
 
 * **Frames:** an STFT of ~23 ms (1024 at 44.1 kHz), hop N/4, Hann either side.
-* **The band:** from `denoiseLo` (1 kHz) up, ramped in over the half octave
-  below.
+* **The band:** from `crackleFloorLo` (1 kHz), ramped in over the half octave
+  below, to `crackleFloorHi` (4.5 kHz), faded out over the half octave below it.
+  The top is left as it was; see below.
 * **The noise floor:** per bin, the 10th percentile of its power, smoothed
   over 5 frames, every fourth frame over the last 6 s.
   * A record that fades in would hold that quantile under the floor for
@@ -2210,9 +2214,66 @@ finished output, under the key the fine stage follows.
 * **Folder 6:** the smoothed gain above, at −10 dB ("A").
 * **Folder 7:** A's removal kept at −3 to −20 dB rather than removed. "−10
   or even less loud" was liked better: the sound should breathe.
-* **The stage as committed** is A, the full removal. Heard as taking crackle,
-  but leaving high-frequency noise that feels unnatural on music played by
-  people. So it is off.
+* **The stage as first committed** was A, the full removal, over the whole
+  band. Heard as taking crackle, but leaving high-frequency noise that feels
+  unnatural on music played by people. So it is off.
+* **Folder 8:** why the top sounds unnatural, and four remedies. The top
+  left untouched was liked best, and that is now the default.
+
+**The top band: left as it was.** The user: "usually it doesn't bother me,
+but when the Denoise stage is applied, the leftover noise feels unnatural".
+
+* **Nothing near 8 kHz is spared.** In quiet passages the stage took more
+  from the top than from the middle (*El abrojito* −2 / −3.4 dB at 6.3–10 /
+  10–16 kHz, −0.4 dB at 2–4 kHz).
+* **It made the hiss uneven.** It stretched the 6–10 kHz band's level swings
+  1.45 times on *El abrojito* and 1.27 times on *El rodeo*.
+  * Most of that is a 2–8 Hz wobble, 1.44 → 2.14 dB rms on *El abrojito*
+    (its vinyl copy 1.22).
+  * It comes in patches of ~300 Hz, the gain's 7-bin box.
+* **On steady noise the law alone does it.** With no clicks or music,
+  Wiener's gain against 1.2 × the 10th-percentile floor puts the hiss at
+  1.7–3.4 × that floor, where the cut runs from −10 to −4 dB. So the cut
+  follows the hiss's own slow ups and downs and doubles the wobble (0.34 →
+  0.63 dB at 8 kHz).
+* **On the records it follows the crackle, not the music.** Above ~5 kHz the
+  music lies ~15 dB under the crackle, so the stage cannot see it.
+  * The vinyl copy stood in for the music, and the `.m4a` minus the copy for
+    the crackle.
+  * Against those, the 6–10 kHz cut opened 0.51 dB per dB of the crackle's
+    level on *El abrojito* (0.30 on *El rodeo*), and −0.01 to −0.03 per dB of
+    the music.
+  * It let the crackle's swells through and pushed the bed between them down.
+* **Anything that follows the top band's own level does this:**
+
+| the top band (*El abrojito* / *El rodeo*) | dB opened per dB of crackle | swings stretched | music taken, 4.5–7 kHz |
+|---|---|---|---|
+| A | 0.51 / 0.30 | 1.45 / 1.27 | 2.2 / 1.9 % |
+| a flat −6 dB up to 6× the floor, open by 24× | 0.39 / 0.19 | 1.38 / 1.23 | 2.1 / 1.7 % |
+| the same on a 9-frame median, opening from 16× | 0.17 / 0.10 | 1.19 / 1.14 | 3.7 / 2.8 % |
+| one smooth shelf (below) | 0.17 / 0.08 | 1.17 / 1.08 | 2.1 / 2.0 % |
+| a steady −4 dB | 0 | 1.00 | 39 / 29 % |
+| left as it was | 0 | 1.00 | 1.6 / 1.5 % |
+
+  A steady cut is a treble cut. So the top is left as it was:
+  `crackleFloorHi = 4500`; `0` cuts to Nyquist as before.
+
+**The top shelf (`crackleFloorShelf`, off).** Heard in folder 8, and not chosen;
+kept as an option.
+
+* Above `crackleFloorHi`, every bin gets one gain, so nothing moves in patches.
+* The gain is −4 dB (`crackleFloorShelfGain`) while the 4–11 kHz band as a whole
+  sits near its floor: its power summed, over its floors summed.
+* It opens to 0 dB from 5 to 40 times that (`crackleFloorShelfX0`, `X1`),
+  smoothstep in the log.
+* The ratio is a median over 9 frames, so a crackle shorter than ~25 ms
+  cannot open it. The 9 frames end two hops after the cut frame, so it opens
+  up to 12 ms late; the prototype's were centred on it.
+* It rises at once and falls back over 150 ms (`crackleFloorShelfRelease`).
+* It takes 1.5–2.4 dB of the top's crackle, with the music taken as A's.
+  But it still opens a little with the crackle, as the table shows.
+* With it, the floor is followed up to 11 kHz, and the stage holds and costs
+  about what the full band did.
 
 **Against the prototype heard.**
 
@@ -2231,18 +2292,33 @@ finished output, under the key the fine stage follows.
 
 **What it holds.**
 
-* **Buffers** only while it is on, as the Wiener path's are: ~2.2 MB a
-  channel at 44.1 kHz, mostly the floor's history and its sorted copy.
-  Turning it on or off is a structural change, through `configure()`.
-* **Latency:** `bodyDelay(denoiseN)` more, 1536 samples at 44.1 kHz.
-* **Off,** the output is the build before it to the bit.
+* **Buffers** only while it is on, as the Wiener path's are.
+  * It needs ~0.4 MB a channel at 44.1 kHz, mostly the floor's history and
+    its sorted copy, for the ~100 bins up to just past 4.5 kHz.
+  * It needs ~1 MB with the shelf, and ~2.2 MB with no upper edge.
+  * Turning it, its edge or its shelf on or off is a structural change,
+    through `configure()`.
+* **Latency:** `bodyDelay(crackleFloorN)` more, 1536 samples at 44.1 kHz.
+* **Off,** the output is the build before it to the bit; so is it with
+  `crackleFloorHi = 0`.
 * **Where its key is shut,** it transforms nothing: the floor's history waits
   and the five frames start again when it opens.
-* **CPU when on** (Zen 4, best of 7 interleaved):
-  * key shut: *Pa que bailen* 161× → 157×;
-  * key open: *El abrojito* 92× → 52×, *El rodeo* 104× → 56×.
-  * Most of that is the floor's history: a sorted window of 259 per bin,
-    for ~500 bins, every fourth hop.
+  * So where the key first opens mid-song, that history holds only a few
+    frames, and they are the music's.
+  * *Y_ahora*'s key opens at 82 s, on loud music. For ~3 s the stage takes
+    up to 0.8–1.5 dB of 1–3 kHz, and what it takes follows the music's
+    spectrum (r 0.80).
+  * Known, and one reason the stage stays off.
+* **CPU when on** (Zen 4, realtime multiples, best of 7 interleaved):
+
+| | off | on (top untouched) | + shelf | no upper edge |
+|---|---|---|---|---|
+| *Pa que bailen*, 60 s (keys shut) | 184× | 171× | 170× | 170× |
+| *El rodeo* | 113× | 89× | 74× | 58× |
+| *El abrojito* | 96× | 81× | 67× | 54× |
+
+  Most of the cost is the floor's history: a sorted window of 259 values per
+  followed bin, every fourth hop.
 
 ---
 

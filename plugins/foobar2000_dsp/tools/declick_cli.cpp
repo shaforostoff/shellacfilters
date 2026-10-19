@@ -104,14 +104,35 @@ void usage() {
         "  --fano1 <x>        ... and where it is fully open (default 1.2)\n"
         "  --fano-first <s>   Before carpet-min, from this many seconds on, by the runs\n"
         "                     so far (default 0.5)\n"
-        "  --denoise <0|1>    A spectral denoiser on the output, under the fine stage's\n"
-        "                     key; leaves an unnatural high-frequency noise (default 0)\n"
-        "  --denoise-lo <Hz>  Where it starts, ramped in over the half octave below (default 1000)\n"
-        "  --denoise-beta <x> Cut against this many times the noise floor (default 1.2)\n"
-        "  --denoise-min <0..1> Deepest cut of a bin, as a gain (default 0.32)\n"
-        "  --denoise-q <0..1> Quantile of a bin's power that is its floor (default 0.1)\n"
-        "  --denoise-win <s>  Seconds of history the floor is taken over (default 6)\n"
-        "  --denoise-release <s> Time constant the cut comes back with (default 0.06)\n");
+        "  --crackle-floor <0|1>\n"
+        "                     Lowers the floor dense crackle forms, a spectral denoiser\n"
+        "                     on the output under the fine stage's key (default 0)\n"
+        "  --crackle-floor-lo <Hz>\n"
+        "                     Where it starts, ramped in over the half octave below (default 1000)\n"
+        "  --crackle-floor-hi <Hz>\n"
+        "                     Where it stops, faded out over the half octave below; the top\n"
+        "                     is left as it was. 0: to Nyquist (default 4500)\n"
+        "  --crackle-floor-beta <x>\n"
+        "                     Cut against this many times the noise floor (default 1.2)\n"
+        "  --crackle-floor-min <0..1>\n"
+        "                     Deepest cut of a bin, as a gain (default 0.32)\n"
+        "  --crackle-floor-q <0..1>\n"
+        "                     Quantile of a bin's power that is its floor (default 0.1)\n"
+        "  --crackle-floor-win <s>\n"
+        "                     Seconds of history the floor is taken over (default 6)\n"
+        "  --crackle-floor-release <s>\n"
+        "                     Time constant the cut comes back with (default 0.06)\n"
+        "  --crackle-floor-shelf <0|1>\n"
+        "                     Above crackle-floor-hi, one smooth shelf that opens with the\n"
+        "                     music there (default 0)\n"
+        "  --crackle-floor-shelf-gain <0..1>\n"
+        "                     The shelf's cut, as a gain (default 0.63)\n"
+        "  --crackle-floor-shelf-x0 <x>\n"
+        "                     It starts to open at this many times its band's floor (default 5)\n"
+        "  --crackle-floor-shelf-x1 <x>\n"
+        "                     ... and is fully open at this many (default 40)\n"
+        "  --crackle-floor-shelf-release <s>\n"
+        "                     Time constant it closes with (default 0.15)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -146,8 +167,10 @@ int main(int argc, char ** argv) {
     float mid = -1.0f, midLo = -1.0f, midPeak = -1.0f, midP0 = -1.0f, midP1 = -1.0f, midYield = -1.0f;
     float carpetFirst = -1.0f;
     float carpetFano = -1.0f, fanoRate0 = -1.0f, fanoRate1 = -1.0f, fano0 = -1.0f, fano1 = -1.0f, fanoFirst = -1.0f;
-    float denoise = -1.0f, denoiseLo = -1.0f, denoiseBeta = -1.0f, denoiseMin = -1.0f;
-    float denoiseQ = -1.0f, denoiseWin = -1.0f, denoiseRelease = -1.0f;
+    float crackleFloor = -1.0f, crackleFloorLo = -1.0f, crackleFloorBeta = -1.0f, crackleFloorMin = -1.0f;
+    float crackleFloorQ = -1.0f, crackleFloorWin = -1.0f, crackleFloorRelease = -1.0f, crackleFloorHi = -1.0f;
+    float crackleFloorShelf = -1.0f, crackleFloorShelfGain = -1.0f, crackleFloorShelfX0 = -1.0f;
+    float crackleFloorShelfX1 = -1.0f, crackleFloorShelfRelease = -1.0f;
     float flank = -1.0f, flankPadMs = -1.0f, flankHz = -1.0f, flankEdge0 = -1.0f, flankEdge1 = -1.0f;
     float flankShut = -1.0f, flankWide = -1.0f, flankShutGain = -1.0f, flankHold = -1.0f;
     float carpet = -1.0f, carpetPeak = -1.0f, carpetWin = -1.0f, carpetQ = -1.0f;
@@ -205,13 +228,19 @@ int main(int argc, char ** argv) {
         else if (a == "--fano0") fano0 = v;
         else if (a == "--fano1") fano1 = v;
         else if (a == "--fano-first") fanoFirst = v;
-        else if (a == "--denoise") denoise = v;
-        else if (a == "--denoise-lo") denoiseLo = v;
-        else if (a == "--denoise-beta") denoiseBeta = v;
-        else if (a == "--denoise-min") denoiseMin = v;
-        else if (a == "--denoise-q") denoiseQ = v;
-        else if (a == "--denoise-win") denoiseWin = v;
-        else if (a == "--denoise-release") denoiseRelease = v;
+        else if (a == "--crackle-floor") crackleFloor = v;
+        else if (a == "--crackle-floor-lo") crackleFloorLo = v;
+        else if (a == "--crackle-floor-beta") crackleFloorBeta = v;
+        else if (a == "--crackle-floor-min") crackleFloorMin = v;
+        else if (a == "--crackle-floor-q") crackleFloorQ = v;
+        else if (a == "--crackle-floor-win") crackleFloorWin = v;
+        else if (a == "--crackle-floor-release") crackleFloorRelease = v;
+        else if (a == "--crackle-floor-hi") crackleFloorHi = v;
+        else if (a == "--crackle-floor-shelf") crackleFloorShelf = v;
+        else if (a == "--crackle-floor-shelf-gain") crackleFloorShelfGain = v;
+        else if (a == "--crackle-floor-shelf-x0") crackleFloorShelfX0 = v;
+        else if (a == "--crackle-floor-shelf-x1") crackleFloorShelfX1 = v;
+        else if (a == "--crackle-floor-shelf-release") crackleFloorShelfRelease = v;
         else if (a == "--flank") flank = v;
         else if (a == "--flank-pad-ms") flankPadMs = v;
         else if (a == "--flank-hz") flankHz = v;
@@ -285,13 +314,19 @@ int main(int argc, char ** argv) {
     if (fano0 >= 0.0f) cfg.fano0 = fano0;
     if (fano1 >= 0.0f) cfg.fano1 = fano1;
     if (fanoFirst >= 0.0f) cfg.fanoFirst = fanoFirst;
-    if (denoise >= 0.0f) cfg.denoise = (int)denoise;
-    if (denoiseLo >= 0.0f) cfg.denoiseLo = denoiseLo;
-    if (denoiseBeta >= 0.0f) cfg.denoiseBeta = denoiseBeta;
-    if (denoiseMin >= 0.0f) cfg.denoiseMin = denoiseMin;
-    if (denoiseQ >= 0.0f) cfg.denoiseQ = denoiseQ;
-    if (denoiseWin >= 0.0f) cfg.denoiseWin = denoiseWin;
-    if (denoiseRelease >= 0.0f) cfg.denoiseRelease = denoiseRelease;
+    if (crackleFloor >= 0.0f) cfg.crackleFloor = (int)crackleFloor;
+    if (crackleFloorLo >= 0.0f) cfg.crackleFloorLo = crackleFloorLo;
+    if (crackleFloorBeta >= 0.0f) cfg.crackleFloorBeta = crackleFloorBeta;
+    if (crackleFloorMin >= 0.0f) cfg.crackleFloorMin = crackleFloorMin;
+    if (crackleFloorQ >= 0.0f) cfg.crackleFloorQ = crackleFloorQ;
+    if (crackleFloorWin >= 0.0f) cfg.crackleFloorWin = crackleFloorWin;
+    if (crackleFloorRelease >= 0.0f) cfg.crackleFloorRelease = crackleFloorRelease;
+    if (crackleFloorHi >= 0.0f) cfg.crackleFloorHi = crackleFloorHi;
+    if (crackleFloorShelf >= 0.0f) cfg.crackleFloorShelf = (int)crackleFloorShelf;
+    if (crackleFloorShelfGain >= 0.0f) cfg.crackleFloorShelfGain = crackleFloorShelfGain;
+    if (crackleFloorShelfX0 >= 0.0f) cfg.crackleFloorShelfX0 = crackleFloorShelfX0;
+    if (crackleFloorShelfX1 >= 0.0f) cfg.crackleFloorShelfX1 = crackleFloorShelfX1;
+    if (crackleFloorShelfRelease >= 0.0f) cfg.crackleFloorShelfRelease = crackleFloorShelfRelease;
     if (flank >= 0.0f) cfg.flank = (int)flank;
     if (flankPadMs >= 0.0f) cfg.flankPadMs = flankPadMs;
     if (flankHz >= 0.0f) cfg.flankHz = flankHz;
@@ -369,7 +404,7 @@ int main(int argc, char ** argv) {
     }
 
     uint64_t repaired = 0, seen = 0, clamped = 0, reclamped = 0, flSpans = 0, flSkipped = 0;
-    uint64_t carpetOpen = 0, midCuts = 0, denoiseCuts = 0;
+    uint64_t carpetOpen = 0, midCuts = 0, crackleFloorCuts = 0;
     for (unsigned c = 0; c < channels; ++c) {
         repaired += chans[c]->repairedSamples();
         seen += chans[c]->seenSamples();
@@ -379,7 +414,7 @@ int main(int argc, char ** argv) {
         flSkipped += chans[c]->flankSkipped();
         carpetOpen += chans[c]->carpetOpenBlocks();
         midCuts += chans[c]->midFrames();
-        denoiseCuts += chans[c]->denoiseFrames();
+        crackleFloorCuts += chans[c]->crackleFloorFrames();
     }
 
     if (delta) {
@@ -429,9 +464,9 @@ int main(int argc, char ** argv) {
         if (cfg.mid && cfg.fine) {
             printf("  mid: %llu frames cut\n", (unsigned long long)midCuts);
         }
-        // The denoise stage: frames it cut something from.
-        if (cfg.denoise) {
-            printf("  denoise: %llu frames cut\n", (unsigned long long)denoiseCuts);
+        // The crackle floor stage: frames it cut something from.
+        if (cfg.crackleFloor) {
+            printf("  crackle floor: %llu frames cut\n", (unsigned long long)crackleFloorCuts);
         }
     }
     return 0;

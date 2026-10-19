@@ -339,23 +339,26 @@ int main() {
         ch.configure(cfg);
     }
 
-    // The denoise stage, off by default, runs on the output under the key the
+    // The crackle floor stage, off by default, runs on the output under the key the
     // fine stage follows, which the clicks above hold open. It holds its
     // buffers only while it is on, so turning it on is a configure() - outside
     // the counted region, like the rest of this test's setup - and after that
     // it must cut frames and allocate nothing.
-    {
+    // Then with its top shelf, which follows the floor further up and keeps a
+    // ring of its ratios.
+    for (int shelf = 0; shelf <= 1; ++shelf) {
         Config cn;
-        cn.denoise = 1;
+        cn.crackleFloor = 1;
+        cn.crackleFloorShelf = shelf;
         cn.compute(Params::defaults(), rate);
         ch.configure(cn);
         ch.prime();
         arm();
         perSample(ch, sig, 0, 6 * R);
-        requireQuiet("the denoise stage, under the body key");
-        const bool ran = ch.denoiseFrames() > 0;
+        requireQuiet(shelf ? "the crackle floor stage with its shelf" : "the crackle floor stage, under the body key");
+        const bool ran = ch.crackleFloorFrames() > 0;
         printf("  %-50s %-4s %llu frames cut\n", "... and it ran",
-               ran ? "ok" : "FAIL", (unsigned long long)ch.denoiseFrames());
+               ran ? "ok" : "FAIL", (unsigned long long)ch.crackleFloorFrames());
         if (!ran) ++g_failures;
         ch.configure(cfg);
     }
