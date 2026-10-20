@@ -320,7 +320,7 @@ private:
 
         int64_t from = pos - warm;
         if (from < 0) from = 0;
-        engine.discontinuity();
+        engine.discontinuity(from);
         m_inPos = from;
         m_cache.restart(from);
         m_primed = true;
@@ -344,6 +344,12 @@ private:
         const int64_t needIn = wantEnd + engine.lookahead() - m_inPos;
         size_t frames = (size_t)std::min<int64_t>(
             std::max<int64_t>(needIn, (int64_t)kMinPushFrames), (int64_t)kSliceFrames);
+
+        // A slice may not cross the place the engine wants the input to stop
+        // at, for one slice: Declick's warm start swaps a caught-up pair in
+        // there (declick_vdj_warm.h). Shorter, but still progress.
+        const int64_t hold = engine.holdAt();
+        if (hold > m_inPos && hold - m_inPos < (int64_t)frames) frames = (size_t)(hold - m_inPos);
 
         const short * raw = NULL;
         if (src.read((int)m_inPos, (int)frames, &raw) && raw != NULL) {
@@ -390,6 +396,9 @@ private:
             m_cache.append(m_stage.data(), k);
             m_produced += (int64_t)k;
         }
+
+        // Everything fed has been taken that can be: where the stream stands.
+        engine.reached(m_inPos, m_cache.end());
     }
 
     OutputCache m_cache;

@@ -66,9 +66,10 @@ enum { kMaxSliceFrames = 4096 };
  *      bool setRate(double sampleRate);
  *
  *      void   reset();          //!< a new record: forget everything
- *      void   discontinuity();  //!< a seek: keep what is still true of the
- *                               //!< record, drop what is only true of the
- *                               //!< audio that was in flight
+ *      //! A seek: keep what is still true of the record, drop what is only
+ *      //! true of the audio that was in flight. The stream starts again at
+ *      //! song frame `from`.
+ *      void   discontinuity(int64_t from);
  *      int    lookahead() const;              //!< frames held before output
  *
  *      //! Frames a restart should run before the audio that was asked for, so
@@ -79,6 +80,15 @@ enum { kMaxSliceFrames = 4096 };
  *      void   push(const double * interleaved, size_t frames);
  *      size_t available() const;
  *      void   pull(double * interleaved, size_t frames);
+ *
+ *      //! Buffer wrapper only. A song frame the next slice of input may not
+ *      //! run past, or -1 for none; and after every slice, once its output
+ *      //! has been taken, where the stream stands: input fed up to `in`,
+ *      //! output taken up to `out`. Declick's warm start uses the pair to
+ *      //! swap a caught-up channel pair in at an exact frame
+ *      //! (declick_vdj_warm.h); Dehum has nothing to swap.
+ *      int64_t holdAt() const;
+ *      void    reached(int64_t in, int64_t out);
  *
  *      //! Buffer wrapper only, once per served buffer, with the number of
  *      //! frames just served so the engine can budget against playback. This

@@ -841,6 +841,84 @@ int main() {
                 if (!ok) ++g_failures;
             }
         }
+
+        // --- ... and from a saved state: Channel::saveWarm(), WarmState ---
+        //
+        // VirtualDJ's wrapper goes on streaming the channel it warmed - it
+        // catches it up with the play head and swaps it in - so the restarts
+        // after that adopt from a WarmState saved at the end of the pass, and
+        // nothing the warmed channel streams since may reach them. Saving into
+        // a state sized beforehand must not allocate, nor adopting from it.
+        printf("\n");
+        WarmState saved[2];
+        for (unsigned c = 0; c < 2; ++c) {
+            Channel w;
+            w.configure(cfg);
+            w.saveWarm(saved[c]);       // sizes it, as the wrapper does at configure()
+            saved[c].clear();
+            warmOn(w, x, c, 0, W);
+            arm();
+            const bool kept = w.saveWarm(saved[c]);
+            requireQuiet("saveWarm() into a state sized beforehand");
+            if (!kept) { printf("  FAIL  saveWarm() refused a finished warm pass\n"); ++g_failures; }
+            requireSame(c ? "... right channel"
+                          : "... and the warmed channel streams on as its warm start",
+                        streamOut(w, x, c, 0, S), warmReferenceAt(cfg, x, c, 0, 0, W, S));
+        }
+        printf("  (the saved state: %.1f kB a channel)\n",
+               (double)(sizeof(WarmState) + saved[0].heapBytes()) / 1024.0);
+        for (int where = 0; where < 2; ++where) {
+            const size_t from = where ? at : 0;
+            for (unsigned c = 0; c < 2; ++c) {
+                Channel live;
+                live.configure(cfg);
+                streamOut(live, x, 1 - c, (size_t)R * 2, (size_t)R * 3);   // something else
+                arm();
+                const bool took = live.adoptWarm(saved[c]);
+                requireQuiet(where ? "adoptWarm() of the saved state, then from 9 s"
+                                   : "adoptWarm() of the saved state, then from the top");
+                if (!took) { printf("  FAIL  adoptWarm() refused a saved warm pass\n"); ++g_failures; }
+                requireSame(c ? "... right channel" : "... left channel against the core's warm start",
+                            streamOut(live, x, c, from, S), warmReferenceAt(cfg, x, c, 0, from, W, S));
+            }
+        }
+        // What it refuses. saveWarm() from a channel that has streamed since
+        // its pass, or one in the middle of it, leaves the state invalid; and
+        // adopting an invalid state, a cleared one or one of another shape
+        // starts cold.
+        {
+            Channel used, mid, other, live;
+            used.configure(cfg);
+            warmOn(used, x, 0, 0, W);
+            streamOut(used, x, 0, 0, 4096);
+            mid.configure(cfg);
+            mid.beginWarm();
+            other.configure(c64);
+            warmOn(other, x, 0, 0, W);
+            WarmState fromUsed = saved[0], fromMid = saved[0], fromOther, cleared = saved[0];
+            cleared.clear();
+            const bool savedUsed = used.saveWarm(fromUsed), savedMid = mid.saveWarm(fromMid);
+            const bool savedOther = other.saveWarm(fromOther);
+            const bool refused = !savedUsed && !fromUsed.valid() && !savedMid && !fromMid.valid();
+            printf("  %-50s %-4s\n", "saveWarm() refuses a streamed or mid-pass channel",
+                   refused ? "ok" : "FAIL");
+            if (!refused || !savedOther) ++g_failures;
+            live.configure(cfg);
+            const WarmState * bad[3] = { &fromUsed, &cleared, &fromOther };
+            const char * what[3] = { "adoptWarm() refuses the state of a refused save",
+                                     "... a cleared one",
+                                     "... one of another shape" };
+            const std::vector<double> cold = warmReferenceAt(cfg, x, 0, 0, 0, 0, S);
+            for (int k = 0; k < 3; ++k) {
+                streamOut(live, x, 1, (size_t)R * 2, (size_t)R);
+                const bool took = live.adoptWarm(*bad[k]);
+                const std::vector<double> got = streamOut(live, x, 0, 0, S);
+                const bool ok = !took && got == cold;
+                printf("  %-50s %-4s %s\n", what[k], ok ? "ok" : "FAIL",
+                       took ? "took it" : (got == cold ? "and starts cold" : "but does not start cold"));
+                if (!ok) ++g_failures;
+            }
+        }
     }
 
     // --- the Wiener path, which is off by default -------------------------

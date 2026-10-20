@@ -441,38 +441,53 @@ So [`vdj_declick/declick_vdj_warm.h`](vdj_declick/declick_vdj_warm.h) splits it:
   copied rather than read from another thread because nothing in the SDK says
   `GetSongBuffer` may be called from one.
 * **A worker thread runs the warm pass** over the copy, on a channel pair of its
-  own, at below-normal priority.
-* **Every restart after that, in that record** — a cue, a seek, a loop, a
+  own, at below-normal priority, and saves what it learned in a
+  `declick::WarmState` (`Channel::saveWarm()`, 2.6 kB a channel).
+* **The first play is swapped onto the warm start.** A buffer plug-in gets no
+  "track loaded" event, so the opening is unknown until the deck first asks
+  for audio, and the first play starts cold. Once the pass is done, the worker
+  catches its pair up with that play: from the frame the play started at, over
+  the copy, to a frame 0.1 s ahead of the live input, where it parks with all
+  its output taken. `BufferPipeline::advance()` stops a slice exactly there,
+  and once the live pair has taken the same audio the two pairs change places.
+  Both have consumed the same frames from the same place, so nothing restarts
+  and nothing is spliced: from the swap on, the play is the core's warm start
+  run from where it started, to the bit. The copy runs on two seconds past the
+  warm length for this, so a first play that starts a few seconds in is
+  caught up with too. A restart before the swap, or a first play from further
+  in than the copy reaches, and there is no swap.
+* **Every restart after the pass, in that record** — a cue, a seek, a loop, a
   scratch out of the cache, an alien read — starts with what the pass learned
-  (`Channel::adoptWarm()`, a copy of a few kB). A restart at the top of the
-  record is then the core's warm start to the bit. One anywhere else starts
-  there with the opening's key and floor ceiling in place of an empty history,
-  which is a fair prior on a record whose surface does not change.
-
-**The first play of a record is cold, as it was.** A buffer plug-in gets no
-"track loaded" event, so the opening is unknown until the deck first asks for
-audio, and the pass is done a second or two later. Cueing a record before
-playing it out — which is a restart — puts the warm start where the room hears
-it. A record loaded and played straight out, as automix does, starts cold.
+  (`Channel::adoptWarm()` of the saved state, a copy of a few kB). A restart at
+  the top of the record is then the core's warm start to the bit. One anywhere
+  else starts there with the opening's key and floor ceiling in place of an
+  empty history, which is a fair prior on a record whose surface does not
+  change.
 
 Measured on the Zen 4 dev box, stereo at 44.1 kHz, 512-frame calls paced at
-real time, five runs:
+real time from the top of the record, five runs (and 10-run repeats for the
+first row):
 
 | | clean record (*El abrojito*, stereo) | crackly (*El rodeo*, mono in both) |
 | --- | --- | --- |
-| restarts are warm from, after the first call | 0.94 s (AVX2), 1.00 s (SSE2) | 1.00 s, 1.07 s |
-| the pass, on the worker | 64 ms, 122 ms | 122 ms, 193 ms |
-| a call on the audio thread, mean | 0.25 ms, 0.42 ms — the same switched off | 0.50 ms, 0.70 ms — the same |
-| the dearest call while the opening is read | 0.65 ms, 1.08 ms | 1.37 ms, 1.78 ms |
+| the first play is warm from | 1.07 s of play (AVX2), 1.11 s (SSE2) | 1.11–1.16 s, 1.21 s |
+| the pass, on the worker | 64 ms, 122 ms | 117 ms, 189 ms |
+| the catch-up, on the worker | 11 ms, 22 ms (1.2 s of audio) | 22 ms, 37 ms (1.3 s) |
+| a call on the audio thread, mean | 0.24 ms, 0.41 ms — the same switched off | 0.46 ms, 0.62 ms — the same |
+| the dearest call while the opening is read | 0.66 ms, 1.0–1.3 ms | 1.4–1.7 ms, 1.7 ms |
+| the call that swaps | 0.55 ms, 1.0–1.2 ms | 1.1 ms, 1.5 ms |
 
 A restart costs what it did (2–5 ms either way: the latency filled again). On
-the Air, at seven times the SSE2 figures, the pass is 0.85–1.35 s and restarts
-are warm from 1.8–2.2 s after the first play. It costs a channel pair and the
-copy of the opening per plug-in: about 7.4 MB at 44.1 kHz, made at the first
-buffer of a new sample rate with the rest of the pipeline. **Max repair** and
+the Air, with the worker at seven times the SSE2 figures and the copy paced by
+playback as here, the pass is 0.8–1.3 s and the first play is warm from about
+2.1 s (*El abrojito*) to 2.9 s (*El rodeo*); the same model gives the measured
+figure on this machine within 0.02 s. It costs a channel pair and the copy of
+the opening per plug-in: about 7.8 MB at 44.1 kHz, made at the first buffer of
+a new sample rate with the rest of the pipeline. Keeping the pass in a third
+pair instead of a `WarmState` would have been 6 MB more. **Max repair** and
 **Model order** throw the pass away and learn it again, as they rebuild the
-pipeline. Switching **Warm start** off makes every restart cold and reads
-nothing.
+pipeline. Switching **Warm start** off makes every restart cold, reads
+nothing, and stops a catch-up in progress.
 
 ---
 
@@ -504,7 +519,7 @@ Three binaries, none of which needs VirtualDJ installed:
 | | |
 | --- | --- |
 | `vdj_host_verify` | The ABI. Loads each finished module the way VirtualDJ does - one `GetProcAddress`, the IID, the vtable - and requires its audio to match the same wrapper linked statically, to the bit. Also that a module declines the interface it does not implement, since VirtualDJ would otherwise call it through the wrong vtable |
-| `declick_vdj_verify` | The readahead claim — pipeline output bit-identical to the core straight through the song, at five block sizes; cache consistency under jumps; restart determinism; exact bypass; the slider mappings; the second-consumer work bound described above; and the warm start — the first play cold, a restart at the top the core's warm start to the bit and one at 15 s the core started there warm, a record shorter than the warm length, the switch, a new record mid-pass and a Model order move, none of it allocating on either thread |
+| `declick_vdj_verify` | The readahead claim — pipeline output bit-identical to the core straight through the song, at five block sizes; cache consistency under jumps; restart determinism; exact bypass; the slider mappings; the second-consumer work bound described above; and the warm start — the first play cold up to the swap and the core's warm start run from where it started after it, to the bit, from the top and from a cue 3 s in at another block size; no swap for a first play past the copy, one that would outrun it, or a restart while the worker is parked; a restart at the top the core's warm start to the bit and one at 15 s the core started there warm, a record shorter than the warm length, the switch, a new record mid-pass and a Model order move, none of it allocating on either thread |
 | `dehum_vdj_verify` | The same pipeline checks for the zero-latency core; the scout finds the line at the right frequency inside its advertised budget; what it finds reaches `adopt()` and gets cancelled; the slider mappings |
 
 Neither re-tests the DSP. `declick_verify`, `dehum_verify` and the rest in

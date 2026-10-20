@@ -1992,34 +1992,58 @@ void Channel::endWarm() {
     resetFloorHistory();
 }
 
-//! What endWarm() keeps, from another channel: the carpet key's state, its
-//! m_warmBlocks, and the floor ceiling. "Taken nothing since" is m_seen,
-//! which resetPath() zeroes and every sample pushed counts.
+//! What endWarm() keeps: the carpet key's state, its m_warmBlocks, and the
+//! floor ceiling. The caller has checked that the ceilings are one size.
+template <class To, class From>
+void Channel::copyWarm(To & to, const From & w) {
+    to.m_cRuns = w.m_cRuns;
+    to.m_cSamp = w.m_cSamp;
+    std::copy(w.m_cRing, w.m_cRing + kCarpetMax, to.m_cRing);
+    to.m_cPos = w.m_cPos;
+    to.m_cHave = w.m_cHave;
+    to.m_cKey = w.m_cKey;
+    to.m_cTotRuns = w.m_cTotRuns;
+    to.m_cTotSamp = w.m_cTotSamp;
+    to.m_cBin = w.m_cBin;
+    to.m_cBinBlk = w.m_cBinBlk;
+    to.m_cS1 = w.m_cS1;
+    to.m_cS2 = w.m_cS2;
+    to.m_cBinN = w.m_cBinN;
+    to.m_cTotS1 = w.m_cTotS1;
+    to.m_cTotS2 = w.m_cTotS2;
+    to.m_cTotBinN = w.m_cTotBinN;
+    std::copy(w.m_cFRing, w.m_cFRing + kCarpetMax, to.m_cFRing);
+    to.m_warmBlocks = w.m_warmBlocks;
+    to.m_nWarmT = w.m_nWarmT;
+    std::copy(w.m_nWarm.begin(), w.m_nWarm.end(), to.m_nWarm.begin());
+}
+
+//! From another channel. "Taken nothing since" is m_seen, which resetPath()
+//! zeroes and every sample pushed counts.
 bool Channel::adoptWarm(const Channel & w) {
     if (&w == this) return false;      // reset() would lose what there is to copy
     reset();
     if (w.m_warming || w.m_seen != 0 || !m_cfg.structurallyEquals(w.m_cfg)
         || m_nWarm.size() != w.m_nWarm.size()) return false;
-    m_cRuns = w.m_cRuns;
-    m_cSamp = w.m_cSamp;
-    std::copy(w.m_cRing, w.m_cRing + kCarpetMax, m_cRing);
-    m_cPos = w.m_cPos;
-    m_cHave = w.m_cHave;
-    m_cKey = w.m_cKey;
-    m_cTotRuns = w.m_cTotRuns;
-    m_cTotSamp = w.m_cTotSamp;
-    m_cBin = w.m_cBin;
-    m_cBinBlk = w.m_cBinBlk;
-    m_cS1 = w.m_cS1;
-    m_cS2 = w.m_cS2;
-    m_cBinN = w.m_cBinN;
-    m_cTotS1 = w.m_cTotS1;
-    m_cTotS2 = w.m_cTotS2;
-    m_cTotBinN = w.m_cTotBinN;
-    std::copy(w.m_cFRing, w.m_cFRing + kCarpetMax, m_cFRing);
-    m_warmBlocks = w.m_warmBlocks;
-    m_nWarmT = w.m_nWarmT;
-    std::copy(w.m_nWarm.begin(), w.m_nWarm.end(), m_nWarm.begin());
+    copyWarm(*this, w);
+    return true;
+}
+
+bool Channel::saveWarm(WarmState & s) const {
+    s.m_valid = false;
+    if (m_warming || m_seen != 0) return false;
+    if (s.m_nWarm.size() != m_nWarm.size()) s.m_nWarm.assign(m_nWarm.size(), 0.0);
+    copyWarm(s, *this);
+    s.m_cfg = m_cfg;
+    s.m_valid = true;
+    return true;
+}
+
+bool Channel::adoptWarm(const WarmState & s) {
+    reset();
+    if (!s.m_valid || !m_cfg.structurallyEquals(s.m_cfg)
+        || m_nWarm.size() != s.m_nWarm.size()) return false;
+    copyWarm(*this, s);
     return true;
 }
 

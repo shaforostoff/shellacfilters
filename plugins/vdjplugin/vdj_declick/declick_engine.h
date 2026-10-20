@@ -39,8 +39,9 @@ public:
                "vinyl transfers. Reads the song ahead of the play head, so the "
                "repair gets the lookahead it needs and the deck stays in time - "
                "no delay at all. Learns the record's surface from its first "
-               "seconds in the background and starts every cue, seek and loop "
-               "with it. Works on a loaded song, not on a live input.";
+               "seconds in the background, switches the first play over to it "
+               "a second or two in, and starts every cue, seek and loop with "
+               "it. Works on a loaded song, not on a live input.";
     }
 
     // -- parameters ----------------------------------------------------------
@@ -148,9 +149,22 @@ public:
     //! the noise estimate was measured from it - but what the warm pass learned
     //! from this record's opening is still true of the record, so the restart
     //! starts with it once the pass has finished: see declick_vdj_warm.h.
-    void discontinuity() {
+    void discontinuity(int64_t from) {
         if (!m_configured) return;
-        m_warm.start(m_chan);
+        m_warm.start(m_chan, from);
+    }
+
+    //! The warm start's catch-up: a cold run is swapped for a warm pair that
+    //! has taken the same audio, at the frame holdAt() names.
+    int64_t holdAt() const { return m_configured ? m_warm.holdAt() : -1; }
+    void reached(int64_t in, int64_t out) {
+        if (!m_configured) return;
+        if (m_warm.reached(in, out, m_chan)) {
+            // The pair was configured with the config of the last rebuild;
+            // a slider moved since went to the other one live.
+            m_chan[0].retune(m_cfg);
+            m_chan[1].retune(m_cfg);
+        }
     }
 
     int lookahead() const { return m_configured ? m_cfg.latency : 0; }
@@ -223,8 +237,11 @@ private:
     float m_e = kDefE, m_f = kDefF, m_g = kDefG;
     int   m_warmOn = 1;
 
-    declick::Channel m_chan[kChannels];
-    DeclickWarm      m_warm;
+    //! Two pairs: the live one, which m_chan points at, and the warm start's.
+    //! They change places when the warm start swaps a caught-up pair in.
+    declick::Channel m_pair[2][kChannels];
+    declick::Channel * m_chan = m_pair[0];
+    DeclickWarm      m_warm { m_pair[1] };
     declick::Config  m_cfg;
     declick::Params  m_active = declick::Params::defaults();
     double m_rate = 0.0;

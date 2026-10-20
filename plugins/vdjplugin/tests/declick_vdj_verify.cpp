@@ -22,10 +22,12 @@
  *     thing in every port.
  *
  *  5. The warm start (declick_vdj_warm.h): once the opening has been read and
- *     warmed off the audio thread, a restart at the top of the record is the
- *     core's warm start to the bit, and one anywhere else is the core started
- *     there with what the warm pass learned - and none of it, reading, the
- *     pass or the restarts, allocates.
+ *     warmed off the audio thread, the first play is swapped onto a pair the
+ *     worker caught up with it, and from the swap on is the core's warm start
+ *     run from where the play started, to the bit; a restart at the top of the
+ *     record is the core's warm start to the bit, and one anywhere else is the
+ *     core started there with what the warm pass learned - and none of it,
+ *     reading, the pass, the catch-up, the swap or the restarts, allocates.
  *
  *  Not tested here: the declicking itself. declick_verify in
  *  ../../foobar2000_dsp/tests does that against a Python reference, and this
@@ -416,13 +418,14 @@ struct WarmRig {
     vdj::DeclickWarm & warm() { return engine.warmStart(); }
 
     //! Serves `frames` from `pos`, forward in blocks of `nb`, the way a deck
-    //! plays; what it hears lands at the start of `heard`. Allocates nothing.
-    void play(vdj::SongSource & src, size_t pos, size_t frames, int nb) {
+    //! plays; what it hears lands in `heard` from frame `at`. Allocates
+    //! nothing.
+    void play(vdj::SongSource & src, size_t pos, size_t frames, int nb, size_t at = 0) {
         for (size_t f = 0; f < frames; f += (size_t)nb) {
             const size_t n = std::min((size_t)nb, frames - f);
             const short * p = pipe.serve(engine, src, (int)(pos + f), (int)n);
-            if (p != NULL && f + n <= heard.size() / vdj::kChannels) {
-                memcpy(&heard[f * vdj::kChannels], p, n * vdj::kChannels * sizeof(short));
+            if (p != NULL && at + f + n <= heard.size() / vdj::kChannels) {
+                memcpy(&heard[(at + f) * vdj::kChannels], p, n * vdj::kChannels * sizeof(short));
             }
         }
     }
@@ -448,13 +451,39 @@ std::vector<short> slice(const std::vector<short> & v, size_t from, size_t frame
                               v.begin() + (ptrdiff_t)((from + frames) * vdj::kChannels));
 }
 
+//! Requires `heard` to be `cold` up to frame `at` and `warm` from it, to the
+//! bit: the swap, with nothing dropped, repeated or spliced either side.
+void requireSwap(const char * what, const std::vector<short> & heard, size_t at,
+                 const std::vector<short> & cold, const std::vector<short> & warm) {
+    const size_t n = heard.size() / vdj::kChannels;
+    const int64_t a = firstDifference(slice(cold, 0, at), slice(heard, 0, at));
+    const int64_t b = firstDifference(slice(warm, at, n - at), slice(heard, at, n - at));
+    if (a < 0 && b < 0) {
+        printf("  ok    %s: the cold stream for %.2f s of play, the warm one after, to the bit\n",
+               what, (double)at / kRate);
+    } else {
+        printf("  FAIL  %s: split at %.2f s; diverges from the cold stream at %lld, "
+               "from the warm one at %lld\n", what, (double)at / kRate,
+               (long long)a, (long long)(b < 0 ? b : b + (int64_t)at));
+        ++g_failures;
+    }
+    check(firstDifference(slice(cold, at, n - at), slice(warm, at, n - at)) >= 0,
+          "... and the two differ after the swap, so that check can fail");
+}
+
 //! What the warm start promises, end to end through BufferPipeline. The first
-//! play of a record is cold - the opening is read while it plays and warmed on
-//! the worker - and every restart in the record after the pass has finished
-//! starts with what it learned: at the top, the core's warm start to the bit,
-//! and anywhere else the core started there with it. None of it may allocate:
-//! the reading and the restarts on the caller's thread, the pass on the
-//! worker's.
+//! play of a record starts cold - the opening is read while it plays and
+//! warmed on the worker - and the worker then catches its own pair up with it
+//! and swaps it in: from there on the play is the core's warm start run from
+//! where it started, to the bit. Every restart in the record after the pass
+//! starts with what it learned: at the top, the core's warm start, and
+//! anywhere else the core started there with it. None of it may allocate:
+//! the reading, the restarts and the swap on the caller's thread, the pass and
+//! the catch-up on the worker's.
+//!
+//! The deck here plays faster than real time, so where it would leave the
+//! worker behind the test stops and waits for it to park - as a deck playing
+//! in real time would have let it.
 void testWarmStart() {
     const size_t songFrames = (size_t)(20.0 * kRate);
     std::vector<short> song = music(songFrames, kRate, 31337);
@@ -465,31 +494,47 @@ void testWarmStart() {
     declick::Config cfg;
     cfg.compute(p, kRate);
     const size_t W = (size_t)(cfg.warmSeconds() * kRate);
+    const size_t C = W + (size_t)(vdj::kWarmCopyBeyondSec * kRate);
     const size_t T = (size_t)(10.0 * kRate), L = (size_t)(5.0 * kRate);
     const int nb = 512;
+    // Played, the whole copy is read: kWarmSpeedup x served per call.
+    const size_t R = ((C + (size_t)vdj::kWarmSpeedup * nb - 1) / ((size_t)vdj::kWarmSpeedup * nb)) * nb;
 
     const std::vector<short> cold = reference(song, T, p);
     const std::vector<short> warm = reference(song, T, p, W, 0);
     check(firstDifference(cold, warm) >= 0,
           "the fixture's warm start differs from its cold one, so the checks below can fail");
 
+    // The coming of a record, then a cue to the top and a seek.
     {
         WarmRig rig(T);
+        {
+            declick::Channel c;
+            c.configure(cfg);
+            printf("        memory: the saved pass %.1f kB, where a third pair would be %.0f kB;"
+                   " the copy %.0f kB, %.0f kB of it past the warm length\n",
+                   (double)rig.warm().savedBytes() / 1024.0, 2.0 * (double)c.heapBytes() / 1024.0,
+                   (double)(C * vdj::kChannels * sizeof(short)) / 1024.0,
+                   (double)((C - W) * vdj::kChannels * sizeof(short)) / 1024.0);
+        }
         arm();
-        rig.play(src, 0, L, nb);
-        requireQuiet("five seconds of a first play, the opening read and warmed meanwhile");
-        // Read at kWarmSpeedup times playback, so within the first second.
-        check(rig.warm().framesRead() == W && !rig.warm().reading(),
-              "the whole warm length was read");
-        requireSame("the first play is the cold stream", rig.first(L), slice(cold, 0, L));
-        check(rig.warm().waitForPass(30000) && rig.warm().passes() == 1 && rig.warm().ready(),
-              "the warm pass finished, once");
-        printf("        %zu frames read in %zu calls of %d, pass %.0f ms on the worker\n",
-               rig.warm().framesRead(),
-               (W + (size_t)vdj::kWarmSpeedup * nb - 1) / ((size_t)vdj::kWarmSpeedup * nb),
-               nb, rig.warm().lastPassMs());
+        rig.play(src, 0, R, nb);
+        check(rig.warm().framesRead() == C && !rig.warm().reading(),
+              "the warm length was read, and the copy's margin after it");
+        check(rig.warm().waitForPark(30000) && (rig.warm().parked() || rig.warm().swaps() == 1),
+              "the worker warmed it and caught up with the play");
+        rig.play(src, R, T - R, nb, R);
+        requireQuiet("ten seconds of a first play, read, warmed, caught up with and swapped meanwhile");
+        check(rig.warm().swaps() == 1 && rig.warm().passes() == 1 && rig.warm().ready(),
+              "one pass, one swap");
+        const size_t E = (size_t)rig.warm().swapOut();
+        printf("        pass %.0f ms; swapped at %.3f s of input, %.3f s of output\n",
+               rig.warm().lastPassMs(), (double)rig.warm().swapIn() / kRate, (double)E / kRate);
+        if (E > 0 && E < T) requireSwap("the first play from the top", rig.first(T), E, cold, warm);
+        else check(false, "the swap is inside the play");
+        check(rig.warm().waitForPass(30000), "and the worker is idle after it");
 
-        // A cue to the top: out of the cache, so a restart, and now a warm one.
+        // A cue to the top: out of the cache, so a restart, and a warm one.
         const uint64_t before = rig.pipe.restarts();
         arm();
         rig.play(src, 0, T, nb);
@@ -508,6 +553,82 @@ void testWarmStart() {
         check(firstDifference(rig.first(S),
                               slice(reference(song, P - from + S, p, 0, from), P - from, S)) >= 0,
               "... and not as it would start cold");
+        check(rig.warm().swaps() == 1, "and neither swapped anything");
+    }
+
+    // A first play from a cue three seconds in, inside the copy, at another
+    // block size: caught up from there, so the warm start run from there.
+    {
+        const size_t P = (size_t)(3.0 * kRate), S = (size_t)(6.0 * kRate);
+        const int nb2 = 777;
+        WarmRig rig(S);
+        const size_t from = P - (size_t)rig.engine.warmupFrames();
+        const size_t R2 = ((R + nb2 - 1) / nb2) * nb2;
+        arm();
+        rig.play(src, P, R2, nb2);
+        check(rig.warm().waitForPark(30000) && (rig.warm().parked() || rig.warm().swaps() == 1),
+              "a first play from 3 s: caught up with");
+        rig.play(src, P + R2, S - R2, nb2, R2);
+        requireQuiet("six seconds of it");
+        const int64_t E = rig.warm().swapOut() - (int64_t)P;
+        if (rig.warm().swaps() == 1 && E > 0 && E < (int64_t)S) {
+            requireSwap("a first play from 3 s", rig.first(S), (size_t)E,
+                        slice(reference(song, P - from + S, p, 0, from), P - from, S),
+                        slice(reference(song, P - from + S, p, W, from), P - from, S));
+        } else {
+            check(false, "... and swapped inside the play");
+        }
+    }
+
+    // A first play from 12 s, past the copy: nothing to catch up with, so it
+    // stays cold, and there is no swap.
+    {
+        const size_t P = (size_t)(12.0 * kRate), S = (size_t)(3.0 * kRate);
+        WarmRig rig(S);
+        const size_t from = P - (size_t)rig.engine.warmupFrames();
+        arm();
+        rig.play(src, P, R, nb);
+        check(rig.warm().waitForPass(30000) && rig.warm().ready() && !rig.warm().parked(),
+              "a first play from 12 s: warmed, and left alone");
+        rig.play(src, P + R, S - R, nb, R);
+        requireQuiet("three seconds of it");
+        check(rig.warm().swaps() == 0, "... with no swap");
+        requireSame("... and the cold stream throughout", rig.first(S),
+                    slice(reference(song, P - from + S, p, 0, from), P - from, S));
+    }
+
+    // A first play from just short of the copy's end: the play head would be
+    // past what was copied before the worker could get ahead of it. No swap.
+    {
+        const size_t P = C - (size_t)(0.1 * kRate), S = (size_t)(3.0 * kRate);
+        WarmRig rig(S);
+        const size_t from = P - (size_t)rig.engine.warmupFrames();
+        arm();
+        rig.play(src, P, R, nb);
+        check(rig.warm().waitForPass(30000) && rig.warm().ready() && !rig.warm().parked(),
+              "a first play from the copy's last 0.1 s: the worker gives up");
+        rig.play(src, P + R, S - R, nb, R);
+        requireQuiet("three seconds of it");
+        check(rig.warm().swaps() == 0, "... with no swap");
+        requireSame("... and the cold stream throughout", rig.first(S),
+                    slice(reference(song, P - from + S, p, 0, from), P - from, S));
+    }
+
+    // The pipeline restarts while the worker is parked: the restart starts
+    // warm on its own, the parked pair is not for it, and nothing is swapped.
+    {
+        const size_t P = (size_t)(15.0 * kRate), S = (size_t)(2.0 * kRate);
+        WarmRig rig(T);
+        const size_t from = P - (size_t)rig.engine.warmupFrames();
+        arm();
+        rig.play(src, 0, R, nb);
+        const bool parked = rig.warm().waitForPark(30000) && rig.warm().parked();
+        rig.play(src, P, S, nb);
+        requireQuiet("a seek to 15 s while the worker is parked");
+        check(parked && rig.warm().waitForPass(30000) && rig.warm().swaps() == 0,
+              "... the worker gives up, with no swap");
+        requireSame("... and the restart is the core started there warm",
+                    rig.first(S), slice(reference(song, P - from + S, p, W, from), P - from, S));
     }
 
     // A record shorter than the warm length: read to its end, warmed over all
@@ -521,7 +642,7 @@ void testWarmStart() {
         rig.play(shortSrc, 0, S, nb);
         requireQuiet("a 3 s record, played through");
         check(rig.warm().framesRead() == S, "it was read to its last frame");
-        check(rig.warm().waitForPass(30000) && rig.warm().ready(), "and warmed");
+        check(rig.warm().waitForPark(30000) && rig.warm().ready(), "and warmed");
         rig.pipe.invalidate();          // a cue to the top, which is still in the cache
         rig.play(shortSrc, 0, S, nb);
         requireSame("a restart at its top is the core's warm start over all of it",
@@ -568,7 +689,7 @@ void testWarmStart() {
         arm();
         rig.play(src, 0, L, nb);
         requireQuiet("a new record while the pass runs, and five seconds of it");
-        check(rig.warm().waitForPass(30000) && rig.warm().ready() && rig.warm().framesRead() == W,
+        check(rig.warm().waitForPark(30000) && rig.warm().ready() && rig.warm().framesRead() == C,
               "its opening was read and warmed");
         printf("        %s\n", rig.warm().passes() == 1
                                 ? "the first pass was stopped part way"
@@ -585,7 +706,7 @@ void testWarmStart() {
         check(rebuilt && !rig.warm().ready(), "Model order resizes the pipeline and forgets the pass");
         if (rebuilt) rig.pipe.invalidate();
         rig.play(src, L, L, nb);
-        check(rig.warm().waitForPass(30000) && rig.warm().ready(), "which is learned again");
+        check(rig.warm().waitForPark(30000) && rig.warm().ready(), "which is learned again");
         rig.play(src, 0, T, nb);
         requireSame("a restart at the top is the warm start under the new order",
                     rig.first(T), reference(song, T, rig.engine.params(), W, 0));

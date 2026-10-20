@@ -160,12 +160,16 @@ public:
     //! window is stale and goes, but the hum on the far side of a seek is the
     //! same hum, and re-acquiring it every time the DJ moves the play position -
     //! or scratches out of the cache - would be worse than doing nothing.
-    void discontinuity() {
+    void discontinuity(int64_t /*from*/) {
         m_fifo.clear();
         if (!m_configured) return;
         m_chan[0].flush();
         m_chan[1].flush();
     }
+
+    //! Nothing to swap in: the slices go uncut. See DeclickEngine.
+    int64_t holdAt() const { return -1; }
+    void reached(int64_t /*in*/, int64_t /*out*/) {}
 
     //! None. The detector reads the signal but does not sit in the path, so what
     //! goes in comes out aligned - which is why this core is at home on the live

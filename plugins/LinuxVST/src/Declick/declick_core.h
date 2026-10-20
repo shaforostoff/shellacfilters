@@ -757,6 +757,42 @@ template <class T> struct CacheAlignedAlloc {
 };
 #endif
 
+class Channel;
+
+//! What a warm pass keeps (see Channel::beginWarm()), held apart from the
+//! channel that ran it: Channel::saveWarm() fills it, Channel::adoptWarm()
+//! starts a channel from it as from the warmed channel itself. For a host
+//! that goes on streaming the channel it warmed and still starts others warm
+//! afterwards - VirtualDJ's, which catches that channel up with the play head
+//! and swaps it in - without a third channel to hold the pass. A few kB: the
+//! carpet key's two rings and the crackle floor ceiling.
+class WarmState {
+public:
+    WarmState() {}
+    //! Holds a pass, which adoptWarm() will take.
+    bool valid() const { return m_valid; }
+    void clear() { m_valid = false; }
+    size_t heapBytes() const { return m_nWarm.capacity() * sizeof(double); }
+
+private:
+    friend class Channel;
+    bool   m_valid = false;
+    Config m_cfg;
+    double m_cRuns = 0.0, m_cSamp = 0.0;
+    double m_cTotRuns = 0.0, m_cTotSamp = 0.0;
+    double m_cRing[kCarpetMax] = {};
+    int    m_cPos = 0, m_cHave = 0;
+    double m_cKey = 0.0;
+    double m_cBin = 0.0;
+    int    m_cBinBlk = 0;
+    double m_cS1 = 0.0, m_cS2 = 0.0, m_cBinN = 0.0;
+    double m_cTotS1 = 0.0, m_cTotS2 = 0.0, m_cTotBinN = 0.0;
+    double m_cFRing[kCarpetMax] = {};
+    uint64_t m_warmBlocks = 0;
+    uint64_t m_nWarmT = 0;
+    std::vector<double> m_nWarm;
+};
+
 //! One independent channel of processing.
 class Channel {
 public:
@@ -902,6 +938,20 @@ public:
     //! from again. Does not allocate.
     bool adoptWarm(const Channel & warmed);
 
+    //! What adoptWarm() would take from this channel, into `s`, so that this
+    //! one can go on streaming and others still start warm from the pass
+    //! afterwards. Same conditions as adoptWarm()'s `warmed`; otherwise `s`
+    //! is cleared and this returns false. Allocates only when `s` has not held
+    //! a state of this config's shape before: a host that must not saves once
+    //! at configure(), from the freshly configured channel, and clears it.
+    bool saveWarm(WarmState & s) const;
+
+    //! adoptWarm() from a saved state: from where the pass started, to the
+    //! bit what the warmed channel itself would have streamed. A state that
+    //! is not valid() or of another shape is reset() and false. Does not
+    //! allocate.
+    bool adoptWarm(const WarmState & s);
+
     const Config & config() const { return m_cfg; }
 
     //! Diagnostics: how many samples this channel has repaired.
@@ -953,6 +1003,9 @@ private:
     void resetPath();
     void resetCarpet();
     void resetFloorHistory();
+    //! What endWarm() keeps, from one holder to another: a Channel or a
+    //! WarmState either side, which name it alike.
+    template <class To, class From> static void copyWarm(To & to, const From & from);
     //! The dry/wet (or delta) mix of one finished sample, into the output ring.
     void emitMixed(double y, double d);
     //! One repaired sample and its dry counterpart, into the body stage, and
