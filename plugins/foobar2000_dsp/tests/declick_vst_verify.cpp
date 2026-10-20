@@ -260,6 +260,10 @@ void testRepair(const std::vector<double> & inL, const std::vector<double> & inR
         double before = 0.0, after = 0.0;
         for (size_t k = 0; k < clickAt.size(); ++k) {
             const int p = clickAt[k];
+            // The last clicks come out after the end of the stream once the
+            // latency outgrows makeSignal()'s 4000-frame margin, which it has:
+            // reading them ran past the vector, a crash on x86.
+            if ((size_t)(p + 8 + cfg.latency) > use->size()) continue;
             for (int j = -2; j < 8; ++j) {
                 before = fmax(before, fabs(inL[(size_t)(p + j)]));
                 after  = fmax(after, fabs((*use)[(size_t)(p + j + cfg.latency)]));
