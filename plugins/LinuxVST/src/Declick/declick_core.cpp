@@ -226,7 +226,7 @@ typedef void (*FftOneFn)(double * re, double * im, int n, int h,
                          const double * stRe, const double * stIm, double sgn);
 //! `count` sorted windows of `n` values laid end to end: in each, replace
 //! out[b] with in[b], keeping it sorted. See sortedReplace().
-typedef void (*SortedRowFn)(double * rows, int n, int count,
+typedef void (*SortedRowFn)(double * rows, int n, int stride, int count,
                             const double * out, const double * in);
 
 struct Kernels {
@@ -323,6 +323,16 @@ inline void sortedStep2(double * m, int i, int a, int b, int d) {
 #endif
 }
 
+//! Above this many places a window is worked as the sorted array it is - the
+//! ranks by binary search, the shift by memmove - rather than by the
+//! branch-free passes below, which touch every place whatever moves. The
+//! passes win while a window is short, where a search's branches mispredict
+//! and a call costs more than the few vectors the whole window takes; they
+//! lose badly once it is long, and the crackle floor stage's is 259 places at
+//! 44.1 kHz (Config::crackleFloorHist) against the fine stage's 16, for one
+//! value in and one out. Only the floor stage is over the line.
+enum { kSortedBig = 64 };
+
 //! The q quantile of n sorted values, as numpy's default (linear) finds it:
 //! the values at floor and ceil of q (n - 1), interpolated.
 double sortedQuantile(const double * v, int n, double q) {
@@ -340,14 +350,31 @@ double sortedQuantile(const double * v, int n, double q) {
 //! at the number below it among the others. A count, not a search. A NaN
 //! counts below nothing, so it costs a wrong quantile, not a write outside
 //! the window.
+//!
+//! The vector pass takes the places two at a time and the loop after it the
+//! odd one. It used to stand down altogether for an odd n, which left the
+//! micro stage - microM is 17 at 44.1 kHz, see Config::microM - counting its
+//! windows a place at a time wherever the wide kernels are not in use.
 inline void sortedRanks(const double * m, int n, double out, double in,
                         int & jo, int & ji) {
     jo = 0; ji = 0;
+    if (n >= (int)kSortedBig) {
+        // The window is sorted, so the count of places below a value is where
+        // that value belongs: the same number, in log n steps rather than n.
+        jo = (int)(std::lower_bound(m, m + n, out) - m);
+        ji = (int)(std::lower_bound(m, m + n, in) - m);
+        ji -= (out < in);
+        if (jo > n - 1) jo = n - 1;
+        if (ji > n - 1) ji = n - 1;
+        if (ji < 0) ji = 0;
+        return;
+    }
+    int i = 0;
 #if DECLICK_SSE2
-    if ((n & 1) == 0) {
+    {
         const __m128d vo = _mm_set1_pd(out), vi = _mm_set1_pd(in);
         __m128i co = _mm_setzero_si128(), ci = _mm_setzero_si128();
-        for (int i = 0; i < n; i += 2) {
+        for (; i + 2 <= n; i += 2) {
             const __m128d v = _mm_loadu_pd(m + i);
             co = _mm_sub_epi64(co, _mm_castpd_si128(_mm_cmplt_pd(v, vo)));
             ci = _mm_sub_epi64(ci, _mm_castpd_si128(_mm_cmplt_pd(v, vi)));
@@ -356,9 +383,12 @@ inline void sortedRanks(const double * m, int n, double out, double in,
         ci = _mm_add_epi64(ci, _mm_unpackhi_epi64(ci, ci));
         jo = _mm_cvtsi128_si32(co);
         ji = _mm_cvtsi128_si32(ci);
-    } else
+    }
 #endif
-    for (int i = 0; i < n; ++i) {
+    // On AArch64 the loop below is left to the compiler, which vectorises the
+    // two counts about as well as hand-written NEON and unrolls them further:
+    // an intrinsic pass here measured 1.9% slower over a whole song on an M1.
+    for (; i < n; ++i) {            // the odd place, where there is one
         jo += (m[i] < out);
         ji += (m[i] < in);
     }
@@ -372,6 +402,15 @@ inline void sortedRanks(const double * m, int n, double out, double in,
 //! and which way: up by one over jo .. ji - 1, or down by one over
 //! ji + 1 .. jo. Equal ranks leave an empty range either way.
 inline void sortedMove(double * m, int n, int jo, int ji, double in) {
+    if (n >= (int)kSortedBig) {
+        // Only the places between the two ranks move, and they all move one
+        // the same way: that is a memmove of them, typically a handful, where
+        // the passes below would step over every place in the window.
+        if (ji >= jo) memmove(m + jo, m + jo + 1, (size_t)(ji - jo) * sizeof(double));
+        else          memmove(m + ji + 1, m + ji, (size_t)(jo - ji) * sizeof(double));
+        m[ji] = in;
+        return;
+    }
     // Going with the move - up from the bottom, down from the top - every
     // place is read before the step that writes it.
     const int up = (ji >= jo);
@@ -418,22 +457,24 @@ void sortedReplace(double * m, int n, double out, double in) {
     sortedMove(m, n, jo, ji, in);
 }
 
-//! A row of windows. The ranks for a tile of them are counted first and the
-//! moves made after: a window's ranks reach its own move through a
+//! A row of windows, `stride` apart - which is the window length where they
+//! are packed, and more where each carries its own pad, as the crackle floor
+//! stage's do. The ranks for a tile of them are counted first and the moves
+//! made after: a window's ranks reach its own move through a
 //! vector-to-register-to-vector round trip and nothing in that window can
 //! start until they do, so one window at a time the row costs that latency
 //! rather than its work. Counting the next window covers it.
-void sortedRowBase(double * rows, int n, int count,
+void sortedRowBase(double * rows, int n, int stride, int count,
                    const double * out, const double * in) {
     enum { kTile = 16 };
     int jo[kTile], ji[kTile];
     for (int b0 = 0; b0 < count; b0 += (int)kTile) {
         const int nt = (count - b0 < (int)kTile) ? count - b0 : (int)kTile;
         for (int t = 0; t < nt; ++t)
-            sortedRanks(rows + (size_t)(b0 + t) * (size_t)n, n,
+            sortedRanks(rows + (size_t)(b0 + t) * (size_t)stride, n,
                         out[b0 + t], in[b0 + t], jo[t], ji[t]);
         for (int t = 0; t < nt; ++t)
-            sortedMove(rows + (size_t)(b0 + t) * (size_t)n, n,
+            sortedMove(rows + (size_t)(b0 + t) * (size_t)stride, n,
                        jo[t], ji[t], in[b0 + t]);
     }
 }
@@ -706,6 +747,11 @@ DECLICK_AVX2_FN void fftPairAvx2(double * re, double * im, int n, int h,
 
 //! sortedReplace() over a row of windows, four places at a time. The ranks
 //! come from the same count, widened; the move is the same predicated pass.
+//! A window whose length is not a multiple of four has its last one, two or
+//! three places taken by a scalar step either end of the vectors. It used to
+//! hand the whole row to sortedRowBase() instead, which left the micro stage
+//! - microM is 17 at 44.1 kHz and 18 at 48, see Config::microM - on the
+//! scalar kernel at every sample rate.
 //!
 //! Each window's ranks reach its own move through a vector-to-register-to-
 //! vector round trip, and nothing in that window can start until they do: one
@@ -713,20 +759,23 @@ DECLICK_AVX2_FN void fftPairAvx2(double * re, double * im, int n, int h,
 //! cycles a window on a Haswell against the dozen its uops take. So the ranks
 //! for a tile of windows are counted first and the moves made after, and each
 //! window's latency is covered by the next window's counting.
-DECLICK_AVX2_FN void sortedRowAvx2(double * rows, int n, int count,
+DECLICK_AVX2_FN void sortedRowAvx2(double * rows, int n, int stride, int count,
                                    const double * out, const double * in) {
-    if ((n & 3) != 0) { sortedRowBase(rows, n, count, out, in); return; }
+    if (n >= (int)kSortedBig) { sortedRowBase(rows, n, stride, count, out, in); return; }
     enum { kTile = 16 };
+    const int nv = n & ~3;        // the places four at a time
+    const int r  = n - nv;        // and the one, two or three left over
     const __m256i lane = _mm256_setr_epi64x(0, 1, 2, 3);
     int jo[kTile], ji[kTile];
     for (int b0 = 0; b0 < count; b0 += (int)kTile) {
         const int nt = (count - b0 < (int)kTile) ? count - b0 : (int)kTile;
         for (int t = 0; t < nt; ++t) {
-            const double * m = rows + (size_t)(b0 + t) * (size_t)n;
-            const __m256d vo = _mm256_set1_pd(out[b0 + t]);
-            const __m256d vi = _mm256_set1_pd(in[b0 + t]);
+            const double * m = rows + (size_t)(b0 + t) * (size_t)stride;
+            const double vout = out[b0 + t], vin = in[b0 + t];
+            const __m256d vo = _mm256_set1_pd(vout);
+            const __m256d vi = _mm256_set1_pd(vin);
             __m256i co = _mm256_setzero_si256(), ci = _mm256_setzero_si256();
-            for (int i = 0; i < n; i += 4) {
+            for (int i = 0; i < nv; i += 4) {
                 const __m256d v = _mm256_loadu_pd(m + i);
                 co = _mm256_sub_epi64(co, _mm256_castpd_si256(_mm256_cmp_pd(v, vo, _CMP_LT_OQ)));
                 ci = _mm256_sub_epi64(ci, _mm256_castpd_si256(_mm256_cmp_pd(v, vi, _CMP_LT_OQ)));
@@ -735,20 +784,31 @@ DECLICK_AVX2_FN void sortedRowAvx2(double * rows, int n, int count,
             int a = _mm_cvtsi128_si32(_mm_add_epi64(h, _mm_unpackhi_epi64(h, h)));
             h = _mm_add_epi64(_mm256_castsi256_si128(ci), _mm256_extracti128_si256(ci, 1));
             int b = _mm_cvtsi128_si32(_mm_add_epi64(h, _mm_unpackhi_epi64(h, h)));
-            b -= (out[b0 + t] < in[b0 + t]);
+            for (int i = nv; i < n; ++i) {       // the places left over
+                a += (m[i] < vout);
+                b += (m[i] < vin);
+            }
+            b -= (vout < vin);
             if (a > n - 1) a = n - 1;
             if (b > n - 1) b = n - 1;
             if (b < 0) b = 0;
             jo[t] = a; ji[t] = b;
         }
         for (int t = 0; t < nt; ++t) {
-            double * m = rows + (size_t)(b0 + t) * (size_t)n;
+            double * m = rows + (size_t)(b0 + t) * (size_t)stride;
             const int up = (ji[t] >= jo[t]);
             const int d  = up ? 1 : -1;
-            const __m256i va  = _mm256_set1_epi64x(up ? jo[t] : ji[t] + 1);
-            const __m256i vb1 = _mm256_set1_epi64x((up ? ji[t] - 1 : jo[t]) + 1);
+            const int lo = up ? jo[t] : ji[t] + 1;
+            const int hi = up ? ji[t] - 1 : jo[t];
+            const __m256i va  = _mm256_set1_epi64x(lo);
+            const __m256i vb1 = _mm256_set1_epi64x(hi + 1);
+            // Going with the move - up from the bottom, down from the top -
+            // every place is read before the step that writes it. The vectors
+            // take nv of them, from place 0 going up and from place r going
+            // down; the r the other end are last either way, still with the
+            // move, so the rule holds across the two.
             int i = up ? 0 : n - 4;
-            for (int c = 0; c < n; c += 4, i += 4 * d) {
+            for (int c = 0; c < nv; c += 4, i += 4 * d) {
                 const __m256i k = _mm256_add_epi64(lane, _mm256_set1_epi64x(i));
                 const __m256i act = _mm256_andnot_si256(_mm256_cmpgt_epi64(va, k),
                                                         _mm256_cmpgt_epi64(vb1, k));
@@ -756,6 +816,8 @@ DECLICK_AVX2_FN void sortedRowAvx2(double * rows, int n, int count,
                                                          _mm256_loadu_pd(m + i + d),
                                                          _mm256_castsi256_pd(act)));
             }
+            for (int c = 0, j = up ? nv : r - 1; c < r; ++c, j += d)
+                m[j] = (j >= lo && j <= hi) ? m[j + d] : m[j];
             _mm_store_sd(m + ji[t], _mm_load_sd(in + b0 + t));
         }
     }
@@ -1847,6 +1909,8 @@ void Channel::configure(const Config & cfg) {
         m_nRing.assign(nt * W, 0.0);
         m_nSorted.assign(nt * (W + 2), 0.0);
         m_nFloor.assign(nt, 0.0);
+        m_nIn.assign(nt, 0.0);
+        m_nOut.assign(nt, 0.0);
         m_nSaved.assign(nt, 0.0);
         m_nWarm.assign(nt, 0.0);
         m_nAt.assign(W, 0);
@@ -3120,6 +3184,26 @@ void Channel::crackleFloorHop(uint64_t start) {
         const int n = have - out + 1;
         int rank = (int)((double)n * m_cfg.crackleFloorQ);
         if (rank > n - 1) rank = n - 1;
+        // One value leaves and one goes in, the same count of places held in
+        // every bin: that is the tiled row kernel's case, and the row's own
+        // pad makes its stride W + 2. Taking the windows one at a time cost
+        // each of them the rank-to-move round trip - see sortedRowBase() -
+        // over a window of crackleFloorHist places, 259 at 44.1 kHz.
+        if (out == 1) {
+            double * inv = &m_nIn[0];
+            double * outv = &m_nOut[0];
+            for (int b = g0; b < nt; ++b) {
+                inv[b] = (Pq[0][b] + Pq[1][b] + Pq[2][b] + Pq[3][b] + Pq[4][b]) / 5.0;
+                outv[b] = m_nRing[(size_t)b * (size_t)W + (size_t)old];
+            }
+            g_kernels->sortedRow(&m_nSorted[(size_t)g0 * (size_t)(W + 2) + 1],
+                                 have, W + 2, nt - g0, outv + g0, inv + g0);
+            for (int b = g0; b < nt; ++b) {
+                m_nRing[(size_t)b * (size_t)W + (size_t)pos] = inv[b];
+                m_nFloor[(size_t)b] =
+                    m_nSorted[(size_t)b * (size_t)(W + 2) + 1 + (size_t)rank];
+            }
+        } else
         for (int b = g0; b < nt; ++b) {
             const double in = (Pq[0][b] + Pq[1][b] + Pq[2][b] + Pq[3][b] + Pq[4][b]) / 5.0;
             double * ring = &m_nRing[(size_t)b * (size_t)W];
@@ -3629,7 +3713,7 @@ void Channel::fineHop(uint64_t start) {
         }
     } else {
         const double * gone = &m_fMag[(size_t)((f - (uint64_t)Mf) % (uint64_t)S) * nbs];
-        g_kernels->sortedRow(srt, Mf, nb, gone, mag);
+        g_kernels->sortedRow(srt, Mf, Mf, nb, gone, mag);
         for (int b = 0; b < nb; ++b)
             qNew[b] = sortedQuantile(srt + (size_t)b * (size_t)Mf, Mf, q);
     }
@@ -3818,7 +3902,7 @@ void Channel::microHop(uint64_t start) {
         }
     } else {
         const double * gone = &m_mMag[(size_t)((f - (uint64_t)Mm) % (uint64_t)S) * nbs];
-        g_kernels->sortedRow(srt, Mm, nb, gone, mag);
+        g_kernels->sortedRow(srt, Mm, Mm, nb, gone, mag);
         for (int b = 0; b < nb; ++b)
             qNew[b] = sortedQuantile(srt + (size_t)b * (size_t)Mm, Mm, q);
     }

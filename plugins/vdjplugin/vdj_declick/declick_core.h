@@ -1363,6 +1363,9 @@ private:
     std::vector<double> m_nRing;     //!< m_nTop x crackleFloorHist
     std::vector<double> m_nSorted;   //!< m_nTop x (crackleFloorHist + 2), padded either side
     std::vector<double> m_nFloor, m_nSaved, m_nG;   //!< m_nTop
+    //! m_nTop: the value going into each bin's window and the one it replaces,
+    //! gathered so that the whole row goes through the tiled kernel at once.
+    std::vector<double> m_nIn, m_nOut;
     std::vector<double> m_nWarm;     //!< m_nTop: the floor a warm pass ended with
     std::vector<uint64_t> m_nAt;     //!< crackleFloorHist
     std::vector<double> m_nWf, m_nWs;     //!< m_nNb
