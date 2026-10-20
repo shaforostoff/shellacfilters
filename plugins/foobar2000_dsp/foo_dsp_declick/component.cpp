@@ -30,6 +30,10 @@ DECLARE_COMPONENT_VERSION(
     "\n"
     "This DSP is not zero latency; the delay is reported to foobar2000 so\n"
     "visualisations stay in sync.\n"
+    "\n"
+    "Warm start: after a track change or a seek it holds the first seven\n"
+    "seconds and learns the record's surface from them before playing them,\n"
+    "a short stall. Advanced Preferences > Playback > Declick turns it off.\n"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_dsp_declick.dll");

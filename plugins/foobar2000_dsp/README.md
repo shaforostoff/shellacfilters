@@ -361,7 +361,9 @@ must go in before the first block comes out, but the emitted stream is aligned
 with the input. The component reads ahead rather than holding the output back —
 it feeds every chunk in and emits whatever the pipeline has finished — so what
 those 140 ms describe is how far ahead of the listener the decoder is running,
-which is exactly what `get_latency()` exists to tell the core.
+which is exactly what `get_latency()` exists to tell the core. After a track
+change or a seek the [warm start](#the-first-seconds-from-the-read-ahead-a-warm-start-foobar2000)
+holds up to seven seconds more, and reports those too.
 
 **Nothing is carried from one track to the next.** Every record has its own
 surface, and the noise floor the model measures is what every threshold in the
@@ -2372,7 +2374,7 @@ kept as an option.
   (*Pa que bailen* 172 → 170×, *Y_ahora* 187 → 181×, measured beside the
   build before; *El rodeo*, whose key stays open, 94× both).
 
-### The first seconds from the read-ahead: a warm start (not in the plug-ins yet)
+### The first seconds from the read-ahead: a warm start (foobar2000)
 
 **What was heard.** With the crackle floor stage on, the first second of
 *Jueves* (D'Arienzo, 1955) and *Ahora no me conoces* (Pugliese, Moran, 1952)
@@ -2440,11 +2442,50 @@ Per channel, Zen 4:
 | stage on, 7 s, *El rodeo* / *El abrojito* | 60–64 ms | 96–100 ms | ~0.7 s |
 | stage off, 4 s | 17–18 ms | 33–34 ms | ~0.23 s |
 
-Decoding 7 s of MP3, AAC or FLAC takes 3–7 ms. The plug-ins do not call it
-yet. foobar2000 would have to hold the track's first seconds, or decode them a
-second time as Dehum's scout does. VirtualDJ can read them with
-GetSongBuffer, but not inside the audio callback's time. The VST and AU
-cannot read ahead and stay as they are.
+Decoding 7 s of MP3, AAC or FLAC takes 3–7 ms.
+
+**In foobar2000** (`warm_hold.h`). After a track change, a seek (`flush()`)
+or a new format, the component holds the incoming chunks instead of pushing
+them; foobar2000 keeps decoding while a DSP returns nothing. Once
+`warmSeconds()` are in, or the track ends first, it runs the warm pass over
+them, a thread per channel, and then hands them to the core as the stream,
+twice what comes in per chunk, so the stall is the warm pass alone and the
+extra delay drains away over the next seven seconds. `get_latency()` counts
+what is held. The hold is a ring of `warmSeconds()` per channel, made with
+the worker threads at a format change (2.5 MB stereo at 44.1 kHz, 10.8 MB at
+192 kHz); nothing after that allocates, and the output is the core's warm
+start to the bit, however the chunks fall and on whichever thread a channel
+warmed (`declick_rt_verify`). Advanced Preferences → Playback → Declick turns
+it off, for machines where the stall is felt, and can log each stall to the
+console.
+
+The stall at a track start, stereo, 44.1 kHz, chunks of 4096, Zen 4, best of
+seven (median in brackets where the two threads differ):
+
+| | AVX2, 1 thread | AVX2, 2 threads | SSE2, 1 thread | SSE2, 2 threads |
+|---|---|---|---|---|
+| clean stereo record | 60 ms | 34 ms (43) | 117 ms | 65 ms (110) |
+| *El rodeo*, crackly, mono in both channels | 115 ms | 64 ms (93) | 190 ms | 99 ms (176) |
+
+On the 2014 MacBook Air that is roughly 0.25–0.8 s for a clean record and
+0.45–1.3 s for a crackly one, before 7 s of decoding (another 25–50 ms). Two
+threads halve it only when they land on two cores: the median is often close
+to one thread's, which looks like the worker sharing a core with the playback
+thread. Holding the seven seconds costs nothing measurable; handing them back
+costs twice the usual CPU per chunk for those seven seconds.
+
+**Gapless track changes.** foobar2000's output buffer (Preferences → Playback
+→ Output → Buffer length, 1000 ms by default) is full when the next track's
+first chunk arrives, and the stall is played out of it. A stall shorter than
+the buffer is not heard; on the Air a clean record warms inside 1000 ms,
+and a crackly one may not, which is a dropout at the track change. A 2000 ms
+buffer covers every estimate above; turning the warm start off is the other
+way. A seek is a fresh start and has nothing in the buffer to hide the stall
+behind: it waits for it.
+
+VirtualDJ can read the coming seconds with GetSongBuffer, but not inside the
+audio callback's time, and does not call it yet. The VST and AU cannot read
+ahead and stay as they are.
 
 ---
 

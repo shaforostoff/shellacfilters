@@ -34,6 +34,7 @@
  * ======================================== */
 
 #include "declick_core.h"
+#include "warm_hold.h"
 
 #include <math.h>
 #include <new>
@@ -203,6 +204,126 @@ void applyParams(std::vector<std::unique_ptr<Channel> > & chan,
         chan[c]->pull(&sink[0], got < sink.size() ? got : sink.size(), 1);
         chan[c]->configure(cfg);
     }
+}
+
+//! The foobar2000 wrapper's warm start, driven as dsp_declick drives it:
+//! interleaved chunks into a WarmHold over its Channels, and after every push
+//! it makes, everything ready pulled - into `out`, one vector per channel,
+//! reserved up front so that collecting it allocates nothing.
+struct HoldRig {
+    std::vector<std::unique_ptr<Channel> > chan;
+    std::vector<Channel *> ptrs;
+    declick::WarmHold<float> hold;
+    std::vector<std::vector<double> > out;
+    std::vector<double> scratch;
+    bool overflow = false;
+
+    HoldRig(const Config & cfg, unsigned channels, double rate, unsigned threads,
+            size_t expect) {
+        for (unsigned c = 0; c < channels; ++c) {
+            chan.push_back(std::unique_ptr<Channel>(new Channel()));
+            chan.back()->configure(cfg);
+            ptrs.push_back(chan.back().get());
+        }
+        hold.configure(&ptrs[0], channels, cfg, rate, threads);
+        out.resize(channels);
+        for (unsigned c = 0; c < channels; ++c) out[c].reserve(expect);
+        scratch.resize((size_t)cfg.maxBlock * 4);
+    }
+
+    //! The wrapper's Emitter.
+    void operator()(size_t) {
+        const size_t got = chan[0]->available();
+        for (size_t c = 0; c < chan.size(); ++c) {
+            std::vector<double> & o = out[c];
+            const size_t at = o.size();
+            if (at + got > o.capacity() || chan[c]->available() != got) {
+                overflow = true;
+                chan[c]->pull(&scratch[0], got < scratch.size() ? got : scratch.size(), 1);
+                continue;
+            }
+            o.resize(at + got);     // within capacity: no allocation
+            chan[c]->pull(&o[at], got, 1);
+        }
+    }
+
+    //! `frames` of `x` (interleaved), in chunks of `chunk`, from frame `from`.
+    void feed(const std::vector<float> & x, size_t from, size_t frames, size_t chunk) {
+        const size_t ch = chan.size();
+        for (size_t b = from; b < from + frames; b += chunk) {
+            const size_t n = (from + frames - b < chunk) ? (from + frames - b) : chunk;
+            hold.feed(&x[b * ch], n, *this);
+        }
+    }
+
+    //! The wrapper's finishTrack(): settle the hold, then drain.
+    void finish() {
+        scoped_flush_denormals ftz;
+        hold.settle(*this);
+        for (size_t c = 0; c < chan.size(); ++c) chan[c]->drain();
+        (*this)(0);
+    }
+};
+
+//! Two channels that differ, interleaved, as float: what foobar2000 hands over.
+std::vector<float> stereo(const std::vector<double> & l, const std::vector<double> & r) {
+    std::vector<float> v(l.size() * 2);
+    for (size_t i = 0; i < l.size(); ++i) {
+        v[2 * i] = (float)l[i];
+        v[2 * i + 1] = (float)r[i];
+    }
+    return v;
+}
+
+//! The warm start as the core documents it, one channel straight through: the
+//! first `warm` frames with the output held back, then all `frames` of the
+//! stream, then drained. What the wrapper must reproduce to the bit.
+std::vector<double> warmReference(const Config & cfg, const std::vector<float> & x,
+                                  unsigned c, size_t from, size_t warm, size_t frames) {
+    std::vector<float> mono(frames);
+    for (size_t i = 0; i < frames; ++i) mono[i] = x[2 * (from + i) + c];
+    Channel ch;
+    ch.configure(cfg);
+    scoped_flush_denormals ftz;
+    if (warm > 0) {
+        ch.beginWarm();
+        ch.push(&mono[0], warm, 1);
+        ch.endWarm();
+    }
+    std::vector<double> out;
+    std::vector<double> buf((size_t)cfg.maxBlock * 2);
+    for (size_t b = 0; b < frames; b += 4096) {
+        const size_t n = (frames - b < 4096) ? (frames - b) : 4096;
+        ch.push(&mono[b], n, 1);
+        const size_t got = ch.available();
+        ch.pull(&buf[0], got, 1);
+        out.insert(out.end(), buf.begin(), buf.begin() + (ptrdiff_t)got);
+    }
+    ch.drain();
+    const size_t got = ch.available();
+    std::vector<double> tail(got);
+    if (got > 0) ch.pull(&tail[0], got, 1);
+    out.insert(out.end(), tail.begin(), tail.end());
+    return out;
+}
+
+//! Requires `got` to be `want` sample for sample, and as long.
+void requireSame(const char * what, const std::vector<double> & got,
+                 const std::vector<double> & want) {
+    size_t diff = 0, first = 0;
+    const bool lenOk = got.size() == want.size();
+    for (size_t i = 0; lenOk && i < got.size(); ++i) {
+        if (got[i] != want[i]) { if (diff++ == 0) first = i; }
+    }
+    const bool ok = lenOk && diff == 0;
+    if (!lenOk) {
+        printf("  %-50s %-4s %zu samples, wanted %zu\n", what, "FAIL", got.size(), want.size());
+    } else if (ok) {
+        printf("  %-50s %-4s %zu samples, bit-identical\n", what, "ok", got.size());
+    } else {
+        printf("  %-50s %-4s %zu samples differ, the first at %zu\n", what, "FAIL", diff, first);
+    }
+    if (!ok) ++g_failures;
 }
 
 } // anonymous namespace
@@ -512,6 +633,121 @@ int main() {
         arm();
         pushChunks(chan, sig, R, sink);
         requireQuiet("wrapper: audio after the moves");
+    }
+
+    // --- the wrapper's warm start ------------------------------------------
+    //
+    // dsp_declick holds a track's first Config::warmSeconds() in a WarmHold,
+    // runs the warm pass over them on a thread per channel, then hands them to
+    // the core as the stream, twice what comes in per chunk. All of that is
+    // inside on_chunk(), on the audio thread: the ring and the threads come
+    // from configure(), at a format change, and nothing after may allocate.
+    // And what comes out must be the warm start's to the bit - one channel
+    // warmed, then run straight through - however the chunks fall, and on
+    // whichever thread a channel warmed.
+    {
+        printf("\n");
+        const size_t T = (size_t)R * 16;
+        const std::vector<float> x = stereo(signal((int)T, rate), signal((int)T, rate, 2 * R, 5 * R));
+        const size_t W = (size_t)(cfg.warmSeconds() * rate);
+        const size_t expect = T + (size_t)cfg.latency + (size_t)R;
+        std::vector<double> ref[2];
+        for (unsigned c = 0; c < 2; ++c) ref[c] = warmReference(cfg, x, c, 0, W, T);
+
+        // The chunk lengths foobar2000's decoders hand over - FLAC's and MP3's
+        // - and one past three times maxBlock, which the hold has to cut up.
+        const size_t chunks[3] = { 4096, 1152, (size_t)cfg.maxBlock * 3 + 5 };
+        const unsigned threads[3] = { 2, 1, 2 };
+        for (int k = 0; k < 3; ++k) {
+            HoldRig rig(cfg, 2, rate, threads[k], expect);
+            rig.hold.arm();
+            arm();
+            {
+                scoped_flush_denormals ftz;
+                rig.feed(x, 0, T, chunks[k]);
+            }
+            rig.finish();
+            char what[80];
+            snprintf(what, sizeof what, "warm hold: chunks of %zu, %u thread(s)", chunks[k], rig.hold.threads());
+            requireQuiet(what);
+            const bool ran = rig.hold.warmPasses() == 1 && rig.hold.lastWarmFrames() == W
+                          && rig.hold.pending() == 0 && !rig.overflow
+                          && rig.hold.threads() == threads[k];
+            printf("  %-50s %-4s %llu warm pass of %zu frames, %.0f ms\n", "... and it warmed once",
+                   ran ? "ok" : "FAIL", (unsigned long long)rig.hold.warmPasses(),
+                   rig.hold.lastWarmFrames(), rig.hold.lastWarmMs());
+            if (!ran) ++g_failures;
+            requireSame("... left channel against the core's warm start", rig.out[0], ref[0]);
+            requireSame("... right channel", rig.out[1], ref[1]);
+        }
+
+        // A track shorter than the warm length ends while it is still held:
+        // the wrapper's finishTrack() warms on what there is and pushes it all.
+        {
+            const size_t S = (size_t)R * 3;
+            HoldRig rig(cfg, 2, rate, 2, expect);
+            rig.hold.arm();
+            arm();
+            {
+                scoped_flush_denormals ftz;
+                rig.feed(x, 0, S, 4096);
+            }
+            const bool held = rig.hold.holding() && rig.hold.pending() == S && rig.out[0].empty();
+            rig.finish();
+            requireQuiet("warm hold: a 3 s track, settled while held");
+            printf("  %-50s %-4s %zu frames held, nothing out until the end\n", "... and it held",
+                   held ? "ok" : "FAIL", S);
+            if (!held) ++g_failures;
+            requireSame("... left channel against the core's warm start",
+                        rig.out[0], warmReference(cfg, x, 0, 0, S, S));
+            requireSame("... right channel", rig.out[1], warmReference(cfg, x, 1, 0, S, S));
+        }
+
+        // A seek while the warm start is still handing back: the wrapper's
+        // flush() resets the channels and holds again from the new place.
+        {
+            const size_t at = (size_t)R * 4, S = (size_t)R * 11;
+            HoldRig rig(cfg, 2, rate, 2, expect);
+            rig.hold.arm();
+            arm();
+            {
+                scoped_flush_denormals ftz;
+                rig.feed(x, 0, (size_t)R * 9, 4096);
+            }
+            const bool replaying = !rig.hold.holding() && rig.hold.pending() > 0;
+            for (size_t c = 0; c < 2; ++c) { rig.chan[c]->reset(); rig.out[c].clear(); }
+            rig.hold.arm();
+            {
+                scoped_flush_denormals ftz;
+                rig.feed(x, at, S, 4096);
+            }
+            rig.finish();
+            requireQuiet("warm hold: a seek while handing back");
+            printf("  %-50s %-4s %llu warm passes\n", "... and it warmed again",
+                   (replaying && rig.hold.warmPasses() == 2) ? "ok" : "FAIL",
+                   (unsigned long long)rig.hold.warmPasses());
+            if (!(replaying && rig.hold.warmPasses() == 2)) ++g_failures;
+            requireSame("... left channel against the core's warm start",
+                        rig.out[0], warmReference(cfg, x, 0, at, W, S));
+            requireSame("... right channel", rig.out[1], warmReference(cfg, x, 1, at, W, S));
+        }
+
+        // Off: the hold passes straight through, and the output is the cold
+        // stream's - what the component did before the warm start.
+        {
+            HoldRig rig(cfg, 2, rate, 2, expect);
+            rig.hold.disarm();
+            arm();
+            {
+                scoped_flush_denormals ftz;
+                rig.feed(x, 0, T, 4096);
+            }
+            rig.finish();
+            requireQuiet("warm hold off: straight through");
+            requireSame("... left channel against the cold stream",
+                        rig.out[0], warmReference(cfg, x, 0, 0, 0, T));
+            requireSame("... right channel", rig.out[1], warmReference(cfg, x, 1, 0, 0, T));
+        }
     }
 
     // --- the Wiener path, which is off by default -------------------------

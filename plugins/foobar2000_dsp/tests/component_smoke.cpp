@@ -120,15 +120,16 @@ double chunkPeak(const audio_chunk & chunk) {
     return peak;
 }
 
-//! Runs `count` chunks of the given format through the DSP.
+//! Runs `count` chunks of the given format through the DSP, the last of them
+//! with `lastFlags` - dsp::FLUSH to end playback there.
 bool pump(dsp::ptr d, unsigned channels, unsigned rate, size_t frames, size_t count,
-          double * outPeak) {
+          double * outPeak, int lastFlags = 0) {
     double peak = 0.0;
     for (size_t i = 0; i < count; ++i) {
         dsp_chunk_list_impl list;
         audio_chunk * c = list.add_item(frames * channels);
         fillChunk(*c, channels, rate, frames, i * frames);
-        d->run_abortable(&list, dsp_track_t(), 0, fb2k::noAbort);
+        d->run_abortable(&list, dsp_track_t(), (i + 1 == count) ? lastFlags : 0, fb2k::noAbort);
         for (t_size k = 0; k < list.get_count(); ++k) {
             if (!chunkIsFinite(*list.get_item(k))) return false;
             const double p = chunkPeak(*list.get_item(k));
@@ -398,8 +399,10 @@ int wmain(int argc, wchar_t ** argv) {
     if (!instance.is_valid()) return 1;
 
     // --- audio ---------------------------------------------------------------
+    // Ended with dsp::FLUSH: Declick's warm start holds a track's first seven
+    // seconds, and gives them back here if playback ends sooner.
     double peak = 0.0;
-    check(pump(instance, 2, 44100, 1024, 40, &peak), "stereo 44.1 kHz output stays finite");
+    check(pump(instance, 2, 44100, 1024, 40, &peak, dsp::FLUSH), "stereo 44.1 kHz output stays finite");
     check(peak > 0.01, "stereo 44.1 kHz output is not silence");
     std::printf("  (peak after processing: %.3f)\n", peak);
 
