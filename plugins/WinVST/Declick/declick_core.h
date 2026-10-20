@@ -1154,7 +1154,9 @@ private:
     std::vector<int> m_flOrder;      //!< the runs in start order
     int    m_flN = 0;
     std::vector<double> m_flAcc;
-    std::vector<double> m_flHp;      //!< the high-pass, 2 flankHalf + 1 taps
+    //! The high-pass, 2 flankHalf + 1 taps, twice: with kFlankPad zeros either
+    //! side, -0.0 in m_flHpP and +0.0 in m_flHpN. See flankAddAvx2().
+    std::vector<double> m_flHpP, m_flHpN;
     //! The last sample a flank span reached, in m_win's coordinates: the next
     //! block's spans start after it, so no sample is corrected twice.
     int    m_flEnd = 0;
@@ -1244,6 +1246,9 @@ private:
     //! Per bin, the magnitudes of the last fineM frames, kept sorted: a hop
     //! moves one value out and one in.
     std::vector<double> m_fSorted;   //!< (m_dNb + m_fNb) x fineM, a place of pad either side
+    //! Whether m_fSorted holds the last fineM frames: not where the kernels
+    //! take the quantile straight from the frames. See frameQuantile().
+    bool   m_fSortedLive = false;
     //! The fineQ quantile of each window of fineM frames, by the frame that
     //! ends it: frame f in row f % m_fQSlots. The windows before and after
     //! the cut frame are two of these, fineM + 1 frames apart, so each window
@@ -1290,6 +1295,7 @@ private:
     std::vector<int>    m_mRev;
     std::vector<double> m_mMag, m_mXRe, m_mXIm;  //!< m_mSlots x m_mNb
     std::vector<double> m_mSorted;   //!< m_mNb x microM, a place of pad either side
+    bool   m_mSortedLive = false;  //!< as m_fSortedLive
     std::vector<double> m_mQ;        //!< m_mQSlots x m_mNb
     //! bodyBeta() as of the latest repair block. It only changes there, and
     //! the fine stage, hopping every N/4 samples, cannot afford to rescan

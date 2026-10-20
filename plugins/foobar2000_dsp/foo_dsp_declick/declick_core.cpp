@@ -228,6 +228,22 @@ typedef void (*FftOneFn)(double * re, double * im, int n, int h,
 //! out[b] with in[b], keeping it sorted. See sortedReplace().
 typedef void (*SortedRowFn)(double * rows, int n, int stride, int count,
                             const double * out, const double * in);
+//! Two dot()s, each to the bit: *r0 = dot(x0, y0, n0), *r1 = dot(x1, y1, n1).
+typedef void (*Dot2Fn)(const double * x0, const double * y0, int n0,
+                       const double * x1, const double * y1, int n1,
+                       double * r0, double * r1);
+//! The flank repair's high-passed correction: acc[t0 + j + u] += hp[u] * d[j]
+//! for j < m and u in -Hh .. Hh, j by j, skipping a d[j] of zero, and never
+//! past acc[xEnd]. hpP and hpN point at tap 0 of the taps with kFlankPad
+//! zeros either side, -0.0 in hpP and +0.0 in hpN; see flankAddAvx2().
+typedef void (*FlankAddFn)(double * acc, const double * hpP, const double * hpN,
+                           int Hh, const double * d, int t0, int m, int xEnd);
+struct QuantilePos;
+//! q[b] = the quantile at p of frames[0][b] .. frames[n - 1][b], for b < nb,
+//! straight from the frames; false, having done nothing, where p is too far up
+//! for it. Null where a kernel set keeps sorted windows instead.
+typedef bool (*FrameQuantileFn)(const double * const * frames, int n, int nb,
+                                const QuantilePos & p, double * q);
 
 struct Kernels {
     FilterFn    filter;
@@ -235,12 +251,35 @@ struct Kernels {
     FftPairFn   fftPair;
     FftOneFn    fftOne;
     SortedRowFn sortedRow;
+    Dot2Fn      dot2;
+    FlankAddFn  flankAdd;
+    FrameQuantileFn frameQuantile;
     const char * name;
 };
+
+enum { kFlankPad = 16 };
 
 void filterBase(const double * h, const double * x, double * out,
                 int count, int taps) {
     for (int i = 0; i < count; ++i) out[i] = dot(h, x + i, taps);
+}
+
+void dot2Base(const double * x0, const double * y0, int n0,
+              const double * x1, const double * y1, int n1,
+              double * r0, double * r1) {
+    *r0 = dot(x0, y0, n0);
+    *r1 = dot(x1, y1, n1);
+}
+
+void flankAddBase(double * acc, const double * hpP, const double *, int Hh,
+                  const double * d, int t0, int m, int xEnd) {
+    for (int j = 0; j < m; ++j) {
+        const double dj = d[j];
+        if (dj == 0.0) continue;
+        const int t = t0 + j;
+        const int b = (t + Hh > xEnd) ? (xEnd - t) : Hh;
+        for (int u = -Hh; u <= b; ++u) acc[t + u] += hpP[u] * dj;
+    }
 }
 
 void autocorrBase(const double * x, int n, double * r, int maxLag) {
@@ -333,16 +372,33 @@ inline void sortedStep2(double * m, int i, int a, int b, int d) {
 //! value in and one out. Only the floor stage is over the line.
 enum { kSortedBig = 64 };
 
-//! The q quantile of n sorted values, as numpy's default (linear) finds it:
-//! the values at floor and ceil of q (n - 1), interpolated.
-double sortedQuantile(const double * v, int n, double q) {
+//! Where the q quantile of n sorted values lies, as numpy's default (linear)
+//! finds it: the values at floor and ceil of q (n - 1), interpolated. It is
+//! the same for every window of a row, so a row finds it once. Found once per
+//! window it was nearly all of the fine and micro stages' quantile reads, 4% of
+//! the run on a Haswell: below SSE4.1 floor() is a call into the CRT.
+struct QuantilePos {
+    int lo;
+    double frac;
+    bool interpolate;
+};
+
+inline QuantilePos quantilePos(int n, double q) {
     const double pos = q * (double)(n - 1);
     int lo = (int)floor(pos);
     if (lo < 0) lo = 0;
     if (lo > n - 1) lo = n - 1;
-    const double frac = pos - (double)lo;
-    if (!(frac > 0.0) || lo + 1 >= n) return v[lo];
-    return v[lo] + frac * (v[lo + 1] - v[lo]);
+    QuantilePos p;
+    p.lo = lo;
+    p.frac = pos - (double)lo;
+    p.interpolate = (p.frac > 0.0) && lo + 1 < n;
+    return p;
+}
+
+//! The quantile at p of the sorted values at v.
+inline double sortedQuantile(const double * v, const QuantilePos & p) {
+    if (!p.interpolate) return v[p.lo];
+    return v[p.lo] + p.frac * (v[p.lo + 1] - v[p.lo]);
 }
 
 //! Where `out` leaves a sorted window of n values and `in` goes in: `out` is
@@ -504,7 +560,8 @@ void fftOneBase(double * re, double * im, int n, int h,
 }
 
 const Kernels kBaseKernels = {
-    filterBase, autocorrBase, fftPairBase, fftOneBase, sortedRowBase,
+    filterBase, autocorrBase, fftPairBase, fftOneBase, sortedRowBase, dot2Base, flankAddBase,
+    nullptr,                    // frameQuantile: the baseline keeps sorted windows
     DECLICK_SSE2 ? "sse2" : "scalar"
 };
 
@@ -855,8 +912,199 @@ DECLICK_AVX2_FN void fftOneAvx2(double * re, double * im, int n, int h,
     _mm256_zeroupper();
 }
 
+//! What is left of dot() once its eight-at-a-time loop is done, from its four
+//! partial sums: the pairs left over go to s0, and the sums close as dot()
+//! closes them. Multiply and add, never FMA, as dot() has it.
+DECLICK_AVX2_FN inline __m128d dotFinish(__m128d s0, __m128d s1, __m128d s2, __m128d s3,
+                                         const double * x, const double * y, int i, int n) {
+    for (; i + 2 <= n; i += 2)
+        s0 = _mm_add_pd(s0, _mm_mul_pd(_mm_loadu_pd(x + i), _mm_loadu_pd(y + i)));
+    const __m128d t = _mm_add_pd(_mm_add_pd(s0, s1), _mm_add_pd(s2, s3));
+    __m128d acc = _mm_add_sd(t, _mm_unpackhi_pd(t, t));
+    if (i < n) acc = _mm_add_sd(acc, _mm_mul_sd(_mm_load_sd(x + i), _mm_load_sd(y + i)));
+    return acc;
+}
+
+//! Two dot()s at once, each to the bit. dot()'s four two-lane partial sums are
+//! two four-lane ones here, s0 and s1 side by side and s2 and s3, which take
+//! the same products in the same order: half the adds. dot() is bound by
+//! Haswell's one port for adds; two four-lane sums alone would wait on their
+//! own adds instead, and two dots at once keep four going, so the port does
+//! twice dot()'s work. For solveSpan(), whose right-hand side is two dot()s a
+//! sample - 1290 cycles a solve became 930 on a Haswell - and the voice
+//! guard's lags.
+DECLICK_AVX2_FN void dot2Avx2(const double * x0, const double * y0, int n0,
+                              const double * x1, const double * y1, int n1,
+                              double * r0, double * r1) {
+    __m256d a0 = _mm256_setzero_pd(), b0 = _mm256_setzero_pd();
+    __m256d a1 = _mm256_setzero_pd(), b1 = _mm256_setzero_pd();
+    // MSVC workaround (VS 2017 15.9, cl 19.16.27051): counted loops, each
+    // with one exit test. The natural `for (; i + 8 <= n0 && i + 8 <= n1;)`
+    // came out with the sums kept in memory and a vzeroupper inside the loop.
+    // A later compiler may not need this: if that form disassembles with the
+    // sums in ymm registers and no vzeroupper in the loop, it can come back.
+    const int e0 = (n0 > 0) ? (n0 & ~7) : 0;
+    const int e1 = (n1 > 0) ? (n1 & ~7) : 0;
+    const int ec = (e0 < e1) ? e0 : e1;
+    for (int i = 0; i < ec; i += 8) {
+        a0 = _mm256_add_pd(a0, _mm256_mul_pd(_mm256_loadu_pd(x0 + i), _mm256_loadu_pd(y0 + i)));
+        a1 = _mm256_add_pd(a1, _mm256_mul_pd(_mm256_loadu_pd(x1 + i), _mm256_loadu_pd(y1 + i)));
+        b0 = _mm256_add_pd(b0, _mm256_mul_pd(_mm256_loadu_pd(x0 + i + 4), _mm256_loadu_pd(y0 + i + 4)));
+        b1 = _mm256_add_pd(b1, _mm256_mul_pd(_mm256_loadu_pd(x1 + i + 4), _mm256_loadu_pd(y1 + i + 4)));
+    }
+    for (int i = ec; i < e0; i += 8) {
+        a0 = _mm256_add_pd(a0, _mm256_mul_pd(_mm256_loadu_pd(x0 + i), _mm256_loadu_pd(y0 + i)));
+        b0 = _mm256_add_pd(b0, _mm256_mul_pd(_mm256_loadu_pd(x0 + i + 4), _mm256_loadu_pd(y0 + i + 4)));
+    }
+    for (int i = ec; i < e1; i += 8) {
+        a1 = _mm256_add_pd(a1, _mm256_mul_pd(_mm256_loadu_pd(x1 + i), _mm256_loadu_pd(y1 + i)));
+        b1 = _mm256_add_pd(b1, _mm256_mul_pd(_mm256_loadu_pd(x1 + i + 4), _mm256_loadu_pd(y1 + i + 4)));
+    }
+    // MSVC workaround (VS 2017 15.9, cl 19.16.27051): the sums to memory and
+    // the upper halves cleared here, before the close, which is all halves.
+    // Taking the halves straight from a0 .. b1, with _mm256_zeroupper() at the
+    // end, MSVC moved its vzeroupper ahead of the close, then read the sums
+    // back whole from where it had spilled them, and returned to the SSE2
+    // caller with the upper halves dirty: Haswell's ~70-cycle state change,
+    // twice a call. This store took the right-hand side above from 1760
+    // cycles a solve to 960. A later compiler may not need it: if the plain
+    // form disassembles with no ymm register used after the last vzeroupper
+    // before each ret, the halves can come from the registers.
+    double sums[16];
+    _mm256_storeu_pd(sums,      a0);
+    _mm256_storeu_pd(sums + 4,  b0);
+    _mm256_storeu_pd(sums + 8,  a1);
+    _mm256_storeu_pd(sums + 12, b1);
+    _mm256_zeroupper();
+    // dot() of nothing is 0.0, where the close would give 0.0 + 0.0.
+    _mm_store_sd(r0, (n0 > 0) ? dotFinish(_mm_loadu_pd(sums), _mm_loadu_pd(sums + 2),
+                                          _mm_loadu_pd(sums + 4), _mm_loadu_pd(sums + 6),
+                                          x0, y0, e0, n0) : _mm_setzero_pd());
+    _mm_store_sd(r1, (n1 > 0) ? dotFinish(_mm_loadu_pd(sums + 8), _mm_loadu_pd(sums + 10),
+                                          _mm_loadu_pd(sums + 12), _mm_loadu_pd(sums + 14),
+                                          x1, y1, e1, n1) : _mm_setzero_pd());
+}
+
+//! flankAddBase() turned round: sixteen outputs at a time held in registers,
+//! every sample whose band reaches them added in, then stored. The base loop
+//! comes out scalar from MSVC 19.16, which cannot tell acc from the taps, and
+//! does each output's add again for every sample of the span, on Haswell's one
+//! port for adds; here a sample's taps go into four outputs an add. Each
+//! output still takes its terms one at a time in sample order, a multiply then
+//! an add, never FMA, so the sums are the base loop's to the bit. 1870 cycles
+//! a span became 1190 on a Haswell.
+//!
+//! A lane whose output the sample's band does not reach reads a pad of the
+//! taps, and its product has to change nothing. An added -0 is the one value
+//! that changes nothing whatever it is added to, +0 and -0 included, so the
+//! pads are zeros signed to make that product: -0 for a positive d, +0 for a
+//! negative. Outputs past xEnd are neither read nor written.
+//!
+//! The tests of d[j] are intrinsics rather than `d[j] == 0.0` and `d[j] < 0`
+//! for the reason given above the AVX2 kernels: MSVC encodes plain double code
+//! here as legacy SSE.
+DECLICK_AVX2_FN void flankAddAvx2(double * acc, const double * hpP, const double * hpN,
+                                  int Hh, const double * d, int t0, int m, int xEnd) {
+    const int x0 = t0 - Hh;
+    const int x1 = (t0 + m - 1 + Hh < xEnd) ? (t0 + m - 1 + Hh) : xEnd;
+    const __m128d zero = _mm_setzero_pd();
+    for (int xb = x0; xb <= x1; xb += 16) {
+        // The outputs in range, by vector: all of them but in the last block.
+        const int left = x1 - xb + 1;
+        const __m256i k0 = laneMask((left > 4) ? 4 : left);
+        const __m256i k1 = laneMask((left > 8) ? 4 : (left > 4 ? left - 4 : 0));
+        const __m256i k2 = laneMask((left > 12) ? 4 : (left > 8 ? left - 8 : 0));
+        const __m256i k3 = laneMask((left > 16) ? 4 : (left > 12 ? left - 12 : 0));
+        double * o = acc + xb;
+        __m256d a0 = _mm256_maskload_pd(o,      k0);
+        __m256d a1 = _mm256_maskload_pd(o + 4,  k1);
+        __m256d a2 = _mm256_maskload_pd(o + 8,  k2);
+        __m256d a3 = _mm256_maskload_pd(o + 12, k3);
+        // The samples whose band reaches the block: t - Hh <= xb + 15, t + Hh >= xb.
+        const int jlo = (xb - Hh - t0 > 0) ? (xb - Hh - t0) : 0;
+        const int jhi = (xb + 15 + Hh - t0 < m - 1) ? (xb + 15 + Hh - t0) : (m - 1);
+        for (int j = jlo; j <= jhi; ++j) {
+            const __m128d dj = _mm_load_sd(d + j);
+            if (_mm_movemask_pd(_mm_cmpeq_sd(dj, zero)) & 1) continue;   // d[j] == 0.0
+            const double * hp = ((_mm_movemask_pd(dj) & 1) ? hpN : hpP) + (xb - t0 - j);
+            const __m256d dv = _mm256_broadcast_sd(d + j);
+            a0 = _mm256_add_pd(a0, _mm256_mul_pd(_mm256_loadu_pd(hp),      dv));
+            a1 = _mm256_add_pd(a1, _mm256_mul_pd(_mm256_loadu_pd(hp + 4),  dv));
+            a2 = _mm256_add_pd(a2, _mm256_mul_pd(_mm256_loadu_pd(hp + 8),  dv));
+            a3 = _mm256_add_pd(a3, _mm256_mul_pd(_mm256_loadu_pd(hp + 12), dv));
+        }
+        _mm256_maskstore_pd(o,      k0, a0);
+        _mm256_maskstore_pd(o + 4,  k1, a1);
+        _mm256_maskstore_pd(o + 8,  k2, a2);
+        _mm256_maskstore_pd(o + 12, k3, a3);
+    }
+    _mm256_zeroupper();
+}
+
+//! The fine and micro stages' quantile without their sorted windows: for four
+//! bins at a time, the L + 1 + I smallest of the n frames' values kept in
+//! order, each frame's value passed down them by a min and a max a place, and
+//! the quantile read off the last one or two. A quantile is an order
+//! statistic, and this finds the same values the windows hold, so the result
+//! is theirs to the bit: the interpolation is the same multiply and add, never
+//! FMA. NaN aside, which min and max would place differently - and the
+//! magnitudes are roots of sums of squares of finite values.
+//!
+//! Keeping the windows sorted costs a count and a predicated move per bin per
+//! hop, ~45 cycles a window of 16 on a Haswell however it is written: two
+//! rewrites of sortedRowAvx2(), one of them taking four windows at a time
+//! transposed, neither saved more than 15%. This is 2 (L + 1 + I) - 1 mins
+//! and maxes a frame for four bins: the fine stage's 53 bins went from ~2800
+//! cycles a hop to ~1600, the micro stage's 11 from ~850 to ~600. Infinity
+//! seeds the places, and lanes past nb read nothing and are not written.
+template <int L, bool I>
+DECLICK_AVX2_FN void frameSelectAvx2(const double * const * frames, int n, int nb,
+                                     double frac, double * q) {
+    enum { K = L + 1 + (I ? 1 : 0) };
+    const __m256d inf = _mm256_set1_pd(HUGE_VAL);
+    const __m256d fr = _mm256_set1_pd(frac);
+    for (int b = 0; b < nb; b += 4) {
+        const __m256i m = laneMask((nb - b < 4) ? nb - b : 4);
+        __m256d s[K];
+        for (int i = 0; i < (int)K; ++i) s[i] = inf;
+        for (int j = 0; j < n; ++j) {
+            __m256d v = _mm256_maskload_pd(frames[j] + b, m);
+            for (int i = 0; i < (int)K; ++i) {
+                const __m256d lo = _mm256_min_pd(s[i], v);
+                v = _mm256_max_pd(s[i], v);
+                s[i] = lo;
+            }
+        }
+        __m256d r = s[L];
+        if (I) r = _mm256_add_pd(r, _mm256_mul_pd(fr, _mm256_sub_pd(s[L + (I ? 1 : 0)], r)));
+        _mm256_maskstore_pd(q + b, m, r);
+    }
+}
+
+DECLICK_AVX2_FN bool frameQuantileAvx2(const double * const * frames, int n, int nb,
+                                       const QuantilePos & p, double * q) {
+    switch (p.lo * 2 + (p.interpolate ? 1 : 0)) {
+    case 0:  frameSelectAvx2<0, false>(frames, n, nb, p.frac, q); break;
+    case 1:  frameSelectAvx2<0, true >(frames, n, nb, p.frac, q); break;
+    case 2:  frameSelectAvx2<1, false>(frames, n, nb, p.frac, q); break;
+    case 3:  frameSelectAvx2<1, true >(frames, n, nb, p.frac, q); break;
+    case 4:  frameSelectAvx2<2, false>(frames, n, nb, p.frac, q); break;
+    case 5:  frameSelectAvx2<2, true >(frames, n, nb, p.frac, q); break;
+    case 6:  frameSelectAvx2<3, false>(frames, n, nb, p.frac, q); break;
+    case 7:  frameSelectAvx2<3, true >(frames, n, nb, p.frac, q); break;
+    case 8:  frameSelectAvx2<4, false>(frames, n, nb, p.frac, q); break;
+    case 9:  frameSelectAvx2<4, true >(frames, n, nb, p.frac, q); break;
+    case 10: frameSelectAvx2<5, false>(frames, n, nb, p.frac, q); break;
+    case 11: frameSelectAvx2<5, true >(frames, n, nb, p.frac, q); break;
+    default: return false;    // further up: the sorted windows, not more of these
+    }
+    _mm256_zeroupper();
+    return true;
+}
+
 const Kernels kAvx2Kernels = { filterAvx2, autocorrAvx2, fftPairAvx2, fftOneAvx2,
-                               sortedRowAvx2, "avx2" };
+                               sortedRowAvx2, dot2Avx2, flankAddAvx2, frameQuantileAvx2,
+                               "avx2" };
 
 //! AVX2 and FMA in the CPU, and YMM state saved by the OS.
 bool cpuHasAvx2Fma() {
@@ -1042,7 +1290,7 @@ void autocorrNeon(const double * x, int n, double * r, int maxLag) {
 
 // The scalar FFT pass vectorises as it stands, two doubles to a register.
 const Kernels kNeonKernels = { filterNeon, autocorrNeon, fftPairBase, fftOneBase,
-                               sortedRowBase, "neon" };
+                               sortedRowBase, dot2Base, flankAddBase, nullptr, "neon" };
 
 #endif // DECLICK_NEON
 
@@ -1455,6 +1703,16 @@ Channel::Channel() {
     m_cfg.compute(Params::defaults(), 44100.0);
 }
 
+//! MSVC note (VS 2017 15.9, cl 19.16.27051): of the loops here that fill the
+//! windows and twiddles from sin() and cos(), MSVC vectorises some, calling
+//! __vdecl_sin2 and __vdecl_cos2, which can differ from the scalar functions
+//! in the last bit - and which loops it vectorises moves with edits elsewhere
+//! in this function. So an edit here that changes no arithmetic can still move
+//! an entry by an ulp, and the output in its last bits: building the flank
+//! taps in a local std::vector rather than in m_flHpP took 15 of the 23 calls
+//! away, and moved one sample in 7.4 million of a 48 kHz record by a float
+//! ulp. To tell that from a real change, compare builds with /fp:strict, under
+//! which it vectorises none of them.
 void Channel::configure(const Config & cfg) {
     m_cfg = cfg;
     m_pad = cfg.pad;
@@ -1805,7 +2063,9 @@ void Channel::configure(const Config & cfg) {
         m_stD.assign((size_t)kBlock, 0.0);
         m_stS.assign((size_t)kBlock, 0);
         const int Hh = cfg.flankHalf;
-        m_flHp.assign((size_t)(2 * Hh + 1), 0.0);
+        m_flHpP.assign((size_t)(2 * Hh + 1 + 2 * kFlankPad), -0.0);
+        m_flHpN.assign((size_t)(2 * Hh + 1 + 2 * kFlankPad), 0.0);
+        double * hp = &m_flHpP[(size_t)kFlankPad];
         const double pi = 3.141592653589793;
         const double fc = cfg.flankHz / cfg.rate;           // cycles per sample
         const double beta = 6.0;
@@ -1815,11 +2075,12 @@ void Channel::configure(const Config & cfg) {
             const double sinc = (j == 0) ? 2.0 * fc : sin(x) / (pi * (double)j);
             const double r = (double)j / (double)Hh;
             const double w = besselI0(beta * sqrt(dmax(0.0, 1.0 - r * r))) / besselI0(beta);
-            m_flHp[(size_t)(j + Hh)] = sinc * w;
+            hp[(size_t)(j + Hh)] = sinc * w;
             sum += sinc * w;
         }
-        for (int j = 0; j <= 2 * Hh; ++j) m_flHp[(size_t)j] = -m_flHp[(size_t)j] / sum;
-        m_flHp[(size_t)Hh] += 1.0;
+        for (int j = 0; j <= 2 * Hh; ++j) hp[(size_t)j] = -hp[(size_t)j] / sum;
+        hp[(size_t)Hh] += 1.0;
+        std::copy(hp, hp + 2 * Hh + 1, m_flHpN.begin() + kFlankPad);
     }
 
     // The long-term spectrum for the edge: a 512-point complex transform of
@@ -2016,7 +2277,7 @@ size_t Channel::heapBytes() const {
             + m_mTwRe.capacity() + m_mTwIm.capacity() + m_mMag.capacity()
             + m_mXRe.capacity() + m_mXIm.capacity()
             + m_mSorted.capacity() + m_mQ.capacity()
-            + m_flGain.capacity() + m_flAcc.capacity() + m_flHp.capacity()
+            + m_flGain.capacity() + m_flAcc.capacity() + m_flHpP.capacity() + m_flHpN.capacity()
             + m_stY.capacity() + m_stD.capacity()
             + m_wSpec.capacity() + m_wWin.capacity() + m_wRe.capacity() + m_wIm.capacity()
             + m_wStRe.capacity() + m_wStIm.capacity()
@@ -2588,12 +2849,17 @@ bool Channel::solveSpan(int s, int e) {
     for (int j = 0; j < m; ++j) {
         const int c = s + j;
         double v = 0.0;
-        // t = c - order .. s - 1, where aa[c - t] runs backwards.
+        // t = c - order .. s - 1, where aa[c - t] runs backwards; and
+        // t = e + 1 .. c + order. The two sums are independent, and taken
+        // together the wide kernel overlaps them; see dot2Avx2().
         const int nl = s - (c - order);
-        if (nl > 0) v += dot(&m_aarev[0], win + (c - order), nl);
-        // t = e + 1 .. c + order.
         const int nr = c + order - e;
-        if (nr > 0) v += dot(&m_aa[(size_t)(e + 1 - c)], win + e + 1, nr);
+        double l, r;
+        g_kernels->dot2(&m_aarev[0], win + (c - order), nl,
+                        (nr > 0) ? &m_aa[(size_t)(e + 1 - c)] : &m_aa[0], win + e + 1, nr,
+                        &l, &r);
+        if (nl > 0) v += l;
+        if (nr > 0) v += r;
         m_rhs[(size_t)j] = -v;
     }
 
@@ -2765,21 +3031,21 @@ void Channel::flankSpan(int s, int e, double gain, double strength) {
     const double localMax = dmax(absMax(&m_dry[(size_t)(s - ctx)], ctx),
                                  absMax(&m_dry[(size_t)(e + 1)], ctx));
     const double limit = 1.5 * dmax(localMax, 1e-9);
-    const int Hh = m_cfg.flankHalf;
-    const double * hp = &m_flHp[(size_t)Hh];   // hp[-Hh .. Hh]
-    double * acc = &m_flAcc[(size_t)kBlock];   // acc[i] is window index i, from -kBlock
+    // Each estimate becomes the correction to its sample, in place.
+    double * d = &m_rhs[0];
     for (int j = 0; j < m; ++j) {
-        double v = m_rhs[(size_t)j];
+        double v = d[j];
         if (v > limit) v = limit;
         else if (v < -limit) v = -limit;
         const int t = s + j;
         const double x = m_dry[(size_t)t];
-        const double d = strength * ((x - gain * (x - v)) - m_win[(size_t)t]);
-        if (d == 0.0) continue;
-        const int a = -Hh;                      // never below -kBlock: see `lowest`
-        const int b = (t + Hh >= m_fill) ? (m_fill - 1 - t) : Hh;
-        for (int u = a; u <= b; ++u) acc[t + u] += hp[u] * d;
+        d[j] = strength * ((x - gain * (x - v)) - m_win[(size_t)t]);
     }
+    // High-passed into acc[i], window index i from -kBlock: never below it,
+    // see `lowest`, and never past the last sample in.
+    const size_t tap0 = (size_t)(kFlankPad + m_cfg.flankHalf);
+    g_kernels->flankAdd(&m_flAcc[(size_t)kBlock], &m_flHpP[tap0], &m_flHpN[tap0],
+                        m_cfg.flankHalf, d, s, m, m_fill - 1);
     m_flEnd = e;
     ++m_flSpans;
 }
@@ -3598,6 +3864,24 @@ void Channel::bodyHop(uint64_t start) {
 
 }
 
+enum { kFrameMax = 64 };
+
+//! The quantile at p of each of nb bins over the n frames ending at the one in
+//! `slot` of a ring of S frames of nb values each: straight from the frames
+//! where the kernels can, into q. False where they cannot, which leaves it to
+//! the sorted windows. See frameSelectAvx2().
+static bool frameQuantile(const std::vector<double> & ring, int S, size_t slot, int n,
+                          int nb, const QuantilePos & p, double * q) {
+    if (!g_kernels->frameQuantile || n > (int)kFrameMax) return false;
+    const double * fr[kFrameMax];
+    size_t s = slot;
+    for (int j = 0; j < n; ++j) {           // back a frame a step, not a remainder
+        fr[j] = &ring[s * (size_t)nb];
+        s = (s == 0) ? (size_t)S - 1 : s - 1;
+    }
+    return g_kernels->frameQuantile(fr, n, nb, p, q);
+}
+
 //! The newest frame starts at sample `start` of the stage's input, and the
 //! one cut here m_fD hops before it: its background needs the fineM frames
 //! either side, and the voice guard the m_fW either side. As in bodyHop(),
@@ -3638,7 +3922,16 @@ static double envPeriodicity(const double * ring, size_t slots, uint64_t c, int 
     for (int i = 0; i < n; ++i) { seg[i] -= mean; den += seg[i] * seg[i]; }
     den += 1e-30;
     double best = -1.0;
-    for (int lag = lmin; lag <= lmax; ++lag) {
+    int lag = lmin;
+    for (; lag + 1 <= lmax; lag += 2) {        // two lags at a time; see dot2Avx2()
+        double d0, d1;
+        g_kernels->dot2(seg, seg + lag, n - lag, seg, seg + lag + 1, n - lag - 1, &d0, &d1);
+        const double v0 = d0 / den * (double)n / (double)(n - lag);
+        if (v0 > best) best = v0;
+        const double v1 = d1 / den * (double)n / (double)(n - lag - 1);
+        if (v1 > best) best = v1;
+    }
+    if (lag <= lmax) {
         const double v = dot(seg, seg + lag, n - lag) / den * (double)n / (double)(n - lag);
         if (v > best) best = v;
     }
@@ -3674,7 +3967,7 @@ void Channel::fineHop(uint64_t start) {
     fftRadix2(re, im, M, &m_fStRe[0], &m_fStIm[0], false, g_kernels->fftPair, g_kernels->fftOne);
     const uint64_t f = m_fFrame++;
     const size_t nbs = (size_t)nb;
-    const size_t sl = (size_t)(f % (uint64_t)S) * nbs;
+    const size_t slot = (size_t)(f % (uint64_t)S), sl = slot * nbs;
     {
         double * mg = &m_fMag[sl];
         double * xr = &m_fXRe[sl];
@@ -3711,12 +4004,15 @@ void Channel::fineHop(uint64_t start) {
 
     // The window of the last fineM frames, f - fineM + 1 .. f, and its
     // quantile, into the row of frame f.
-    const double q = m_cfg.fineQ;
+    const QuantilePos qp = quantilePos(Mf, m_cfg.fineQ);
     const uint64_t QS = (uint64_t)m_fQSlots;
     const double * mag = &m_fMag[sl];
     double * srt = &m_fSorted[1];       // one place of pad either side
     double * qNew = &m_fQ[(size_t)(f % QS) * nbs];
-    if (m_fHist == Mf) {
+    if (frameQuantile(m_fMag, S, slot, Mf, nb, qp, qNew)) {
+        m_fSortedLive = false;          // the windows have fallen behind
+    } else if (m_fHist == Mf || !m_fSortedLive) {
+        m_fSortedLive = true;
         for (int j = 0; j < Mf; ++j) {
             const double * pj = &m_fMag[(size_t)((f - (uint64_t)j) % (uint64_t)S) * nbs];
             for (int b = 0; b < nb; ++b) srt[(size_t)b * (size_t)Mf + (size_t)j] = pj[b];
@@ -3724,13 +4020,13 @@ void Channel::fineHop(uint64_t start) {
         for (int b = 0; b < nb; ++b) {
             double * w = srt + (size_t)b * (size_t)Mf;
             std::sort(w, w + Mf);
-            qNew[b] = sortedQuantile(w, Mf, q);
+            qNew[b] = sortedQuantile(w, qp);
         }
     } else {
         const double * gone = &m_fMag[(size_t)((f - (uint64_t)Mf) % (uint64_t)S) * nbs];
         g_kernels->sortedRow(srt, Mf, Mf, nb, gone, mag);
         for (int b = 0; b < nb; ++b)
-            qNew[b] = sortedQuantile(srt + (size_t)b * (size_t)Mf, Mf, q);
+            qNew[b] = sortedQuantile(srt + (size_t)b * (size_t)Mf, qp);
     }
     if (m_fHist < 2 * D + 1) return;
 
@@ -3877,7 +4173,7 @@ void Channel::microHop(uint64_t start) {
     fftRadix2(re, im, M, &m_mStRe[0], &m_mStIm[0], false, g_kernels->fftPair, g_kernels->fftOne);
     const uint64_t f = m_mFrame++;
     const size_t nbs = (size_t)nb;
-    const size_t sl = (size_t)(f % (uint64_t)S) * nbs;
+    const size_t slot = (size_t)(f % (uint64_t)S), sl = slot * nbs;
     {
         double * mg = &m_mMag[sl];
         double * xr = &m_mXRe[sl];
@@ -3900,12 +4196,15 @@ void Channel::microHop(uint64_t start) {
     if (m_mHist < 2 * D + 1) ++m_mHist;
     if (m_mHist < Mm) return;
 
-    const double q = m_cfg.microQ;
+    const QuantilePos qp = quantilePos(Mm, m_cfg.microQ);
     const uint64_t QS = (uint64_t)m_mQSlots;
     const double * mag = &m_mMag[sl];
     double * srt = &m_mSorted[1];
     double * qNew = &m_mQ[(size_t)(f % QS) * nbs];
-    if (m_mHist == Mm) {
+    if (frameQuantile(m_mMag, S, slot, Mm, nb, qp, qNew)) {
+        m_mSortedLive = false;          // as the fine stage's
+    } else if (m_mHist == Mm || !m_mSortedLive) {
+        m_mSortedLive = true;
         for (int j = 0; j < Mm; ++j) {
             const double * pj = &m_mMag[(size_t)((f - (uint64_t)j) % (uint64_t)S) * nbs];
             for (int b = 0; b < nb; ++b) srt[(size_t)b * (size_t)Mm + (size_t)j] = pj[b];
@@ -3913,13 +4212,13 @@ void Channel::microHop(uint64_t start) {
         for (int b = 0; b < nb; ++b) {
             double * w = srt + (size_t)b * (size_t)Mm;
             std::sort(w, w + Mm);
-            qNew[b] = sortedQuantile(w, Mm, q);
+            qNew[b] = sortedQuantile(w, qp);
         }
     } else {
         const double * gone = &m_mMag[(size_t)((f - (uint64_t)Mm) % (uint64_t)S) * nbs];
         g_kernels->sortedRow(srt, Mm, Mm, nb, gone, mag);
         for (int b = 0; b < nb; ++b)
-            qNew[b] = sortedQuantile(srt + (size_t)b * (size_t)Mm, Mm, q);
+            qNew[b] = sortedQuantile(srt + (size_t)b * (size_t)Mm, qp);
     }
     if (m_mHist < 2 * D + 1) return;
 
