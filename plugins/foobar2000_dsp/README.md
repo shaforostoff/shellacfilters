@@ -2484,8 +2484,12 @@ way. A seek is a fresh start and has nothing in the buffer to hide the stall
 behind: it waits for it.
 
 VirtualDJ can read the coming seconds with GetSongBuffer, but not inside the
-audio callback's time, and does not call it yet. The VST and AU cannot read
-ahead and stay as they are.
+audio callback's time: there the pass runs on a worker thread, and every
+restart after it in that record (a cue, a seek, a loop) starts with what it
+learned, through `Channel::adoptWarm()`. The first play of a record is cold.
+See the VirtualDJ README's
+[warm start section](../vdjplugin/README.md#warm-start-declick). The VST and
+AU cannot read ahead and stay as they are.
 
 ---
 

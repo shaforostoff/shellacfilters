@@ -1992,6 +1992,37 @@ void Channel::endWarm() {
     resetFloorHistory();
 }
 
+//! What endWarm() keeps, from another channel: the carpet key's state, its
+//! m_warmBlocks, and the floor ceiling. "Taken nothing since" is m_seen,
+//! which resetPath() zeroes and every sample pushed counts.
+bool Channel::adoptWarm(const Channel & w) {
+    if (&w == this) return false;      // reset() would lose what there is to copy
+    reset();
+    if (w.m_warming || w.m_seen != 0 || !m_cfg.structurallyEquals(w.m_cfg)
+        || m_nWarm.size() != w.m_nWarm.size()) return false;
+    m_cRuns = w.m_cRuns;
+    m_cSamp = w.m_cSamp;
+    std::copy(w.m_cRing, w.m_cRing + kCarpetMax, m_cRing);
+    m_cPos = w.m_cPos;
+    m_cHave = w.m_cHave;
+    m_cKey = w.m_cKey;
+    m_cTotRuns = w.m_cTotRuns;
+    m_cTotSamp = w.m_cTotSamp;
+    m_cBin = w.m_cBin;
+    m_cBinBlk = w.m_cBinBlk;
+    m_cS1 = w.m_cS1;
+    m_cS2 = w.m_cS2;
+    m_cBinN = w.m_cBinN;
+    m_cTotS1 = w.m_cTotS1;
+    m_cTotS2 = w.m_cTotS2;
+    m_cTotBinN = w.m_cTotBinN;
+    std::copy(w.m_cFRing, w.m_cFRing + kCarpetMax, m_cFRing);
+    m_warmBlocks = w.m_warmBlocks;
+    m_nWarmT = w.m_nWarmT;
+    std::copy(w.m_nWarm.begin(), w.m_nWarm.end(), m_nWarm.begin());
+    return true;
+}
+
 void Channel::resetPath() {
     std::fill(m_win.begin(), m_win.end(), 0.0);
     std::fill(m_dry.begin(), m_dry.end(), 0.0);

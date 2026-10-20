@@ -19,6 +19,7 @@
 #include "vdjPlugin8.h"
 
 #include "declick_core.h"
+#include "declick_vdj_warm.h"
 #include "vdj_engine.h"
 
 #include <stdio.h>
@@ -37,13 +38,16 @@ public:
         return "Autoregressive detect-and-interpolate declicker for shellac and "
                "vinyl transfers. Reads the song ahead of the play head, so the "
                "repair gets the lookahead it needs and the deck stays in time - "
-               "no delay at all. Works on a loaded song, not on a live input.";
+               "no delay at all. Learns the record's surface from its first "
+               "seconds in the background and starts every cue, seek and loop "
+               "with it. Works on a loaded song, not on a live input.";
     }
 
     // -- parameters ----------------------------------------------------------
 
     enum {
-        kSensitivity = 1, kExtent, kMaxLength, kDepth, kPasses, kOrder, kDryWet
+        kSensitivity = 1, kExtent, kMaxLength, kDepth, kPasses, kOrder, kDryWet,
+        kWarmStart
     };
 
     void declareParameters(IVdjPlugin8 & host) {
@@ -54,6 +58,9 @@ public:
         host.DeclareParameterSlider(&m_e, kPasses,      "Passes",     "Passes",  kDefE);
         host.DeclareParameterSlider(&m_f, kOrder,       "Model order", "Order",  kDefF);
         host.DeclareParameterSlider(&m_g, kDryWet,      "Dry/Wet",    "Dry/Wet", kDefG);
+        // Last, so the seven sliders keep the ids their saved positions are
+        // filed under. See declick_vdj_warm.h.
+        host.DeclareParameterSwitch(&m_warmOn, kWarmStart, "Warm start", "Warm", true);
     }
 
     bool parameterString(int id, char * out, int size) const {
@@ -66,6 +73,7 @@ public:
             case kPasses:      snprintf(out, size, "%d", p.passes);                       return true;
             case kOrder:       snprintf(out, size, "%d", p.order);                        return true;
             case kDryWet:      snprintf(out, size, "%.0f %%", pinParameter(m_g) * 100.0); return true;
+            case kWarmStart:   snprintf(out, size, "%s", m_warmOn ? "on" : "off");        return true;
             default: return false;
         }
     }
@@ -102,6 +110,7 @@ public:
 
     //! True if the pipeline was rebuilt, i.e. the audio is discontinuous here.
     bool update(double rate) {
+        m_warm.setEnabled(m_warmOn != 0);
         const declick::Params p = params();
         if (m_configured && rate == m_rate && p == m_active) return false;
 
@@ -126,17 +135,23 @@ public:
         return true;
     }
 
+    //! A new record: the warm start reads its opening afresh.
     void reset() {
+        m_warm.newTrack();
         if (!m_configured) return;
         m_chan[0].reset();
         m_chan[1].reset();
     }
 
-    //! Declick has nothing worth keeping across a discontinuity: the window is
-    //! the previous audio and the noise estimate was measured from it, so a seek
-    //! and a new track are the same thing. Dehum's are not, which is why the two
-    //! calls exist separately.
-    void discontinuity() { reset(); }
+    //! A seek, a cue, a loop, a scratch out of the cache. The audio path has
+    //! nothing worth keeping across it - the window is the previous audio and
+    //! the noise estimate was measured from it - but what the warm pass learned
+    //! from this record's opening is still true of the record, so the restart
+    //! starts with it once the pass has finished: see declick_vdj_warm.h.
+    void discontinuity() {
+        if (!m_configured) return;
+        m_warm.start(m_chan);
+    }
 
     int lookahead() const { return m_configured ? m_cfg.latency : 0; }
 
@@ -167,9 +182,13 @@ public:
         m_chan[1].pull(out + 1, frames, kChannels);
     }
 
-    //! Nothing to scout. Declick learns only the local noise floor, which
-    //! converges in 30 ms, so there is no acquisition time to hide.
-    void scout(SongSource &, size_t) {}
+    //! The warm start's reading of the record's opening, a little per served
+    //! buffer. The noise floor converges in 30 ms and needs no scouting; the
+    //! carpet key and the crackle floor take seconds, and do.
+    void scout(SongSource & src, size_t served) { m_warm.feed(src, served); }
+
+    //! The warm start's state, for the tests and the benchmark.
+    DeclickWarm & warmStart() { return m_warm; }
 
 private:
     void rebuild(double rate, const declick::Params & p) {
@@ -181,6 +200,9 @@ private:
         m_active = p;
         m_rate = rate;
         m_configured = true;
+        // What the pass learned depends on the config. Failing to get a warm
+        // start is not failing to get a declicker: restarts go cold.
+        m_warm.configure(next, rate);
     }
 
     // Slider positions for the calibrated defaults, the same ones the VST2 port
@@ -199,8 +221,10 @@ private:
     // the top of each processing call and not again.
     float m_a = kDefA, m_b = kDefB, m_c = kDefC, m_d = kDefD;
     float m_e = kDefE, m_f = kDefF, m_g = kDefG;
+    int   m_warmOn = 1;
 
     declick::Channel m_chan[kChannels];
+    DeclickWarm      m_warm;
     declick::Config  m_cfg;
     declick::Params  m_active = declick::Params::defaults();
     double m_rate = 0.0;

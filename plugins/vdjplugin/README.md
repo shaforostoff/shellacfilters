@@ -331,7 +331,9 @@ certificate is the only real fix; there is no equivalent of ad-hoc signing here.
 Seven sliders each, mapped exactly as in the VST2 ports — a slider position has
 to mean the same thing in every port or the measurements in the foobar2000
 README stop describing any of them. `declick_vdj_verify` and `dehum_vdj_verify`
-pin the default positions against `Params::defaults()`.
+pin the default positions against `Params::defaults()`. Declick has one switch
+besides, **Warm start** (on by default; see [below](#warm-start-declick)),
+declared after the sliders so that their saved positions keep their ids.
 
 ### Declick
 
@@ -407,10 +409,70 @@ detector actually needs — and a restart within `kRestartCooldownSec` of the la
 one gets none at all. `declick_vdj_verify::testSecondConsumer` replays that
 interleaving and holds the ratio under 2× (it was 4.99×).
 
-**Everything is on the audio thread.** No worker threads, no locks, and one
-allocation per plug-in per sample rate. The Dehum scout is budgeted against
-playback rather than run flat out for the same reason: eight times playback
-speed is about 5 % of one core while it is running, and nothing afterwards.
+**Everything is on the audio thread**, except Declick's warm pass (below), and
+the audio thread takes a lock only to hand that pass over, once per record.
+One allocation per plug-in per sample rate. The
+Dehum scout is budgeted against playback rather than run flat out for the same
+reason: eight times playback speed is about 5 % of one core while it is
+running, and nothing afterwards.
+
+---
+
+## Warm start (Declick)
+
+Declick's carpet key and its crackle floor learn the record's surface over
+seconds, and a cold start shows in the first of them: the key opens on a loud
+opening and the floor stage takes music, or it stays shut over a crackly one.
+The core's warm start (`Channel::beginWarm()` / `endWarm()`, and the
+foobar2000 README's
+[warm start section](../foobar2000_dsp/README.md#the-first-seconds-from-the-read-ahead-a-warm-start-foobar2000)
+for what it does and what it was checked against) runs the record's first
+seven seconds through the core before the stream. A buffer plug-in can read
+them; what it cannot do is wait for the pass. `OnGetSongBuffer` is the audio
+callback for every deck at once, and the pass is 0.5–1.4 s of work on a 2014
+MacBook Air. foobar2000 stalls for it behind its output buffer; a stall here
+would stop the deck the room is hearing.
+
+So [`vdj_declick/declick_vdj_warm.h`](vdj_declick/declick_vdj_warm.h) splits it:
+
+* **The opening is copied on the audio thread**, at eight times the frames just
+  served per call, like Dehum's scout: through nothing upstream that is a
+  memcpy, and the seven seconds are in within the first 0.9 s of play. It is
+  copied rather than read from another thread because nothing in the SDK says
+  `GetSongBuffer` may be called from one.
+* **A worker thread runs the warm pass** over the copy, on a channel pair of its
+  own, at below-normal priority.
+* **Every restart after that, in that record** — a cue, a seek, a loop, a
+  scratch out of the cache, an alien read — starts with what the pass learned
+  (`Channel::adoptWarm()`, a copy of a few kB). A restart at the top of the
+  record is then the core's warm start to the bit. One anywhere else starts
+  there with the opening's key and floor ceiling in place of an empty history,
+  which is a fair prior on a record whose surface does not change.
+
+**The first play of a record is cold, as it was.** A buffer plug-in gets no
+"track loaded" event, so the opening is unknown until the deck first asks for
+audio, and the pass is done a second or two later. Cueing a record before
+playing it out — which is a restart — puts the warm start where the room hears
+it. A record loaded and played straight out, as automix does, starts cold.
+
+Measured on the Zen 4 dev box, stereo at 44.1 kHz, 512-frame calls paced at
+real time, five runs:
+
+| | clean record (*El abrojito*, stereo) | crackly (*El rodeo*, mono in both) |
+| --- | --- | --- |
+| restarts are warm from, after the first call | 0.94 s (AVX2), 1.00 s (SSE2) | 1.00 s, 1.07 s |
+| the pass, on the worker | 64 ms, 122 ms | 122 ms, 193 ms |
+| a call on the audio thread, mean | 0.25 ms, 0.42 ms — the same switched off | 0.50 ms, 0.70 ms — the same |
+| the dearest call while the opening is read | 0.65 ms, 1.08 ms | 1.37 ms, 1.78 ms |
+
+A restart costs what it did (2–5 ms either way: the latency filled again). On
+the Air, at seven times the SSE2 figures, the pass is 0.85–1.35 s and restarts
+are warm from 1.8–2.2 s after the first play. It costs a channel pair and the
+copy of the opening per plug-in: about 7.4 MB at 44.1 kHz, made at the first
+buffer of a new sample rate with the rest of the pipeline. **Max repair** and
+**Model order** throw the pass away and learn it again, as they rebuild the
+pipeline. Switching **Warm start** off makes every restart cold and reads
+nothing.
 
 ---
 
@@ -442,7 +504,7 @@ Three binaries, none of which needs VirtualDJ installed:
 | | |
 | --- | --- |
 | `vdj_host_verify` | The ABI. Loads each finished module the way VirtualDJ does - one `GetProcAddress`, the IID, the vtable - and requires its audio to match the same wrapper linked statically, to the bit. Also that a module declines the interface it does not implement, since VirtualDJ would otherwise call it through the wrong vtable |
-| `declick_vdj_verify` | The readahead claim — pipeline output bit-identical to the core straight through the song, at five block sizes; cache consistency under jumps; restart determinism; exact bypass; the slider mappings; and the second-consumer work bound described above |
+| `declick_vdj_verify` | The readahead claim — pipeline output bit-identical to the core straight through the song, at five block sizes; cache consistency under jumps; restart determinism; exact bypass; the slider mappings; the second-consumer work bound described above; and the warm start — the first play cold, a restart at the top the core's warm start to the bit and one at 15 s the core started there warm, a record shorter than the warm length, the switch, a new record mid-pass and a Model order move, none of it allocating on either thread |
 | `dehum_vdj_verify` | The same pipeline checks for the zero-latency core; the scout finds the line at the right frequency inside its advertised budget; what it finds reaches `adopt()` and gets cancelled; the slider mappings |
 
 Neither re-tests the DSP. `declick_verify`, `dehum_verify` and the rest in

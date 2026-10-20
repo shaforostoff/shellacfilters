@@ -10,4 +10,5 @@ add_vdj_plugin(Declick
     SOURCES declick_plugin.cpp
             declick_core.cpp
             declick_core.h
-            declick_engine.h)
+            declick_engine.h
+            declick_vdj_warm.h)

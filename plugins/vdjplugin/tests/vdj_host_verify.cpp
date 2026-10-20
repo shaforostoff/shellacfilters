@@ -209,7 +209,8 @@ void reportInfo(IVdjPlugin8 * plugin, const char * expectedName,
 //! also exercises the callback going the other way, since the plug-in has to
 //! call GetSongBuffer back through the pointer it was handed.
 template<class Engine>
-void verifyBuffer(const std::string & dir, const char * file, const char * name) {
+void verifyBuffer(const std::string & dir, const char * file, const char * name,
+                  size_t params) {
     printf("  -- %s (buffer) --\n", file);
     Module mod;
     if (!mod.load(dir, file)) return;
@@ -239,9 +240,10 @@ void verifyBuffer(const std::string & dir, const char * file, const char * name)
     const std::vector<short> want = runBuffer(inproc, cbStatic, song, 512);
     inproc->Release();
 
-    check(cbLoaded.declared.size() == cbStatic.declared.size()
-          && cbLoaded.declared.size() == 7,
-          "the loaded module declares the same seven sliders");
+    checkf(cbLoaded.declared.size() == cbStatic.declared.size()
+           && cbLoaded.declared.size() == params,
+           "the loaded module declares %.0f parameters, expected %.0f",
+           (double)cbLoaded.declared.size(), (double)params);
     check(cbLoaded.songBufferCalls > 0,
           "the loaded module called GetSongBuffer back through the callbacks");
     checkf(cbLoaded.songBufferCalls == cbStatic.songBufferCalls,
@@ -272,8 +274,8 @@ int main(int argc, char ** argv) {
     const std::string dir = argv[1];
     printf("  modules from %s\n", dir.c_str());
 
-    verifyBuffer<vdj::DeclickEngine>(dir, "Declick", "Declick");
-    verifyBuffer<vdj::DehumEngine>(dir, "Dehum", "Dehum");
+    verifyBuffer<vdj::DeclickEngine>(dir, "Declick", "Declick", 8);   // seven sliders, Warm start
+    verifyBuffer<vdj::DehumEngine>(dir, "Dehum", "Dehum", 7);
 
     return finish("vdj_host_verify");
 }

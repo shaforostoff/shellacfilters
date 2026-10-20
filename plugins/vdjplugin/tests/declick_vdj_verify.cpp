@@ -21,6 +21,12 @@
  *     VST2 port's paramsFromControls(). A slider position has to mean the same
  *     thing in every port.
  *
+ *  5. The warm start (declick_vdj_warm.h): once the opening has been read and
+ *     warmed off the audio thread, a restart at the top of the record is the
+ *     core's warm start to the bit, and one anywhere else is the core started
+ *     there with what the warm pass learned - and none of it, reading, the
+ *     pass or the restarts, allocates.
+ *
  *  Not tested here: the declicking itself. declick_verify in
  *  ../../foobar2000_dsp/tests does that against a Python reference, and this
  *  binary compiles the identical core.
@@ -33,22 +39,65 @@
 // scout, so the numbers come from it rather than from a guess here.
 #include "dehum_vdj_scout.h"
 
+#include <stdlib.h>
+
 #include <algorithm>
+#include <atomic>
 
 int vdjtest::g_failures = 0;
 
 using namespace vdjtest;
 
+// ---------------------------------------------------------------------------
+// Counting global allocator, armed only around the calls under test. Atomic,
+// because the warm start's worker runs its pass while the caller serves, and
+// that thread must not allocate either.
+
+namespace {
+std::atomic<size_t> g_allocs { 0 };
+std::atomic<bool>   g_armed { false };
+}
+
+void * operator new(size_t n) {
+    if (g_armed.load(std::memory_order_relaxed)) g_allocs.fetch_add(1, std::memory_order_relaxed);
+    void * p = malloc(n ? n : 1);
+    if (p == NULL) throw std::bad_alloc();
+    return p;
+}
+void * operator new[](size_t n) { return operator new(n); }
+void operator delete(void * p) noexcept { free(p); }
+void operator delete[](void * p) noexcept { free(p); }
+void operator delete(void * p, size_t) noexcept { free(p); }
+void operator delete[](void * p, size_t) noexcept { free(p); }
+
 namespace {
 
 const double kRate = 44100.0;
+
+void arm() { g_allocs.store(0); g_armed.store(true); }
+
+//! Requires the region just measured to have been allocation-free.
+void requireQuiet(const char * what) {
+    g_armed.store(false);
+    const size_t n = g_allocs.load();
+    if (n == 0) {
+        printf("  ok    %s: no allocation\n", what);
+    } else {
+        printf("  FAIL  %s: %zu allocation(s)\n", what, n);
+        ++g_failures;
+    }
+}
 
 //! The core, straight through the song, using the READ AHEAD recipe from the
 //! note on declick::Channel::prime(): feed until the output is ready, then take
 //! it. Deliberately written against the core and nothing else - it shares no
 //! code with BufferPipeline, which is what makes the comparison worth making.
+//!
+//! With `warm`, the core's warm start first: Channel::beginWarm(), the song's
+//! first `warm` frames, endWarm(). Then the stream from `from`, so that output
+//! frame k is the song's frame from + k.
 std::vector<short> reference(const std::vector<short> & song, size_t frames,
-                            const declick::Params & p) {
+                            const declick::Params & p, size_t warm = 0, size_t from = 0) {
     declick::Config cfg;
     cfg.compute(p, kRate);
 
@@ -61,8 +110,19 @@ std::vector<short> reference(const std::vector<short> & song, size_t frames,
     std::vector<double> in(512 * vdj::kChannels, 0.0);
     std::vector<double> got(4096 * vdj::kChannels, 0.0);
 
-    size_t inPos = 0, outPos = 0;
+    size_t inPos = from, outPos = 0;
     declick::scoped_flush_denormals ftz;
+
+    if (warm > 0) {
+        std::vector<double> ahead(warm * vdj::kChannels);
+        vdj::fromShorts(song.data(), ahead.data(), warm);
+        ch[0].beginWarm();
+        ch[1].beginWarm();
+        ch[0].push(ahead.data() + 0, warm, 2);
+        ch[1].push(ahead.data() + 1, warm, 2);
+        ch[0].endWarm();
+        ch[1].endWarm();
+    }
 
     while (outPos < frames) {
         const size_t want = std::min<size_t>(4096, frames - outPos);
@@ -95,13 +155,17 @@ void testSliders() {
     StubHost host(cb);
     engine.declareParameters(host);
 
-    check(cb.declared.size() == 7, "seven sliders declared");
-    bool allSliders = true;
+    check(cb.declared.size() == 8, "seven sliders and a switch declared");
+    bool allSliders = cb.declared.size() == 8;
     for (size_t i = 0; i < cb.declared.size(); ++i) {
-        if (cb.declared[i].type != VDJPARAM_SLIDER) allSliders = false;
+        const int type = (i < 7) ? VDJPARAM_SLIDER : VDJPARAM_SWITCH;
+        if (cb.declared[i].type != type) allSliders = false;
         if (cb.declared[i].id != (int)i + 1) allSliders = false;
     }
-    check(allSliders, "all seven are sliders with ids 1..7");
+    check(allSliders, "sliders with ids 1..7, then the Warm start switch at 8");
+    check(cb.declared.size() == 8 && cb.declared[7].def == 1.0f
+          && cb.declared[7].id == vdj::DeclickEngine::kWarmStart,
+          "the warm start opens switched on");
 
     // The declared defaults are what VirtualDJ opens a fresh effect on, so they
     // have to be the same positions the members start at - and those have to
@@ -117,12 +181,12 @@ void testSliders() {
            (double)got.maxLengthMs, (double)want.maxLengthMs);
 
     bool strings = true;
-    for (int id = 1; id <= 7; ++id) {
+    for (int id = 1; id <= 8; ++id) {
         char text[64] = { 0 };
         if (!engine.parameterString(id, text, (int)sizeof(text))) strings = false;
         if (text[0] == 0) strings = false;
     }
-    check(strings, "every slider has a display string");
+    check(strings, "every parameter has a display string");
     char scratch[16];
     check(!engine.parameterString(99, scratch, (int)sizeof(scratch)),
           "an unknown parameter id is declined");
@@ -169,7 +233,11 @@ void testJumps() {
     injectClicks(song, kRate, 25.0);
     MemorySong src(song);
 
+    // The warm start off: what is pinned here is the restart arithmetic, and a
+    // restart's audio with it on depends on whether the pass has finished -
+    // testWarmStart() waits for it and checks that.
     vdj::DeclickEngine engine;
+    engine.warmStart().setEnabled(false);
     engine.setRate(kRate);
     vdj::BufferPipeline<vdj::DeclickEngine> pipe;
     check(pipe.configure(engine, kRate), "pipeline configures");
@@ -202,6 +270,7 @@ void testJumps() {
     check(!allZero(first.data(), nb), "a restart returns audio, not silence");
 
     vdj::DeclickEngine other;
+    other.warmStart().setEnabled(false);
     other.setRate(kRate);
     vdj::BufferPipeline<vdj::DeclickEngine> pipe2;
     pipe2.configure(other, kRate);
@@ -329,6 +398,200 @@ void testSecondConsumer() {
     check(changed > 0, "and is still being repaired, not passed through");
 }
 
+// ---------------------------------------------------------------------------
+// The warm start
+
+//! An engine and its pipeline, configured, with a buffer for what it serves.
+struct WarmRig {
+    vdj::DeclickEngine engine;
+    vdj::BufferPipeline<vdj::DeclickEngine> pipe;
+    std::vector<short> heard;
+
+    explicit WarmRig(size_t frames) {
+        engine.setRate(kRate);
+        pipe.configure(engine, kRate);
+        heard.assign(frames * vdj::kChannels, 0);
+    }
+
+    vdj::DeclickWarm & warm() { return engine.warmStart(); }
+
+    //! Serves `frames` from `pos`, forward in blocks of `nb`, the way a deck
+    //! plays; what it hears lands at the start of `heard`. Allocates nothing.
+    void play(vdj::SongSource & src, size_t pos, size_t frames, int nb) {
+        for (size_t f = 0; f < frames; f += (size_t)nb) {
+            const size_t n = std::min((size_t)nb, frames - f);
+            const short * p = pipe.serve(engine, src, (int)(pos + f), (int)n);
+            if (p != NULL && f + n <= heard.size() / vdj::kChannels) {
+                memcpy(&heard[f * vdj::kChannels], p, n * vdj::kChannels * sizeof(short));
+            }
+        }
+    }
+
+    std::vector<short> first(size_t frames) const {
+        return std::vector<short>(heard.begin(), heard.begin() + (ptrdiff_t)(frames * vdj::kChannels));
+    }
+};
+
+//! Requires `got` to be `want` to the bit.
+void requireSame(const char * what, const std::vector<short> & got, const std::vector<short> & want) {
+    const int64_t at = firstDifference(want, got);
+    if (at < 0) {
+        printf("  ok    %s, to the bit\n", what);
+    } else {
+        printf("  FAIL  %s: diverges at frame %lld\n", what, (long long)at);
+        ++g_failures;
+    }
+}
+
+std::vector<short> slice(const std::vector<short> & v, size_t from, size_t frames) {
+    return std::vector<short>(v.begin() + (ptrdiff_t)(from * vdj::kChannels),
+                              v.begin() + (ptrdiff_t)((from + frames) * vdj::kChannels));
+}
+
+//! What the warm start promises, end to end through BufferPipeline. The first
+//! play of a record is cold - the opening is read while it plays and warmed on
+//! the worker - and every restart in the record after the pass has finished
+//! starts with what it learned: at the top, the core's warm start to the bit,
+//! and anywhere else the core started there with it. None of it may allocate:
+//! the reading and the restarts on the caller's thread, the pass on the
+//! worker's.
+void testWarmStart() {
+    const size_t songFrames = (size_t)(20.0 * kRate);
+    std::vector<short> song = music(songFrames, kRate, 31337);
+    injectClicks(song, kRate, 25.0);
+    MemorySong src(song);
+
+    const declick::Params p = declick::Params::defaults();
+    declick::Config cfg;
+    cfg.compute(p, kRate);
+    const size_t W = (size_t)(cfg.warmSeconds() * kRate);
+    const size_t T = (size_t)(10.0 * kRate), L = (size_t)(5.0 * kRate);
+    const int nb = 512;
+
+    const std::vector<short> cold = reference(song, T, p);
+    const std::vector<short> warm = reference(song, T, p, W, 0);
+    check(firstDifference(cold, warm) >= 0,
+          "the fixture's warm start differs from its cold one, so the checks below can fail");
+
+    {
+        WarmRig rig(T);
+        arm();
+        rig.play(src, 0, L, nb);
+        requireQuiet("five seconds of a first play, the opening read and warmed meanwhile");
+        // Read at kWarmSpeedup times playback, so within the first second.
+        check(rig.warm().framesRead() == W && !rig.warm().reading(),
+              "the whole warm length was read");
+        requireSame("the first play is the cold stream", rig.first(L), slice(cold, 0, L));
+        check(rig.warm().waitForPass(30000) && rig.warm().passes() == 1 && rig.warm().ready(),
+              "the warm pass finished, once");
+        printf("        %zu frames read in %zu calls of %d, pass %.0f ms on the worker\n",
+               rig.warm().framesRead(),
+               (W + (size_t)vdj::kWarmSpeedup * nb - 1) / ((size_t)vdj::kWarmSpeedup * nb),
+               nb, rig.warm().lastPassMs());
+
+        // A cue to the top: out of the cache, so a restart, and now a warm one.
+        const uint64_t before = rig.pipe.restarts();
+        arm();
+        rig.play(src, 0, T, nb);
+        requireQuiet("a cue to the top, and ten seconds from it");
+        check(rig.pipe.restarts() == before + 1, "it restarted once");
+        requireSame("a restart at the top is the core's warm start", rig.first(T), warm);
+
+        // A seek to 15 s: the restart starts there with what the pass learned.
+        const size_t P = (size_t)(15.0 * kRate), from = P - (size_t)rig.engine.warmupFrames();
+        const size_t S = (size_t)(2.0 * kRate);
+        arm();
+        rig.play(src, P, S, nb);
+        requireQuiet("a seek to 15 s");
+        requireSame("a restart at 15 s is the core started there warm",
+                    rig.first(S), slice(reference(song, P - from + S, p, W, from), P - from, S));
+        check(firstDifference(rig.first(S),
+                              slice(reference(song, P - from + S, p, 0, from), P - from, S)) >= 0,
+              "... and not as it would start cold");
+    }
+
+    // A record shorter than the warm length: read to its end, warmed over all
+    // of it, as foobar2000 warms a track that ends while it is still held.
+    {
+        const size_t S = (size_t)(3.0 * kRate);
+        std::vector<short> shortSong(song.begin(), song.begin() + (ptrdiff_t)(S * vdj::kChannels));
+        MemorySong shortSrc(shortSong);
+        WarmRig rig(S);
+        arm();
+        rig.play(shortSrc, 0, S, nb);
+        requireQuiet("a 3 s record, played through");
+        check(rig.warm().framesRead() == S, "it was read to its last frame");
+        check(rig.warm().waitForPass(30000) && rig.warm().ready(), "and warmed");
+        rig.pipe.invalidate();          // a cue to the top, which is still in the cache
+        rig.play(shortSrc, 0, S, nb);
+        requireSame("a restart at its top is the core's warm start over all of it",
+                    rig.first(S), reference(shortSong, S, p, S, 0));
+    }
+
+    // Off, through the switch the way VirtualDJ moves it: nothing is read, no
+    // pass runs, and a restart at the top is the cold stream.
+    {
+        WarmRig rig(T);
+        StubCallbacks cb;
+        StubHost host(cb);
+        rig.engine.declareParameters(host);
+        int * on = NULL;
+        for (size_t i = 0; i < cb.declared.size(); ++i) {
+            if (cb.declared[i].id == vdj::DeclickEngine::kWarmStart) on = (int *)cb.declared[i].ptr;
+        }
+        check(on != NULL && *on == 1, "the switch is reachable through its pointer, and on");
+        if (on != NULL) *on = 0;
+        rig.engine.update(kRate);
+        rig.play(src, 0, L, nb);
+        rig.play(src, 0, T, nb);
+        check(rig.warm().framesRead() == 0 && rig.warm().passes() == 0 && !rig.warm().ready(),
+              "switched off, nothing is read and no pass runs");
+        requireSame("switched off, a restart at the top is the cold stream", rig.first(T), cold);
+    }
+
+    // Another record loaded the moment the pass is handed over, so that it is
+    // stopped part way (on a fast machine it may finish first; either way the
+    // new record's opening is read once it lets go of the buffer). Then a
+    // structural slider move, which makes the pass wait to be learned again
+    // under the new config.
+    {
+        WarmRig rig(T);
+        StubCallbacks cb;
+        StubHost host(cb);
+        rig.engine.declareParameters(host);
+        size_t pos = 0;
+        while (rig.warm().reading() && pos < L) {
+            rig.play(src, pos, (size_t)nb, nb);
+            pos += (size_t)nb;
+        }
+        rig.pipe.newTrack(rig.engine);
+        arm();
+        rig.play(src, 0, L, nb);
+        requireQuiet("a new record while the pass runs, and five seconds of it");
+        check(rig.warm().waitForPass(30000) && rig.warm().ready() && rig.warm().framesRead() == W,
+              "its opening was read and warmed");
+        printf("        %s\n", rig.warm().passes() == 1
+                                ? "the first pass was stopped part way"
+                                : "the first pass finished before it could be stopped");
+        rig.play(src, 0, T, nb);
+        requireSame("a restart at its top is the core's warm start", rig.first(T), warm);
+
+        float * order = NULL;
+        for (size_t i = 0; i < cb.declared.size(); ++i) {
+            if (cb.declared[i].id == vdj::DeclickEngine::kOrder) order = (float *)cb.declared[i].ptr;
+        }
+        if (order != NULL) *order = 0.1f;
+        const bool rebuilt = rig.engine.update(kRate);
+        check(rebuilt && !rig.warm().ready(), "Model order resizes the pipeline and forgets the pass");
+        if (rebuilt) rig.pipe.invalidate();
+        rig.play(src, L, L, nb);
+        check(rig.warm().waitForPass(30000) && rig.warm().ready(), "which is learned again");
+        rig.play(src, 0, T, nb);
+        requireSame("a restart at the top is the warm start under the new order",
+                    rig.first(T), reference(song, T, rig.engine.params(), W, 0));
+    }
+}
+
 } // anonymous namespace
 
 int main() {
@@ -338,5 +601,6 @@ int main() {
     testJumps();
     testBypassIsExact();
     testSecondConsumer();
+    testWarmStart();
     return finish("declick_vdj_verify");
 }

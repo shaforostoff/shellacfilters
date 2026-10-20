@@ -275,23 +275,15 @@ std::vector<float> stereo(const std::vector<double> & l, const std::vector<doubl
     return v;
 }
 
-//! The warm start as the core documents it, one channel straight through: the
-//! first `warm` frames with the output held back, then all `frames` of the
-//! stream, then drained. What the wrapper must reproduce to the bit.
-std::vector<double> warmReference(const Config & cfg, const std::vector<float> & x,
-                                  unsigned c, size_t from, size_t warm, size_t frames) {
+//! Channel `c` of `x` from `from`, `frames` of it, through `ch` in chunks of
+//! 4096 with everything pulled after each, then drained.
+std::vector<double> streamOut(Channel & ch, const std::vector<float> & x,
+                              unsigned c, size_t from, size_t frames) {
     std::vector<float> mono(frames);
     for (size_t i = 0; i < frames; ++i) mono[i] = x[2 * (from + i) + c];
-    Channel ch;
-    ch.configure(cfg);
     scoped_flush_denormals ftz;
-    if (warm > 0) {
-        ch.beginWarm();
-        ch.push(&mono[0], warm, 1);
-        ch.endWarm();
-    }
     std::vector<double> out;
-    std::vector<double> buf((size_t)cfg.maxBlock * 2);
+    std::vector<double> buf((size_t)ch.config().maxBlock * 2);
     for (size_t b = 0; b < frames; b += 4096) {
         const size_t n = (frames - b < 4096) ? (frames - b) : 4096;
         ch.push(&mono[b], n, 1);
@@ -305,6 +297,35 @@ std::vector<double> warmReference(const Config & cfg, const std::vector<float> &
     if (got > 0) ch.pull(&tail[0], got, 1);
     out.insert(out.end(), tail.begin(), tail.end());
     return out;
+}
+
+//! One channel's warm pass over `warm` frames of channel `c` from `warmAt`,
+//! output held back, nothing pushed after it.
+void warmOn(Channel & ch, const std::vector<float> & x, unsigned c, size_t warmAt, size_t warm) {
+    std::vector<float> mono(warm);
+    for (size_t i = 0; i < warm; ++i) mono[i] = x[2 * (warmAt + i) + c];
+    scoped_flush_denormals ftz;
+    ch.beginWarm();
+    if (warm > 0) ch.push(&mono[0], warm, 1);
+    ch.endWarm();
+}
+
+//! The warm start as the core documents it, one channel straight through: the
+//! `warm` frames from `warmAt` with the output held back, then `frames` of the
+//! stream from `from`, then drained. What the wrappers must reproduce to the
+//! bit: foobar2000's with warmAt == from, VirtualDJ's restarts with warmAt 0.
+std::vector<double> warmReferenceAt(const Config & cfg, const std::vector<float> & x,
+                                    unsigned c, size_t warmAt, size_t from,
+                                    size_t warm, size_t frames) {
+    Channel ch;
+    ch.configure(cfg);
+    if (warm > 0) warmOn(ch, x, c, warmAt, warm);
+    return streamOut(ch, x, c, from, frames);
+}
+
+std::vector<double> warmReference(const Config & cfg, const std::vector<float> & x,
+                                  unsigned c, size_t from, size_t warm, size_t frames) {
+    return warmReferenceAt(cfg, x, c, from, from, warm, frames);
 }
 
 //! Requires `got` to be `want` sample for sample, and as long.
@@ -747,6 +768,78 @@ int main() {
             requireSame("... left channel against the cold stream",
                         rig.out[0], warmReference(cfg, x, 0, 0, 0, T));
             requireSame("... right channel", rig.out[1], warmReference(cfg, x, 1, 0, 0, T));
+        }
+
+        // --- the warm start on another channel: Channel::adoptWarm() -------
+        //
+        // VirtualDJ's wrapper warms a channel of its own on a worker thread
+        // and starts the stream on its live one at every restart, at the top
+        // of the record or anywhere in it. The live channel has been playing
+        // something else entirely; once it has adopted, the stream must come
+        // out as the warmed channel's own would, to the bit, and the adoption
+        // must not allocate.
+        printf("\n");
+        Channel warmed[2];
+        for (unsigned c = 0; c < 2; ++c) {
+            warmed[c].configure(cfg);
+            warmOn(warmed[c], x, c, 0, W);
+        }
+        const size_t at = (size_t)R * 9, S = (size_t)R * 6;
+        for (int where = 0; where < 2; ++where) {
+            const size_t from = where ? at : 0;
+            for (unsigned c = 0; c < 2; ++c) {
+                Channel live;
+                live.configure(cfg);
+                streamOut(live, x, 1 - c, (size_t)R * 2, (size_t)R * 3);   // something else
+                arm();
+                const bool took = live.adoptWarm(warmed[c]);
+                requireQuiet(where ? "adoptWarm(), then the stream from 9 s"
+                                   : "adoptWarm(), then the stream from the top");
+                if (!took) { printf("  FAIL  adoptWarm() refused a finished warm pass\n"); ++g_failures; }
+                requireSame(c ? "... right channel" : "... left channel against the core's warm start",
+                            streamOut(live, x, c, from, S), warmReferenceAt(cfg, x, c, 0, from, W, S));
+            }
+        }
+        // The cold restart it replaces, so that the comparison above is one a
+        // warm start can fail: at 9 s the cold stream is not the warm one.
+        {
+            Channel cold;
+            cold.configure(cfg);
+            const std::vector<double> a = streamOut(cold, x, 0, at, S);
+            const std::vector<double> b = warmReferenceAt(cfg, x, 0, 0, at, W, S);
+            size_t diff = 0;
+            for (size_t i = 0; i < a.size() && i < b.size(); ++i) diff += (a[i] != b[i]);
+            printf("  %-50s %-4s %zu samples differ from a cold start\n", "... and it is a warm start",
+                   diff > 0 ? "ok" : "FAIL", diff);
+            if (diff == 0) ++g_failures;
+        }
+        // What it refuses, leaving the channel reset: a channel that has taken
+        // audio since its warm pass, one in the middle of it, and one of
+        // another shape. Each must then stream as a cold start would.
+        {
+            Channel used, mid, other, live;
+            used.configure(cfg);
+            warmOn(used, x, 0, 0, W);
+            streamOut(used, x, 0, 0, 4096);
+            mid.configure(cfg);
+            mid.beginWarm();
+            other.configure(c64);
+            warmOn(other, x, 0, 0, W);
+            live.configure(cfg);
+            const Channel * bad[3] = { &used, &mid, &other };
+            const char * what[3] = { "adoptWarm() refuses a channel that has streamed since",
+                                     "... one still in its warm pass",
+                                     "... one of another shape" };
+            const std::vector<double> cold = warmReferenceAt(cfg, x, 0, 0, 0, 0, S);
+            for (int k = 0; k < 3; ++k) {
+                streamOut(live, x, 1, (size_t)R * 2, (size_t)R);
+                const bool took = live.adoptWarm(*bad[k]);
+                const std::vector<double> got = streamOut(live, x, 0, 0, S);
+                const bool ok = !took && got == cold;
+                printf("  %-50s %-4s %s\n", what[k], ok ? "ok" : "FAIL",
+                       took ? "took it" : (got == cold ? "and starts cold" : "but does not start cold"));
+                if (!ok) ++g_failures;
+            }
         }
     }
 

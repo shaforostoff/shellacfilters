@@ -887,6 +887,21 @@ public:
     void beginWarm();
     void endWarm();
 
+    //! The warm start, run on another channel: reset(), then what `warmed`'s
+    //! warm pass kept - the carpet key and the crackle floor ceiling - copied
+    //! in. For a host whose audio thread cannot afford the warm pass
+    //! (VirtualDJ's): it warms a channel of its own on a worker thread, and
+    //! starts the stream on this one at each restart. From where the warm
+    //! pass started, the stream then comes out as `warmed`'s own would, to
+    //! the bit; from anywhere else, it starts there with the key and the
+    //! ceiling of those seconds, standing still for as long as they did.
+    //!
+    //! `warmed` must have ended its warm pass and taken nothing since, with
+    //! a config that structurallyEquals() this one's; otherwise this is
+    //! reset() and returns false. `warmed` is not changed, and can be adopted
+    //! from again. Does not allocate.
+    bool adoptWarm(const Channel & warmed);
+
     const Config & config() const { return m_cfg; }
 
     //! Diagnostics: how many samples this channel has repaired.
