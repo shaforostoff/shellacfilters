@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -132,7 +133,11 @@ void usage() {
         "  --crackle-floor-shelf-x1 <x>\n"
         "                     ... and is fully open at this many (default 40)\n"
         "  --crackle-floor-shelf-release <s>\n"
-        "                     Time constant it closes with (default 0.15)\n");
+        "                     Time constant it closes with (default 0.15)\n"
+        "  --warm-start <s>   Before the stream, run the core over its first s seconds\n"
+        "                     with the output held back, so the start is processed with\n"
+        "                     the keys and crackle floor those seconds give; -1 for the\n"
+        "                     core's own length (Config::warmSeconds). 0: off (default)\n");
 }
 
 bool parseFloat(const char * s, float & out) {
@@ -175,6 +180,7 @@ int main(int argc, char ** argv) {
     float flankShut = -1.0f, flankWide = -1.0f, flankShutGain = -1.0f, flankHold = -1.0f;
     float carpet = -1.0f, carpetPeak = -1.0f, carpetWin = -1.0f, carpetQ = -1.0f;
     float carpetRate0 = -1.0f, carpetRate1 = -1.0f, carpetWarm = -1.0f, carpetMin = -1.0f;
+    float warmStart = 0.0f;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--delta") { delta = true; continue; }
@@ -258,6 +264,7 @@ int main(int argc, char ** argv) {
         else if (a == "--carpet-rate1") carpetRate1 = v;
         else if (a == "--carpet-warm") carpetWarm = v;
         else if (a == "--carpet-min") carpetMin = v;
+        else if (a == "--warm-start") warmStart = v;
         else if (a == "-s") params.sensitivity = v;
         else if (a == "-e") params.extent = v;
         else if (a == "-l") params.maxLengthMs = v;
@@ -370,6 +377,25 @@ int main(int argc, char ** argv) {
     const size_t CHUNK = 4096;
     size_t written = 0;
     std::vector<double> scratch(CHUNK * channels);
+
+    // The warm start: the file's first seconds through the core with the
+    // output held back, then the file from its start. See Channel::beginWarm().
+    size_t warmFrames = 0;
+    double warmMs = 0.0;
+    if (warmStart != 0.0f) {
+        const double ws = (warmStart < 0.0f) ? cfg.warmSeconds() : (double)warmStart;
+        warmFrames = (size_t)(ws * (double)audio.sampleRate);
+        if (warmFrames > frames) warmFrames = frames;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (unsigned c = 0; c < channels; ++c) chans[c]->beginWarm();
+        for (size_t pos = 0; pos < warmFrames; pos += CHUNK) {
+            const size_t n = (warmFrames - pos < CHUNK) ? (warmFrames - pos) : CHUNK;
+            for (unsigned c = 0; c < channels; ++c)
+                chans[c]->push(&audio.samples[pos * channels + c], n, channels);
+        }
+        for (unsigned c = 0; c < channels; ++c) chans[c]->endWarm();
+        warmMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
     for (size_t pos = 0; pos < frames; pos += CHUNK) {
         const size_t n = (frames - pos < CHUNK) ? (frames - pos) : CHUNK;
         for (unsigned c = 0; c < channels; ++c) {
@@ -441,6 +467,10 @@ int main(int argc, char ** argv) {
         printf("  kernels %s\n", declick::kernelName());
         printf("  latency %d samples (%.1f ms)\n", cfg.latency,
                1000.0 * cfg.latency / (double)audio.sampleRate);
+        if (warmFrames > 0) {
+            printf("  warm start: %.2f s of audio ahead, %.1f ms\n",
+                   (double)warmFrames / (double)audio.sampleRate, warmMs);
+        }
         // Clamped: estimates a repair had to pull back into the local range,
         // which means its solve went wrong. See Channel::clampedSamples().
         printf("  repaired %llu of %llu samples (%.2f%%), clamped %llu first, %llu again\n",

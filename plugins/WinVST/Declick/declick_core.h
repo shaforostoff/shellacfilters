@@ -670,6 +670,12 @@ struct Config {
     //! the stage takes a sample in: when the fine removal of it is final.
     int microLag() const { return fineDelay(fineN) * (fineN / 4) + fineN - 1; }
 
+    //! Seconds of the coming audio a host that reads ahead gives
+    //! Channel::beginWarm(): with the crackle floor stage on, its window and
+    //! the first second it leaves out; else a second more than the carpet
+    //! key's carpetMin, so that it reads its ring rather than its early value.
+    double warmSeconds() const;
+
     //! True if `o` needs exactly the buffers this config already has, i.e. it
     //! can be swapped into a running Channel with retune() instead of
     //! configure(), which reallocates and therefore resets.
@@ -833,6 +839,54 @@ public:
     //! real noise rather than against silence.
     void prime() { m_silentUntil = m_fill + m_cfg.latency; drain(); }
 
+    //! WARM START, the same idea for the core's slow state. A host that can
+    //! read the track ahead - foobar2000 and VirtualDJ can, a VST or an AU
+    //! cannot - gives the core the stream's coming seconds before the stream
+    //! itself, and the first seconds are then processed with the keys and the
+    //! crackle floor the core has once those seconds are in, instead of with
+    //! empty history:
+    //!
+    //!     ch.beginWarm();
+    //!     ch.push(ahead, n, stride);   // Config::warmSeconds() of it; nothing comes out
+    //!     ch.endWarm();
+    //!     ...then push the stream from the same place, as usual.
+    //!
+    //! The warm pass is the ordinary pipeline with its output held back, so it
+    //! costs what processing those seconds costs (less with the crackle floor
+    //! stage off: it runs only the repair, which is all the key reads).
+    //! endWarm() puts the audio path back to its opening state, as reset()
+    //! does, and keeps what the pass learned:
+    //!  - The carpet key, with its Poisson ramp. It stands still while the
+    //!    stream goes back over the seconds the pass has seen - it already
+    //!    counts them - and goes on from there exactly as it would have: for
+    //!    t under the warm length it is what it is at that length, and past it
+    //!    it is the cold stream's to the bit. On a clean record whose loud
+    //!    opening used to open it for the first half second (*Jueves*, *Ahora
+    //!    no me conoces*, *El Marne*), seven seconds' evidence keeps it shut;
+    //!    on a crackly one it is open from the first sample.
+    //!  - The crackle floor the pass ended with, as a ceiling. The stage's
+    //!    history starts again as it always has, and until the stream is past
+    //!    the warm length the floor is no higher than that one, as after a
+    //!    reopening it is no higher than when the key shut. A loud start can no
+    //!    longer make its own few frames the floor; a quiet one keeps the
+    //!    floor it had, which is lower than one taken over the loud seconds
+    //!    after it (*El abrojito*'s opening bars).
+    //! The body key starts afresh: it reads half a second, and was never slow
+    //! to open. So does the long-term spectrum the flank repair's pad reads,
+    //! which has no pad for the first three seconds: kept, it brought the pad
+    //! in from the first sample, and on clean band-limited records that let
+    //! the repair act on the body key's opening at the needle drop: 3-25 dB
+    //! more at 4.5-10 kHz in their first five seconds, on 15 of a 109-song set.
+    //! On that set, in no second of the first seven did the warm start take
+    //! 3 dB more than the cold stream, at 1-4.5 or 4.5-10 kHz, with the crackle
+    //! floor stage on or off. Past the warm length the output is the cold
+    //! stream's to the bit with the stage off; with it on, from a second past
+    //! it, within -55 dB (its history takes every fourth frame, counted from a
+    //! different start).
+    //! Without these calls nothing changes. Neither allocates.
+    void beginWarm();
+    void endWarm();
+
     const Config & config() const { return m_cfg; }
 
     //! Diagnostics: how many samples this channel has repaired.
@@ -879,6 +933,11 @@ public:
 private:
     void pushOne(double v);
     void outPush(double v);
+    //! reset() in parts: the audio path and everything that restarts with it,
+    //! and the state a warm start keeps (see beginWarm()).
+    void resetPath();
+    void resetCarpet();
+    void resetFloorHistory();
     //! The dry/wet (or delta) mix of one finished sample, into the output ring.
     void emitMixed(double y, double d);
     //! One repaired sample and its dry counterpart, into the body stage, and
@@ -1236,6 +1295,7 @@ private:
     std::vector<double> m_nRing;     //!< m_nTop x crackleFloorHist
     std::vector<double> m_nSorted;   //!< m_nTop x (crackleFloorHist + 2), padded either side
     std::vector<double> m_nFloor, m_nSaved, m_nG;   //!< m_nTop
+    std::vector<double> m_nWarm;     //!< m_nTop: the floor a warm pass ended with
     std::vector<uint64_t> m_nAt;     //!< crackleFloorHist
     std::vector<double> m_nWf, m_nWs;     //!< m_nNb
 
@@ -1256,6 +1316,15 @@ private:
 
     uint64_t m_repaired = 0, m_seen = 0;
     uint64_t m_clamped = 0, m_reclamped = 0;
+
+    //! The warm start; see beginWarm(). Whether output is held back; repair
+    //! blocks processed; how many of them the warm pass has already counted;
+    //! and the crackle floor stage's samples it saw, over which m_nWarm caps
+    //! the floor.
+    bool     m_warming = false;
+    uint64_t m_blocks = 0;
+    uint64_t m_warmBlocks = 0;
+    uint64_t m_nWarmT = 0;
 };
 
 //! The inner-product kernels this process runs: "avx2" where the CPU and OS

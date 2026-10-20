@@ -400,6 +400,43 @@ int main() {
         ch.configure(cfg);
     }
 
+    // The warm start (Channel::beginWarm()): a host that reads ahead runs the
+    // coming Config::warmSeconds() through with the output held back, then the
+    // stream from its start, the way the wrapper feeds it. Nothing may come out
+    // of the warm pass, and neither it nor the stream after it may allocate:
+    // with the crackle floor stage off, where the pass stops at the repair, and
+    // on, where it runs on to the floor's history and the stage then cuts
+    // under the warm pass's floor.
+    for (int floorOn = 0; floorOn <= 1; ++floorOn) {
+        const std::vector<double> s8 = signal(R * 8, rate);
+        Config cw;
+        cw.crackleFloor = floorOn;
+        cw.compute(Params::defaults(), rate);
+        ch.configure(cw);
+        const int ahead = (int)(cw.warmSeconds() * rate);
+        arm();
+        ch.beginWarm();
+        size_t held = 0;
+        for (int b = 0; b + 4096 <= ahead; b += 4096) {
+            ch.push(&s8[(size_t)b], 4096, 1);
+            held += ch.available();
+        }
+        ch.endWarm();
+        held += ch.available();
+        for (int b = 0; b + 4096 <= 6 * R; b += 4096) {
+            ch.push(&s8[(size_t)b], 4096, 1);
+            const size_t got = ch.available();
+            ch.pull(&sink[0], got < sink.size() ? got : sink.size(), 1);
+        }
+        requireQuiet(floorOn ? "warm start, the crackle floor stage on" : "warm start, the crackle floor stage off");
+        const bool ran = held == 0 && ch.seenSamples() < (uint64_t)(6 * R)
+                      && (!floorOn || ch.crackleFloorFrames() > 0);
+        printf("  %-50s %-4s %zu samples out of the warm pass, %llu frames cut\n", "... and it held back",
+               ran ? "ok" : "FAIL", held, (unsigned long long)ch.crackleFloorFrames());
+        if (!ran) ++g_failures;
+        ch.configure(cfg);
+    }
+
     // --- parameter changes -------------------------------------------------
     arm();
     const bool retuned = ch.retune(cTune);

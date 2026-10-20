@@ -1084,6 +1084,11 @@ int Config::fineDelay(int n) const {
     return (w > fineM) ? w : fineM;
 }
 
+double Config::warmSeconds() const {
+    if (crackleFloor) return 1.0 + crackleFloorWin;
+    return (double)(carpetMin + 1);
+}
+
 void Config::compute(const Params & pIn, double sampleRate) {
     Params p = pIn;
     p.sanitize();
@@ -1843,6 +1848,7 @@ void Channel::configure(const Config & cfg) {
         m_nSorted.assign(nt * (W + 2), 0.0);
         m_nFloor.assign(nt, 0.0);
         m_nSaved.assign(nt, 0.0);
+        m_nWarm.assign(nt, 0.0);
         m_nAt.assign(W, 0);
         m_nG.assign(nt, 1.0);
         m_nWf.assign(nb, 0.0);
@@ -1891,7 +1897,7 @@ void Channel::configure(const Config & cfg) {
         m_nRe.clear(); m_nIm.clear(); m_nStRe.clear(); m_nStIm.clear();
         m_nTwRe.clear(); m_nTwIm.clear(); m_nRev.clear();
         m_nP.clear(); m_nPb.clear(); m_nXRe.clear(); m_nXIm.clear();
-        m_nRing.clear(); m_nSorted.clear(); m_nFloor.clear(); m_nSaved.clear(); m_nG.clear();
+        m_nRing.clear(); m_nSorted.clear(); m_nFloor.clear(); m_nSaved.clear(); m_nWarm.clear(); m_nG.clear();
         m_nAt.clear();
         m_nWf.clear(); m_nWs.clear();
     }
@@ -1940,7 +1946,7 @@ size_t Channel::heapBytes() const {
             + m_nTwRe.capacity() + m_nTwIm.capacity()
             + m_nP.capacity() + m_nPb.capacity() + m_nXRe.capacity() + m_nXIm.capacity()
             + m_nRing.capacity() + m_nSorted.capacity()
-            + m_nFloor.capacity() + m_nSaved.capacity() + m_nAt.capacity()
+            + m_nFloor.capacity() + m_nSaved.capacity() + m_nWarm.capacity() + m_nAt.capacity()
             + m_nG.capacity() + m_nWf.capacity()
             + m_nWs.capacity()) * sizeof(double)
            + m_flag.capacity() + m_strong.capacity() + m_stS.capacity() + m_dRun.capacity()
@@ -1960,6 +1966,33 @@ bool Channel::retune(const Config & cfg) {
 }
 
 void Channel::reset() {
+    resetPath();
+    resetCarpet();
+    resetFloorHistory();
+    m_warming = false;
+    m_warmBlocks = 0;
+    m_nWarmT = 0;
+}
+
+void Channel::beginWarm() {
+    reset();
+    m_warming = true;
+}
+
+//! What the warm pass counted for the carpet key stays, and stands still for
+//! the m_warmBlocks repair blocks it covers. Its crackle floor caps the
+//! stage's for the m_nWarmT samples it saw; the stage's history starts again.
+void Channel::endWarm() {
+    if (!m_warming) return;
+    m_warming = false;
+    m_warmBlocks = m_blocks;
+    m_nWarmT = (m_nHave > 0) ? m_nT : 0;       // no history, no ceiling
+    std::copy(m_nFloor.begin(), m_nFloor.end(), m_nWarm.begin());
+    resetPath();
+    resetFloorHistory();
+}
+
+void Channel::resetPath() {
     std::fill(m_win.begin(), m_win.end(), 0.0);
     std::fill(m_dry.begin(), m_dry.end(), 0.0);
     std::fill(m_full.begin(), m_full.end(), 0.0);
@@ -1982,6 +2015,7 @@ void Channel::reset() {
     m_clamped = 0;
     m_reclamped = 0;
     m_silentUntil = 0;
+    m_blocks = 0;
     std::fill(m_bY.begin(), m_bY.end(), 0.0);
     std::fill(m_bD.begin(), m_bD.end(), 0.0);
     std::fill(m_bR.begin(), m_bR.end(), 0.0);
@@ -1999,36 +2033,17 @@ void Channel::reset() {
     m_bKeyPos = 0;
     m_bBeta = 0.0;
     m_cBlk = 0;
-    m_cRuns = 0.0;
-    m_cSamp = 0.0;
-    std::fill(m_cRing, m_cRing + kCarpetMax, 0.0);
-    m_cPos = 0;
-    m_cHave = 0;
-    m_cKey = 0.0;
     m_cOpen = 0;
-    m_cTotRuns = 0.0;
-    m_cTotSamp = 0.0;
-    m_cBin = 0.0;
-    m_cBinBlk = 0;
-    m_cS1 = m_cS2 = m_cBinN = 0.0;
-    m_cTotS1 = m_cTotS2 = m_cTotBinN = 0.0;
-    std::fill(m_cFRing, m_cFRing + kCarpetMax, 0.0);
     std::fill(m_nY.begin(), m_nY.end(), 0.0);
     std::fill(m_nD.begin(), m_nD.end(), 0.0);
     std::fill(m_nR.begin(), m_nR.end(), 0.0);
     std::fill(m_nG.begin(), m_nG.end(), 1.0);
-    std::fill(m_nFloor.begin(), m_nFloor.end(), 0.0);
     std::fill(m_nSaved.begin(), m_nSaved.end(), 0.0);
-    std::fill(m_nAt.begin(), m_nAt.end(), (uint64_t)0);
     m_nT = 0;
     m_nNextHop = (uint64_t)m_nN;
     m_nHist = 0;
     m_nSlot = 0;
     m_nCutCount = 0;
-    m_nHave = 0;
-    m_nPos = 0;
-    m_nTaken = 0;
-    m_nEarly = 0;
     m_nShutHops = 0;
     m_nSinceOpen = 0;
     m_nOpen = false;
@@ -2053,8 +2068,6 @@ void Channel::reset() {
     std::fill(m_flAcc.begin(), m_flAcc.end(), 0.0);
     m_flN = 0;
     m_flEnd = -(1 << 30);
-    m_flP = 0;
-    m_flPOpen = 0;
     m_flSince = 1 << 30;
     m_bBetaPrev = 0.0;
     m_stHave = false;
@@ -2064,9 +2077,36 @@ void Channel::reset() {
     m_wBlock = 0;
     m_wFrames = 0.0;
     m_wEdge = 0.0;
+    m_flP = 0;
+    m_flPOpen = 0;
     // Prime with `pad` zeros so the first real sample lands at window index
     // pad and nothing is dropped off the front of the stream.
     m_fill = m_pad;
+}
+
+void Channel::resetCarpet() {
+    m_cRuns = 0.0;
+    m_cSamp = 0.0;
+    std::fill(m_cRing, m_cRing + kCarpetMax, 0.0);
+    m_cPos = 0;
+    m_cHave = 0;
+    m_cKey = 0.0;
+    m_cTotRuns = 0.0;
+    m_cTotSamp = 0.0;
+    m_cBin = 0.0;
+    m_cBinBlk = 0;
+    m_cS1 = m_cS2 = m_cBinN = 0.0;
+    m_cTotS1 = m_cTotS2 = m_cTotBinN = 0.0;
+    std::fill(m_cFRing, m_cFRing + kCarpetMax, 0.0);
+}
+
+void Channel::resetFloorHistory() {
+    std::fill(m_nFloor.begin(), m_nFloor.end(), 0.0);
+    std::fill(m_nAt.begin(), m_nAt.end(), (uint64_t)0);
+    m_nHave = 0;
+    m_nPos = 0;
+    m_nTaken = 0;
+    m_nEarly = 0;
 }
 
 void Channel::setUnitModel() {
@@ -2710,6 +2750,12 @@ void Channel::pushOne(double v) {
     m_bStrong = 0;
     m_cBlk = 0;
     processBlock();
+    // After a warm start, the carpet key stands still over the blocks the
+    // warm pass counted; see beginWarm().
+    const bool fresh = ++m_blocks > m_warmBlocks;
+    // A warm pass with the crackle floor stage off needs nothing past the
+    // repair: the carpet key is all it keeps.
+    const bool back = !m_warming || m_cfg.crackleFloor;
 
     // The body stage's key: strong runs in this block, their rate over the
     // last bodyRateWin seconds, the history of that rate, and of the key.
@@ -2727,12 +2773,12 @@ void Channel::pushOne(double v) {
         m_bBeta = bodyBeta();
     }
     if (m_cfg.carpet) {
-        carpetBlock();
+        if (fresh) carpetBlock();
         if (m_cKey > 0.0) ++m_cOpen;
     }
 
     const int Q = m_cfg.flankStage;
-    if (Q > 0) {
+    if (Q > 0 && back) {
         // The flank repair, which can reach back into the block held back;
         // then that block goes to the body stage with its corrections, under
         // the key as it stood when it was repaired, so the body and fine
@@ -2755,7 +2801,7 @@ void Channel::pushOne(double v) {
         }
         m_stHave = true;
         m_bBetaPrev = beta;
-    } else {
+    } else if (back) {
         for (int i = 0; i < blk; ++i) {
             bodyPush(m_win[(size_t)(m_pad + i)], m_dry[(size_t)(m_pad + i)],
                      m_strong[(size_t)(m_pad + i)]);
@@ -2779,6 +2825,7 @@ void Channel::pushOne(double v) {
 }
 
 void Channel::emitMixed(double y, double d) {
+    if (m_warming) return;      // a warm pass's output is held back
     const double wet = m_cfg.wet;
     if (m_cfg.delta) {
         outPush(wet * (d - y));             // d - (wet * y + dry * d)
@@ -3040,14 +3087,22 @@ void Channel::crackleFloorHop(uint64_t start) {
         m_nHave = n;
     }
     if (!open) return;     // a shut key's frames only feed the history
+    if (m_warming) {       // and so do a warm pass's, counted as the cut counts them
+        ++m_nCutCount;
+        return;
+    }
 
     // After a shut stretch, until the window has been renewed under the open
     // key, the floor is no higher than it stood when the key shut: one taken
     // under the open key is the crackle's, the shut stretch's may be the
     // music's. Not in the first two seconds, which are cut as before.
     const bool kept = m_nKeep && m_nSinceOpen < (uint64_t)W;
+    // And after a warm start, over the seconds the warm pass saw, no higher
+    // than the floor that pass ended with; see beginWarm().
+    const bool capped = start + (uint64_t)N <= m_nWarmT;
     const double * Fl = &m_nFloor[0];
     const double * Sv = &m_nSaved[0];
+    const double * Wm = &m_nWarm[0];
     // The gain: Wiener's, on the power over 7 bins x 5 frames against beta x
     // the floor, never below crackleFloorMin; it rises at once and falls back
     // with the release.
@@ -3056,7 +3111,9 @@ void Channel::crackleFloorHop(uint64_t start) {
         const bool first = m_nCutCount == 0;
         for (int b = g0; b < nt; ++b) {
             const double s = (Bq[0][b] + Bq[1][b] + Bq[2][b] + Bq[3][b] + Bq[4][b]) / 35.0;
-            const double nf = (kept ? dmin(Fl[b], Sv[b]) : Fl[b]) * beta + 1e-30;
+            double f = kept ? dmin(Fl[b], Sv[b]) : Fl[b];
+            if (capped) f = dmin(f, Wm[b]);
+            const double nf = f * beta + 1e-30;
             const double x = dmax(s / nf - 1.0, 0.0);
             const double g0v = dmax(x / (1.0 + x), gmin);
             double & g = m_nG[(size_t)b];
@@ -3072,7 +3129,9 @@ void Channel::crackleFloorHop(uint64_t start) {
         double sp = 0.0, sf = 0.0;
         for (int b = m_nKd0; b <= m_nKd1; ++b) {
             sp += Pn[b];
-            sf += kept ? dmin(Fl[b], Sv[b]) : Fl[b];
+            double f = kept ? dmin(Fl[b], Sv[b]) : Fl[b];
+            if (capped) f = dmin(f, Wm[b]);
+            sf += f;
         }
         m_nDRing[m_nDPos] = sp / (sf + 1e-30);
         m_nDPos = (m_nDPos + 1 < (int)kShelfMed) ? m_nDPos + 1 : 0;

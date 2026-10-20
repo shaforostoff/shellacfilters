@@ -2372,6 +2372,80 @@ kept as an option.
   (*Pa que bailen* 172 → 170×, *Y_ahora* 187 → 181×, measured beside the
   build before; *El rodeo*, whose key stays open, 94× both).
 
+### The first seconds from the read-ahead: a warm start (not in the plug-ins yet)
+
+**What was heard.** With the crackle floor stage on, the first second of
+*Jueves* (D'Arienzo, 1955) and *Ahora no me conoces* (Pugliese, Moran, 1952)
+lost music to it: −35 and −66 dBFS rms in what the stage took, raised 12 dB.
+Two things start cold:
+
+* **The carpet key's early value.** On a loud opening it opened for about half
+  a second on clean records (*Jueves*, *Ahora no me conoces*, *El Marne*).
+* **The floor's history.** It held a few frames, so the floor was the music's
+  own.
+
+foobar2000 and VirtualDJ can read a track ahead, so there is no reason to
+start cold.
+
+**The change** (`Channel::beginWarm()` / `endWarm()`, `Config::warmSeconds()`,
+`declick_cli --warm-start`). The host runs the coming seconds through the core
+with its output held back, then the track from its start:
+
+* **The carpet key**, with its Poisson ramp, is what it is after
+  `warmSeconds()`, and stands still until the track is past that point. From
+  there it is the cold stream's to the bit.
+* **The crackle floor** of the warm pass is a ceiling for that long. The
+  stage's own history starts as before, so a quiet opening keeps its lower
+  floor.
+* **The warm length** is 7 s with the stage on, 4 s with it off.
+
+**What was tried and dropped:**
+
+* **The history seeded and frozen.** It took 6–9 dB more from *El abrojito*'s
+  quiet opening bars than the stage takes at that level elsewhere in the song:
+  the floor came from the loud seconds after them.
+* **The flank repair's spectrum kept.** It brought the pad in from the first
+  sample. On clean band-limited records the repair then acted on the body
+  key's opening at the needle drop: 3–25 dB more at 4.5–10 kHz in the first
+  five seconds of 15 songs.
+* **A 4 s warm pass with the stage on.** It took 3–17 dB more than the 7 s one
+  in ~30 opening seconds of the set.
+
+**Records they must not touch** (the 109-song check set, first 7 s of each):
+
+* **Without the calls**, all 109 are the build before to the bit, stage off and
+  on.
+* **No second takes 3 dB more** than the cold start, at 1–4.5 or 4.5–10 kHz.
+  With the stage on, 40 seconds at 1–4.5 kHz (28 songs) and 10 at 4.5–10 kHz
+  (10 songs) take that much less.
+* **The floor stage alone** takes more in 13 seconds of four crackly records
+  whose key is now open from the first sample: *El rodeo*, *Llévame
+  carretero*, *Homero*, and one second of *Estás conmigo* at about −60 dBFS.
+  It takes less in 83 seconds of 43 songs. Where the cold start took more than
+  −30 dB re the band (63 seconds), the median is now −32.5 dB.
+* **Bit-identical outright:** 39 of 109 with the stage on, the *Malvón* master
+  among them. Past the warm length, the rest are the cold stream's to the bit
+  with the stage off. With it on they are within −55 dB, because the history takes
+  every fourth frame, counted from a different start.
+* **Against the vinyl copies** of *El rodeo* and *El abrojito*, the music taken
+  in the first seconds is at most what it was.
+
+**What it costs.** The warm pass is the pipeline run over the warm length,
+before the track's first sample. With the stage off it runs only the repair.
+Per channel, Zen 4:
+
+| | AVX2 | SSE2 | 2014 MacBook Air (estimate) |
+|---|---|---|---|
+| stage on, 7 s, clean record | 32–34 ms | 61–64 ms | ~0.45 s |
+| stage on, 7 s, *El rodeo* / *El abrojito* | 60–64 ms | 96–100 ms | ~0.7 s |
+| stage off, 4 s | 17–18 ms | 33–34 ms | ~0.23 s |
+
+Decoding 7 s of MP3, AAC or FLAC takes 3–7 ms. The plug-ins do not call it
+yet. foobar2000 would have to hold the track's first seconds, or decode them a
+second time as Dehum's scout does. VirtualDJ can read them with
+GetSongBuffer, but not inside the audio callback's time. The VST and AU
+cannot read ahead and stay as they are.
+
 ---
 
 ## Dehum parameters
