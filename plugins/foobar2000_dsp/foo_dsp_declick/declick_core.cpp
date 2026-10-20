@@ -905,6 +905,21 @@ bool cpuHasAvx2Fma() {
 // each is used from its lane with fmla-by-element, so one load of h serves
 // thirty-two multiply-adds. There is no AVX-SSE style transition penalty
 // here, so the leftovers are ordinary code.
+//
+// The one load of x per multiply-add stays, both ways of cutting it having
+// been measured on an M1 over a whole song. The odd tap wants the pair of x a
+// place along, which is the top half of the even tap's vector over the bottom
+// half of the next one: vextq_f64 of two vectors already in hand, seventeen
+// loads for the sixteen accumulators rather than thirty-two. But an extract
+// goes to the same pipes as a multiply-add, and fifteen of them cost 1.3% more
+// than the loads they save. Pairing the even loads with vld1q_f64_x2 instead,
+// which asks nothing of those pipes and brings the loop's thirty-three load
+// instructions down to twenty-five, came out level - the loop is not short of
+// load slots. What it is short of is chains: sixteen accumulators are sixteen
+// dependent chains against four pipes at four cycles' latency, just enough to
+// fill them and not one more, and a seventeenth would have to come either from
+// a register that is not there or from summing the taps in another order,
+// which the output is entitled to to the bit.
 
 //! dot() with FMA, two lanes per register.
 inline double dotNeon(const double * x, const double * y, int n) {
