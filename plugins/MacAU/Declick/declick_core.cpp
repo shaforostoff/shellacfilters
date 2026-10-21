@@ -244,6 +244,19 @@ struct QuantilePos;
 //! for it. Null where a kernel set keeps sorted windows instead.
 typedef bool (*FrameQuantileFn)(const double * const * frames, int n, int nb,
                                 const QuantilePos & p, double * q);
+//! The fine and micro stages' spectrum from their packed transform of M
+//! points: bins k0 .. k0 + nb - 1 of the N = 2M real samples, as X into xr and
+//! xi and |X| into mg. See fineHop().
+typedef void (*BinUnpackFn)(const double * re, const double * im, int M, int k0, int nb,
+                            const double * twRe, const double * twIm,
+                            double * xr, double * xi, double * mg);
+//! The crackle floor stage's power over 7 bins, for b in b0 .. b1 - 1:
+//! Pb[b] = the sum of P[b - 3] .. P[b + 3] in that order, each index held to
+//! -m0 .. nb - 1. See crackleFloorHop().
+typedef void (*Smooth7Fn)(const double * P, int nb, int m0, int b0, int b1, double * Pb);
+struct FloorGain;
+//! The crackle floor stage's gain, bins b0 .. b1 - 1, into G. See FloorGain.
+typedef void (*FloorGainFn)(const FloorGain & p, int b0, int b1, double * G);
 
 struct Kernels {
     FilterFn    filter;
@@ -254,7 +267,21 @@ struct Kernels {
     Dot2Fn      dot2;
     FlankAddFn  flankAdd;
     FrameQuantileFn frameQuantile;
+    BinUnpackFn binUnpack;
+    Smooth7Fn   smooth7;
+    FloorGainFn floorGain;
     const char * name;
+};
+
+//! What crackleFloorHop()'s gain is made of: the five frames' 7-bin powers,
+//! the floor, and under kept and capped the floors it is held under; Wiener's
+//! gain on them against beta x the floor, never below gmin, rising at once and
+//! falling back by a, from scratch where first.
+struct FloorGain {
+    const double * B[5];
+    const double * Fl, * Sv, * Wm;
+    bool kept, capped, first;
+    double beta, gmin, a;
 };
 
 enum { kFlankPad = 16 };
@@ -559,9 +586,60 @@ void fftOneBase(double * re, double * im, int n, int h,
     }
 }
 
+//! X[k] = E + e^(-2 pi i k / N) O, with E and O the transforms of the even and
+//! odd samples: (Z[k] + Z*[M-k]) / 2 and (Z[k] - Z*[M-k]) / 2i. The band can
+//! reach the Nyquist bin k = M, where both Z[k] and Z[M-k] are Z[0]; the masks
+//! fold it there.
+void binUnpackBase(const double * re, const double * im, int M, int k0, int nb,
+                   const double * twRe, const double * twIm,
+                   double * xr, double * xi, double * mg) {
+    for (int b = 0; b < nb; ++b) {
+        const int k = k0 + b;
+        const int kk = k & (M - 1), mk = (M - kk) & (M - 1);
+        const double zr = re[kk], zi = im[kk];
+        const double cr = re[mk], ci = -im[mk];
+        const double er = 0.5 * (zr + cr), ei = 0.5 * (zi + ci);
+        const double our = 0.5 * (zi - ci), oui = -0.5 * (zr - cr);
+        const double c = twRe[k], sn = twIm[k];
+        const double vr = er + c * our + sn * oui;
+        const double vi = ei + c * oui - sn * our;
+        xr[b] = vr;
+        xi[b] = vi;
+        mg[b] = sqrt(vr * vr + vi * vi);
+    }
+}
+
+void smooth7Base(const double * P, int nb, int m0, int b0, int b1, double * Pb) {
+    for (int b = b0; b < b1; ++b) {
+        double s = 0.0;
+        for (int j = -3; j <= 3; ++j) {
+            int kb = b + j;
+            if (kb + m0 < 0) kb = -m0;
+            if (kb > nb - 1) kb = nb - 1;
+            s += P[kb];
+        }
+        Pb[b] = s;
+    }
+}
+
+void floorGainBase(const FloorGain & p, int b0, int b1, double * G) {
+    const double beta = p.beta, gmin = p.gmin, a = p.a;
+    for (int b = b0; b < b1; ++b) {
+        const double s = (p.B[0][b] + p.B[1][b] + p.B[2][b] + p.B[3][b] + p.B[4][b]) / 35.0;
+        double f = p.kept ? dmin(p.Fl[b], p.Sv[b]) : p.Fl[b];
+        if (p.capped) f = dmin(f, p.Wm[b]);
+        const double nf = f * beta + 1e-30;
+        const double x = dmax(s / nf - 1.0, 0.0);
+        const double g0v = dmax(x / (1.0 + x), gmin);
+        double & g = G[b];
+        g = p.first ? g0v : dmax(g0v, a * g + (1.0 - a) * g0v);
+    }
+}
+
 const Kernels kBaseKernels = {
     filterBase, autocorrBase, fftPairBase, fftOneBase, sortedRowBase, dot2Base, flankAddBase,
     nullptr,                    // frameQuantile: the baseline keeps sorted windows
+    binUnpackBase, smooth7Base, floorGainBase,
     DECLICK_SSE2 ? "sse2" : "scalar"
 };
 
@@ -816,9 +894,73 @@ DECLICK_AVX2_FN void fftPairAvx2(double * re, double * im, int n, int h,
 //! cycles a window on a Haswell against the dozen its uops take. So the ranks
 //! for a tile of windows are counted first and the moves made after, and each
 //! window's latency is covered by the next window's counting.
+//! The counts of places below out[t] and below in[t] in each of `count`
+//! windows of n places, eight places a step: the ranks sortedRanks() finds by
+//! binary search in a window this long, which for a sorted window are the
+//! same numbers, NaN aside, as for frameQuantileAvx2(). Branch-free, where the
+//! two searches of a 259-place window mispredicted about half of their 18
+//! steps.
+DECLICK_AVX2_FN void sortedCountAvx2(const double * rows, int n, int stride, int count,
+                                     const double * out, const double * in,
+                                     int * jo, int * ji) {
+    const int nv = n & ~7;
+    const int r = n - nv;
+    const __m256i k0 = laneMask((r < 4) ? r : 4), k1 = laneMask((r > 4) ? r - 4 : 0);
+    for (int t = 0; t < count; ++t) {
+        const double * m = rows + (size_t)t * (size_t)stride;
+        const __m256d vo = _mm256_broadcast_sd(out + t), vi = _mm256_broadcast_sd(in + t);
+        __m256i co0 = _mm256_setzero_si256(), ci0 = co0, co1 = co0, ci1 = co0;
+        for (int i = 0; i < nv; i += 8) {
+            const __m256d a = _mm256_loadu_pd(m + i), b = _mm256_loadu_pd(m + i + 4);
+            co0 = _mm256_sub_epi64(co0, _mm256_castpd_si256(_mm256_cmp_pd(a, vo, _CMP_LT_OQ)));
+            ci0 = _mm256_sub_epi64(ci0, _mm256_castpd_si256(_mm256_cmp_pd(a, vi, _CMP_LT_OQ)));
+            co1 = _mm256_sub_epi64(co1, _mm256_castpd_si256(_mm256_cmp_pd(b, vo, _CMP_LT_OQ)));
+            ci1 = _mm256_sub_epi64(ci1, _mm256_castpd_si256(_mm256_cmp_pd(b, vi, _CMP_LT_OQ)));
+        }
+        // The last n - nv places, masked; a lane masked off compares 0 < v
+        // and is masked again.
+        const __m256d a = _mm256_maskload_pd(m + nv, k0), b = _mm256_maskload_pd(m + nv + 4, k1);
+        co0 = _mm256_sub_epi64(co0, _mm256_and_si256(k0, _mm256_castpd_si256(_mm256_cmp_pd(a, vo, _CMP_LT_OQ))));
+        ci0 = _mm256_sub_epi64(ci0, _mm256_and_si256(k0, _mm256_castpd_si256(_mm256_cmp_pd(a, vi, _CMP_LT_OQ))));
+        co1 = _mm256_sub_epi64(co1, _mm256_and_si256(k1, _mm256_castpd_si256(_mm256_cmp_pd(b, vo, _CMP_LT_OQ))));
+        ci1 = _mm256_sub_epi64(ci1, _mm256_and_si256(k1, _mm256_castpd_si256(_mm256_cmp_pd(b, vi, _CMP_LT_OQ))));
+        const __m256i co = _mm256_add_epi64(co0, co1), ci = _mm256_add_epi64(ci0, ci1);
+        __m128i h = _mm_add_epi64(_mm256_castsi256_si128(co), _mm256_extracti128_si256(co, 1));
+        jo[t] = _mm_cvtsi128_si32(_mm_add_epi64(h, _mm_unpackhi_epi64(h, h)));
+        h = _mm_add_epi64(_mm256_castsi256_si128(ci), _mm256_extracti128_si256(ci, 1));
+        ji[t] = _mm_cvtsi128_si32(_mm_add_epi64(h, _mm_unpackhi_epi64(h, h)));
+    }
+    _mm256_zeroupper();
+}
+
+//! sortedRowBase() for windows of kSortedBig places and more - the crackle
+//! floor stage's 259 - with the ranks counted by sortedCountAvx2(), a tile of
+//! windows at a time, and the moves the base kernel's own memmove. Plain code:
+//! the counts end in a vzeroupper, and memmove is SSE. 340 cycles a window of
+//! 259 became 270 on a Haswell.
+void sortedRowBigAvx2(double * rows, int n, int stride, int count,
+                      const double * out, const double * in) {
+    enum { kTile = 16 };
+    int jo[kTile], ji[kTile];
+    for (int b0 = 0; b0 < count; b0 += (int)kTile) {
+        const int nt = (count - b0 < (int)kTile) ? count - b0 : (int)kTile;
+        sortedCountAvx2(rows + (size_t)b0 * (size_t)stride, n, stride, nt,
+                        out + b0, in + b0, jo, ji);
+        for (int t = 0; t < nt; ++t) {
+            // sortedRanks()'s adjustments to its two searches.
+            int a = jo[t], c = ji[t];
+            c -= (out[b0 + t] < in[b0 + t]);
+            if (a > n - 1) a = n - 1;
+            if (c > n - 1) c = n - 1;
+            if (c < 0) c = 0;
+            sortedMove(rows + (size_t)(b0 + t) * (size_t)stride, n, a, c, in[b0 + t]);
+        }
+    }
+}
+
 DECLICK_AVX2_FN void sortedRowAvx2(double * rows, int n, int stride, int count,
                                    const double * out, const double * in) {
-    if (n >= (int)kSortedBig) { sortedRowBase(rows, n, stride, count, out, in); return; }
+    if (n >= (int)kSortedBig) { sortedRowBigAvx2(rows, n, stride, count, out, in); return; }
     enum { kTile = 16 };
     const int nv = n & ~3;        // the places four at a time
     const int r  = n - nv;        // and the one, two or three left over
@@ -1102,9 +1244,191 @@ DECLICK_AVX2_FN bool frameQuantileAvx2(const double * const * frames, int n, int
     return true;
 }
 
+//! One group of binUnpackAvx2(): X and |X| for the four bins from zr, zi, cr,
+//! cm - Z at the bins and at their mirrors - and the twiddles c and sn.
+#define DECLICK_UNPACK4(vr, vi, mv)                                                      \
+    const __m256d ci = _mm256_xor_pd(cm, sign);                       /* -im[mk] */     \
+    const __m256d er = _mm256_mul_pd(half, _mm256_add_pd(zr, cr));                      \
+    const __m256d ei = _mm256_mul_pd(half, _mm256_add_pd(zi, ci));                      \
+    const __m256d our = _mm256_mul_pd(half, _mm256_sub_pd(zi, ci));                     \
+    const __m256d oui = _mm256_mul_pd(mhalf, _mm256_sub_pd(zr, cr));                    \
+    const __m256d vr = _mm256_add_pd(_mm256_add_pd(er, _mm256_mul_pd(c, our)),          \
+                                     _mm256_mul_pd(sn, oui));                           \
+    const __m256d vi = _mm256_sub_pd(_mm256_add_pd(ei, _mm256_mul_pd(c, oui)),          \
+                                     _mm256_mul_pd(sn, our));                           \
+    const __m256d mv = _mm256_sqrt_pd(_mm256_add_pd(_mm256_mul_pd(vr, vr),              \
+                                                    _mm256_mul_pd(vi, vi)))
+
+//! The bins b .. b + 3 by gathers, lanes past nb neither read nor written.
+#define DECLICK_UNPACK4_GATHER(b)                                                        \
+    {                                                                                    \
+        const int left_ = nb - (b);                                                      \
+        const __m256i m = laneMask((left_ < 4) ? left_ : 4);                             \
+        const __m256d md = _mm256_castsi256_pd(m);                                       \
+        const __m256i kv = _mm256_and_si256(_mm256_add_epi64(_mm256_set1_epi64x(k0 + (b)), lane), wrap); \
+        const __m256i mk = _mm256_and_si256(_mm256_sub_epi64(_mm256_set1_epi64x(M), kv), wrap);         \
+        const __m256d zr = _mm256_mask_i64gather_pd(zero, re, kv, md, 8);                \
+        const __m256d zi = _mm256_mask_i64gather_pd(zero, im, kv, md, 8);                \
+        const __m256d cr = _mm256_mask_i64gather_pd(zero, re, mk, md, 8);                \
+        const __m256d cm = _mm256_mask_i64gather_pd(zero, im, mk, md, 8);                \
+        const __m256d c = _mm256_maskload_pd(twRe + k0 + (b), m);                        \
+        const __m256d sn = _mm256_maskload_pd(twIm + k0 + (b), m);                       \
+        DECLICK_UNPACK4(vr, vi, mv);                                                     \
+        _mm256_maskstore_pd(xr + (b), m, vr);                                            \
+        _mm256_maskstore_pd(xi + (b), m, vi);                                            \
+        _mm256_maskstore_pd(mg + (b), m, mv);                                            \
+    }
+
+//! binUnpackBase() four bins at a time: the same multiplies, adds and square
+//! root, never FMA, in the same order, so the same bits. A square root is
+//! ~9.7 cycles of the divider apiece as sqrtsd on a Haswell, and vsqrtpd takes
+//! four in ~11; the fine stage's unpack went from ~1310 cycles a hop to ~620.
+//! Bins k .. k + 3 read Z at kk .. kk + 3 and their mirrors at M - kk ..
+//! M - kk - 3, one load and a reversal each, wherever the four stay inside
+//! 1 .. M - 1. The group with the DC or the Nyquist bin, which fold onto
+//! Z[0], gathers instead, as does the last one when nb is not a multiple of
+//! four; those can only be the first group and the last ones.
+//!
+//! MSVC workaround (VS 2017 15.9, cl 19.16.27051): three loops, each body
+//! straight-line, and the gathers' indices in 256-bit integers. One loop that
+//! chose between the loads and between the stores by `if` came out with every
+//! vector kept in memory and three vzeroupper inside the loop, and the
+//! indices' 128-bit integer arithmetic as legacy SSE with the upper halves
+//! dirty. A later compiler may manage the one loop: if it disassembles with
+//! the vectors in registers and no vzeroupper or non-VEX instruction inside
+//! it, it can come back.
+DECLICK_AVX2_FN void binUnpackAvx2(const double * re, const double * im, int M, int k0, int nb,
+                                   const double * twRe, const double * twIm,
+                                   double * xr, double * xi, double * mg) {
+    const __m256d half = _mm256_set1_pd(0.5), mhalf = _mm256_set1_pd(-0.5);
+    const __m256d sign = _mm256_set1_pd(-0.0);
+    const __m256d zero = _mm256_setzero_pd();
+    const __m256i lane = _mm256_setr_epi64x(0, 1, 2, 3);
+    const __m256i wrap = _mm256_set1_epi64x(M - 1);
+    // Groups at b = 4j are loaded whole from bA up to bB: k0 + b >= 1,
+    // b + 4 <= nb, and k0 + b + 3 <= M - 1.
+    const int bA = (k0 >= 1) ? 0 : 4;
+    const int last = (nb - 4 < M - 4 - k0) ? nb - 4 : M - 4 - k0;   // the last b loaded whole
+    const int bB = (last >= bA) ? bA + ((last - bA) / 4 + 1) * 4 : bA;
+    for (int b = 0; b < bA && b < nb; b += 4) DECLICK_UNPACK4_GATHER(b)
+    for (int b = bA; b < bB; b += 4) {
+        const int kk = k0 + b;
+        const __m256d zr = _mm256_loadu_pd(re + kk);
+        const __m256d zi = _mm256_loadu_pd(im + kk);
+        // Lanes 0 .. 3 want M - kk .. M - kk - 3: the four from M - kk - 3, reversed.
+        const __m256d cr = _mm256_permute4x64_pd(_mm256_loadu_pd(re + (M - kk - 3)), 0x1b);
+        const __m256d cm = _mm256_permute4x64_pd(_mm256_loadu_pd(im + (M - kk - 3)), 0x1b);
+        const __m256d c = _mm256_loadu_pd(twRe + kk);
+        const __m256d sn = _mm256_loadu_pd(twIm + kk);
+        DECLICK_UNPACK4(vr, vi, mv);
+        _mm256_storeu_pd(xr + b, vr);
+        _mm256_storeu_pd(xi + b, vi);
+        _mm256_storeu_pd(mg + b, mv);
+    }
+    for (int b = (bB > bA) ? bB : bA; b < nb; b += 4) DECLICK_UNPACK4_GATHER(b)
+    _mm256_zeroupper();
+}
+#undef DECLICK_UNPACK4_GATHER
+#undef DECLICK_UNPACK4
+
+//! smooth7Base()'s sum for the four bins from b by gathers, each index held as
+//! the base kernel holds it, lanes past b1 neither read nor written.
+#define DECLICK_SMOOTH7_GATHER(b)                                                        \
+    {                                                                                    \
+        const int left_ = b1 - (b);                                                      \
+        const __m256i m = laneMask((left_ < 4) ? left_ : 4);                             \
+        const __m256d md = _mm256_castsi256_pd(m);                                       \
+        __m256d s = _mm256_setzero_pd();                                                 \
+        for (int j = -3; j <= 3; ++j) {                                                  \
+            __m256i kb = _mm256_add_epi32(_mm256_set1_epi32((b) + j), lane);             \
+            kb = _mm256_max_epi32(kb, lo);                /* if (kb + m0 < 0) kb = -m0 */ \
+            kb = _mm256_min_epi32(kb, hi);                /* if (kb > nb - 1) kb = nb - 1 */ \
+            s = _mm256_add_pd(s, _mm256_mask_i32gather_pd(_mm256_setzero_pd(), P,        \
+                                                          _mm256_castsi256_si128(kb), md, 8)); \
+        }                                                                                \
+        _mm256_maskstore_pd(Pb + (b), m, s);                                             \
+    }
+
+//! smooth7Base() four bins at a time, each the same seven adds from 0.0 in the
+//! same order. The bins whose seven are all inside -m0 .. nb - 1 take them as
+//! seven loads; the groups either side of those, and the last when the count
+//! is not a multiple of four, gather them. The indices are 32-bit lanes of a
+//! 256-bit vector - MSVC 19.16 encodes the 128-bit integer intrinsics as
+//! legacy SSE here; see binUnpackAvx2() - and the loops are three, each
+//! straight-line, for the same reason.
+DECLICK_AVX2_FN void smooth7Avx2(const double * P, int nb, int m0, int b0, int b1, double * Pb) {
+    if (b1 <= b0) return;
+    const __m256i lane = _mm256_setr_epi32(0, 1, 2, 3, 0, 0, 0, 0);
+    const __m256i lo = _mm256_set1_epi32(-m0), hi = _mm256_set1_epi32(nb - 1);
+    // Groups at b0 + 4j take loads from iA up to iB: b - 3 >= -m0 and
+    // b + 3 + 3 <= nb - 1, and the whole group before b1.
+    const int need = 3 - m0 - b0;
+    const int iA = b0 + ((need > 0) ? (need + 3) / 4 * 4 : 0);
+    const int last = (b1 - 4 < nb - 7) ? b1 - 4 : nb - 7;
+    const int iB = (last >= iA) ? iA + ((last - iA) / 4 + 1) * 4 : iA;
+    int b = b0;
+    for (; b < iA && b < b1; b += 4) DECLICK_SMOOTH7_GATHER(b)
+    for (b = iA; b < iB; b += 4) {
+        const double * q = P + b;
+        __m256d s = _mm256_setzero_pd();
+        s = _mm256_add_pd(s, _mm256_loadu_pd(q - 3));
+        s = _mm256_add_pd(s, _mm256_loadu_pd(q - 2));
+        s = _mm256_add_pd(s, _mm256_loadu_pd(q - 1));
+        s = _mm256_add_pd(s, _mm256_loadu_pd(q));
+        s = _mm256_add_pd(s, _mm256_loadu_pd(q + 1));
+        s = _mm256_add_pd(s, _mm256_loadu_pd(q + 2));
+        s = _mm256_add_pd(s, _mm256_loadu_pd(q + 3));
+        _mm256_storeu_pd(Pb + b, s);
+    }
+    for (b = (iB > iA) ? iB : iA; b < b1; b += 4) DECLICK_SMOOTH7_GATHER(b)
+    _mm256_zeroupper();
+}
+#undef DECLICK_SMOOTH7_GATHER
+
+//! floorGainBase() four bins at a time: the same three divisions, four to a
+//! vdivpd, and the same multiplies and adds, never FMA. dmin(a, b) is
+//! a < b ? a : b and dmax(a, b) a > b ? a : b, which is what minpd and maxpd
+//! do with their operands in that order, NaN and signed zeros included. The
+//! flags are masks selected as integers - MSVC 19.16 made a ?: between two
+//! vectors a branch with a vzeroupper on one side - and the saved and warm
+//! floors are read only under them: a mask of nothing reads nothing, and with
+//! the flag down the base kernel never reads them, nor may this.
+DECLICK_AVX2_FN void floorGainAvx2(const FloorGain & p, int b0, int b1, double * G) {
+    const __m256d one = _mm256_set1_pd(1.0), zero = _mm256_setzero_pd();
+    const __m256d k35 = _mm256_set1_pd(35.0), tiny = _mm256_set1_pd(1e-30);
+    const __m256d beta = _mm256_set1_pd(p.beta), gmin = _mm256_set1_pd(p.gmin);
+    const __m256d a = _mm256_set1_pd(p.a);
+    const __m256d ra = _mm256_sub_pd(one, a);                   // 1.0 - a
+    const __m256i kept = _mm256_set1_epi64x(p.kept ? -1 : 0);
+    const __m256i capped = _mm256_set1_epi64x(p.capped ? -1 : 0);
+    const __m256d first = _mm256_castsi256_pd(_mm256_set1_epi64x(p.first ? -1 : 0));
+    for (int b = b0; b < b1; b += 4) {
+        const __m256i m = laneMask((b1 - b < 4) ? b1 - b : 4);
+        __m256d s = _mm256_add_pd(_mm256_maskload_pd(p.B[0] + b, m), _mm256_maskload_pd(p.B[1] + b, m));
+        s = _mm256_add_pd(s, _mm256_maskload_pd(p.B[2] + b, m));
+        s = _mm256_add_pd(s, _mm256_maskload_pd(p.B[3] + b, m));
+        s = _mm256_add_pd(s, _mm256_maskload_pd(p.B[4] + b, m));
+        s = _mm256_div_pd(s, k35);
+        const __m256i mk = _mm256_and_si256(m, kept), mc = _mm256_and_si256(m, capped);
+        __m256d f = _mm256_maskload_pd(p.Fl + b, m);
+        f = _mm256_blendv_pd(f, _mm256_min_pd(f, _mm256_maskload_pd(p.Sv + b, mk)),
+                             _mm256_castsi256_pd(mk));
+        f = _mm256_blendv_pd(f, _mm256_min_pd(f, _mm256_maskload_pd(p.Wm + b, mc)),
+                             _mm256_castsi256_pd(mc));
+        const __m256d nf = _mm256_add_pd(_mm256_mul_pd(f, beta), tiny);
+        const __m256d x = _mm256_max_pd(_mm256_sub_pd(_mm256_div_pd(s, nf), one), zero);
+        const __m256d g0v = _mm256_max_pd(_mm256_div_pd(x, _mm256_add_pd(one, x)), gmin);
+        const __m256d g = _mm256_maskload_pd(G + b, m);
+        const __m256d gr = _mm256_max_pd(g0v, _mm256_add_pd(_mm256_mul_pd(a, g),
+                                                            _mm256_mul_pd(ra, g0v)));
+        _mm256_maskstore_pd(G + b, m, _mm256_blendv_pd(gr, g0v, first));
+    }
+    _mm256_zeroupper();
+}
+
 const Kernels kAvx2Kernels = { filterAvx2, autocorrAvx2, fftPairAvx2, fftOneAvx2,
                                sortedRowAvx2, dot2Avx2, flankAddAvx2, frameQuantileAvx2,
-                               "avx2" };
+                               binUnpackAvx2, smooth7Avx2, floorGainAvx2, "avx2" };
 
 //! AVX2 and FMA in the CPU, and YMM state saved by the OS.
 bool cpuHasAvx2Fma() {
@@ -1290,7 +1614,8 @@ void autocorrNeon(const double * x, int n, double * r, int maxLag) {
 
 // The scalar FFT pass vectorises as it stands, two doubles to a register.
 const Kernels kNeonKernels = { filterNeon, autocorrNeon, fftPairBase, fftOneBase,
-                               sortedRowBase, dot2Base, flankAddBase, nullptr, "neon" };
+                               sortedRowBase, dot2Base, flankAddBase, nullptr,
+                               binUnpackBase, smooth7Base, floorGainBase, "neon" };
 
 #endif // DECLICK_NEON
 
@@ -3399,16 +3724,7 @@ void Channel::crackleFloorHop(uint64_t start) {
     {
         double * Pb = &m_nPb[(size_t)slot * nbs];
         const int g0 = (m_nK0 - 1 - m0 > 0) ? m_nK0 - 1 - m0 : 0;
-        for (int b = g0; b < nt; ++b) {
-            double s = 0.0;
-            for (int j = -3; j <= 3; ++j) {
-                int kb = b + j;
-                if (kb + m0 < 0) kb = -m0;
-                if (kb > nb - 1) kb = nb - 1;
-                s += P[kb];
-            }
-            Pb[b] = s;
-        }
+        g_kernels->smooth7(P, nb, m0, g0, nt, Pb);
     }
     m_nSlot = (slot + 1) % (int)kFloorFrames;
     if (m_nHist < (int)kFloorFrames) {
@@ -3527,18 +3843,10 @@ void Channel::crackleFloorHop(uint64_t start) {
     // the floor, never below crackleFloorMin; it rises at once and falls back
     // with the release.
     {
-        const double beta = m_cfg.crackleFloorBeta, gmin = m_cfg.crackleFloorMin, a = m_nRel;
-        const bool first = m_nCutCount == 0;
-        for (int b = g0; b < nt; ++b) {
-            const double s = (Bq[0][b] + Bq[1][b] + Bq[2][b] + Bq[3][b] + Bq[4][b]) / 35.0;
-            double f = kept ? dmin(Fl[b], Sv[b]) : Fl[b];
-            if (capped) f = dmin(f, Wm[b]);
-            const double nf = f * beta + 1e-30;
-            const double x = dmax(s / nf - 1.0, 0.0);
-            const double g0v = dmax(x / (1.0 + x), gmin);
-            double & g = m_nG[(size_t)b];
-            g = first ? g0v : dmax(g0v, a * g + (1.0 - a) * g0v);
-        }
+        const FloorGain p = { { Bq[0], Bq[1], Bq[2], Bq[3], Bq[4] }, Fl, Sv, Wm,
+                              kept, capped, m_nCutCount == 0,
+                              m_cfg.crackleFloorBeta, m_cfg.crackleFloorMin, m_nRel };
+        g_kernels->floorGain(p, g0, nt, m_nG.data());
     }
     // The shelf's gain (see Config::crackleFloorShelf): the newest frame's
     // power over its band against the sum of the band's floors, the median of
@@ -3973,24 +4281,8 @@ void Channel::fineHop(uint64_t start) {
         double * xr = &m_fXRe[sl];
         double * xi = &m_fXIm[sl];
         double e = 0.0, ed = 0.0;
-        // X[k] = E + e^(-2 pi i k / N) O, with E and O the transforms of the
-        // even and odd samples: (Z[k] + Z*[M-k]) / 2 and (Z[k] - Z*[M-k]) / 2i.
-        // The band can reach the Nyquist bin k = M, where both Z[k] and
-        // Z[M-k] are Z[0]; the masks fold it there.
+        g_kernels->binUnpack(re, im, M, k0, nb, twRe, twIm, xr, xi, mg);
         for (int b = 0; b < nb; ++b) {
-            const int k = k0 + b;
-            const int kk = k & (M - 1), mk = (M - kk) & (M - 1);
-            const double zr = re[kk], zi = im[kk];
-            const double cr = re[mk], ci = -im[mk];
-            const double er = 0.5 * (zr + cr), ei = 0.5 * (zi + ci);
-            const double our = 0.5 * (zi - ci), oui = -0.5 * (zr - cr);
-            const double c = twRe[k], sn = twIm[k];
-            const double vr = er + c * our + sn * oui;
-            const double vi = ei + c * oui - sn * our;
-            xr[b] = vr;
-            xi[b] = vi;
-            const double p = vr * vr + vi * vi;
-            mg[b] = sqrt(p);
             if (b < nd) ed += mg[b] * mg[b];
             else if (b - nd < m_fNbLow) e += mg[b] * mg[b];
         }
@@ -4178,20 +4470,7 @@ void Channel::microHop(uint64_t start) {
         double * mg = &m_mMag[sl];
         double * xr = &m_mXRe[sl];
         double * xi = &m_mXIm[sl];
-        for (int b = 0; b < nb; ++b) {
-            const int k = m_mK0 + b;
-            const int kk = k & (M - 1), mk = (M - kk) & (M - 1);
-            const double zr = re[kk], zi = im[kk];
-            const double cr = re[mk], ci = -im[mk];
-            const double er = 0.5 * (zr + cr), ei = 0.5 * (zi + ci);
-            const double our = 0.5 * (zi - ci), oui = -0.5 * (zr - cr);
-            const double c = twRe[k], sn = twIm[k];
-            const double vr = er + c * our + sn * oui;
-            const double vi = ei + c * oui - sn * our;
-            xr[b] = vr;
-            xi[b] = vi;
-            mg[b] = sqrt(vr * vr + vi * vi);
-        }
+        g_kernels->binUnpack(re, im, M, m_mK0, nb, twRe, twIm, xr, xi, mg);
     }
     if (m_mHist < 2 * D + 1) ++m_mHist;
     if (m_mHist < Mm) return;
