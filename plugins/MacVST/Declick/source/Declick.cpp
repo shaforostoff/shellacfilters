@@ -127,8 +127,15 @@ void Declick::updateConfig()
 void Declick::resume()
 {
 	//The pipeline is holding the tail of whatever played last. Start the next
-	//transport from silence instead of splicing that in.
+	//transport from silence instead of splicing that in. The rebuild happens
+	//here rather than on the first process call: the host has set its real
+	//sample rate by now, this is not the audio thread, and a latency
+	//announced before the transport starts is one the host can still act on.
 	needsPrime = true;
+	{
+		declick::scoped_flush_denormals ftz;
+		updateConfig();
+	}
 	AudioEffectX::resume();
 }
 

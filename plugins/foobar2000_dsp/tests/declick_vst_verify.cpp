@@ -324,6 +324,18 @@ void testRobustness(const std::vector<double> & inL, const std::vector<double> &
         check(finite, "output stays finite at 96 kHz");
     }
     {
+        // What a host does: rate, then resume, then audio. The delay has to be
+        // right before the first block, or the host compensates the wrong amount.
+        Declick fx(hostCallback);
+        fx.setSampleRate(96000.0f);
+        fx.resume();
+        declick::Config c96; c96.compute(wrapperDefaults(), 96000.0);
+        char d[64];
+        snprintf(d, sizeof d, "%d, want %d", (int)fx.getAeffect()->initialDelay, c96.latency);
+        check(fx.getAeffect()->initialDelay == c96.latency,
+              "resume() declares the latency at the host's rate", d);
+    }
+    {
         Declick fx(hostCallback);
         std::vector<double> bad((size_t)4096, 0.0);
         for (size_t i = 0; i < bad.size(); ++i) {
