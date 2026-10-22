@@ -2028,6 +2028,62 @@ Channel::Channel() {
     m_cfg.compute(Params::defaults(), 44100.0);
 }
 
+//! A real transform of N samples packed into M = N/2 points (or, for the
+//! wide spectrum, M complex points): the stage twiddles and bit reversal of
+//! M, and nTw twiddles of N for unpacking.
+static void fftTables(int M, int N, int nTw, double * stRe, double * stIm, int * rev,
+                      double * twRe, double * twIm) {
+    const double twoPi = 6.283185307179586;
+    for (int k = 0; k < nTw; ++k) {
+        twRe[k] = cos(twoPi * (double)k / (double)N);
+        twIm[k] = sin(twoPi * (double)k / (double)N);
+    }
+    for (int half = 1; half < M; half <<= 1) {
+        for (int k = 0; k < half; ++k) {
+            const double a = twoPi * (double)k / (double)(2 * half);
+            stRe[half - 1 + k] = cos(a);
+            stIm[half - 1 + k] = sin(a);
+        }
+    }
+    int bits = 0;
+    while ((1 << bits) < M) ++bits;
+    for (int i = 0; i < M; ++i) {
+        int r = 0;
+        for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
+        rev[i] = r;
+    }
+}
+
+//! Periodic Hann of N, or its square root; returns the sum of its squares
+//! every hop samples, the overlap-add's normalisation.
+static double hannTable(int N, bool root, int hop, double * w) {
+    const double twoPi = 6.283185307179586;
+    for (int i = 0; i < N; ++i) {
+        const double v = 0.5 - 0.5 * cos(twoPi * (double)i / (double)N);
+        w[i] = root ? sqrt(v) : v;
+    }
+    double norm = 0.0;
+    for (int i = 0; i < N; i += hop) norm += w[i] * w[i];
+    return (norm > 0.0) ? norm : 1.0;
+}
+
+//! Adds V = vr + i vi, bin k of a real transform of N = 2M, to the M-point
+//! spectrum its inverse takes: bin k takes V + i V e^(2 pi i k/N), and its
+//! mirror N - k the conjugates of both. The Nyquist bin is its own mirror,
+//! and real for real input; it folds onto Z[0]. `c`, `sn`: e^(2 pi i k/N).
+static inline void packBin(double * re, double * im, const int * rev, int M, int k,
+                           double vr, double vi, double c, double sn) {
+    const double ur = vr * c - vi * sn, ui = vr * sn + vi * c;
+    const int kr = rev[k & (M - 1)];      // see fftRadix2
+    re[kr] += vr - ui;
+    im[kr] += vi + ur;
+    if (k != 2 * M - k) {
+        const int mr = rev[M - k];
+        re[mr] += vr + ui;
+        im[mr] += ur - vi;
+    }
+}
+
 //! MSVC note (VS 2017 15.9, cl 19.16.27051): of the loops here that fill the
 //! windows and twiddles from sin() and cos(), MSVC vectorises some, calling
 //! __vdecl_sin2 and __vdecl_cos2, which can differ from the scalar functions
@@ -2163,31 +2219,8 @@ void Channel::configure(const Config & cfg) {
         // one past each end of the window and discard it.
         m_bMed.assign((size_t)(2 * m_bHalf + 1) + 2, 0.0);
 
-        const double twoPi = 6.283185307179586;
-        for (int i = 0; i < N; ++i) {            // periodic Hann, as scipy's
-            m_bWin[(size_t)i] = 0.5 - 0.5 * cos(twoPi * (double)i / (double)N);
-        }
-        double norm = 0.0;                       // the same at every sample
-        for (int i = 0; i < N; i += H) norm += m_bWin[(size_t)i] * m_bWin[(size_t)i];
-        m_bNorm = (norm > 0.0) ? norm : 1.0;
-        for (int k = 0; k < N / 2; ++k) {
-            m_bTwRe[(size_t)k] = cos(twoPi * (double)k / (double)N);
-            m_bTwIm[(size_t)k] = sin(twoPi * (double)k / (double)N);
-        }
-        for (int half = 1; half < N / 2; half <<= 1) {
-            for (int k = 0; k < half; ++k) {
-                const double a = twoPi * (double)k / (double)(2 * half);
-                m_bStRe[(size_t)(half - 1 + k)] = cos(a);
-                m_bStIm[(size_t)(half - 1 + k)] = sin(a);
-            }
-        }
-        int bits = 0;
-        while ((1 << bits) < N / 2) ++bits;
-        for (int i = 0; i < N / 2; ++i) {
-            int r = 0;
-            for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
-            m_bRev[(size_t)i] = r;
-        }
+        m_bNorm = hannTable(N, false, H, &m_bWin[0]);
+        fftTables(N / 2, N, N / 2, &m_bStRe[0], &m_bStIm[0], &m_bRev[0], &m_bTwRe[0], &m_bTwIm[0]);
 
         const double blockSec = (double)kBlock / cfg.rate;
         int nRate = (int)floor(cfg.bodyRateWin / blockSec + 0.5);
@@ -2273,31 +2306,8 @@ void Channel::configure(const Config & cfg) {
             m_dRunMask = slots - 1;
         }
 
-        const double twoPi = 6.283185307179586;
-        double norm = 0.0;
-        for (int i = 0; i < N; ++i) {            // square root of the periodic Hann
-            m_fWin[(size_t)i] = sqrt(0.5 - 0.5 * cos(twoPi * (double)i / (double)N));
-        }
-        for (int i = 0; i < N; i += m_fH) norm += m_fWin[(size_t)i] * m_fWin[(size_t)i];
-        m_fNorm = (norm > 0.0) ? norm : 1.0;
-        for (int k = 0; k <= N / 2; ++k) {
-            m_fTwRe[(size_t)k] = cos(twoPi * (double)k / (double)N);
-            m_fTwIm[(size_t)k] = sin(twoPi * (double)k / (double)N);
-        }
-        for (int half = 1; half < N / 2; half <<= 1) {
-            for (int k = 0; k < half; ++k) {
-                const double a = twoPi * (double)k / (double)(2 * half);
-                m_fStRe[(size_t)(half - 1 + k)] = cos(a);
-                m_fStIm[(size_t)(half - 1 + k)] = sin(a);
-            }
-        }
-        int bits = 0;
-        while ((1 << bits) < N / 2) ++bits;
-        for (int i = 0; i < N / 2; ++i) {
-            int r = 0;
-            for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
-            m_fRev[(size_t)i] = r;
-        }
+        m_fNorm = hannTable(N, true, m_fH, &m_fWin[0]);
+        fftTables(N / 2, N, N / 2 + 1, &m_fStRe[0], &m_fStIm[0], &m_fRev[0], &m_fTwRe[0], &m_fTwIm[0]);
         m_fR.assign(m_bY.size(), 0.0);
     }
 
@@ -2347,30 +2357,8 @@ void Channel::configure(const Config & cfg) {
             m_fKeepMask = slots - 1;
         }
 
-        const double twoPi = 6.283185307179586;
-        for (int i = 0; i < N; ++i)              // square root of the periodic Hann
-            m_mWin[(size_t)i] = sqrt(0.5 - 0.5 * cos(twoPi * (double)i / (double)N));
-        double norm = 0.0;
-        for (int i = 0; i < N; i += m_mH) norm += m_mWin[(size_t)i] * m_mWin[(size_t)i];
-        m_mNorm = (norm > 0.0) ? norm : 1.0;
-        for (int k = 0; k <= N / 2; ++k) {
-            m_mTwRe[(size_t)k] = cos(twoPi * (double)k / (double)N);
-            m_mTwIm[(size_t)k] = sin(twoPi * (double)k / (double)N);
-        }
-        for (int half = 1; half < N / 2; half <<= 1) {
-            for (int k = 0; k < half; ++k) {
-                const double a = twoPi * (double)k / (double)(2 * half);
-                m_mStRe[(size_t)(half - 1 + k)] = cos(a);
-                m_mStIm[(size_t)(half - 1 + k)] = sin(a);
-            }
-        }
-        int bits = 0;
-        while ((1 << bits) < N / 2) ++bits;
-        for (int i = 0; i < N / 2; ++i) {
-            int r = 0;
-            for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
-            m_mRev[(size_t)i] = r;
-        }
+        m_mNorm = hannTable(N, true, m_mH, &m_mWin[0]);
+        fftTables(N / 2, N, N / 2 + 1, &m_mStRe[0], &m_mStIm[0], &m_mRev[0], &m_mTwRe[0], &m_mTwIm[0]);
     }
 
     // The flank repair: a run list for the block, the corrections aligned with
@@ -2413,7 +2401,6 @@ void Channel::configure(const Config & cfg) {
     // there to read without unpacking. Tables as the fine stage builds them.
     {
         const int M = kWideFft;
-        const double twoPi = 6.283185307179586;
         m_wSpec.assign((size_t)(M / 2 + 1), 0.0);
         m_wWin.assign((size_t)M, 0.0);
         m_wRe.assign((size_t)M, 0.0);
@@ -2421,22 +2408,8 @@ void Channel::configure(const Config & cfg) {
         m_wStRe.assign((size_t)M, 0.0);
         m_wStIm.assign((size_t)M, 0.0);
         m_wRev.assign((size_t)M, 0);
-        for (int i = 0; i < M; ++i)
-            m_wWin[(size_t)i] = 0.5 - 0.5 * cos(twoPi * (double)i / (double)M);
-        for (int half = 1; half < M; half <<= 1) {
-            for (int k = 0; k < half; ++k) {
-                const double a = twoPi * (double)k / (double)(2 * half);
-                m_wStRe[(size_t)(half - 1 + k)] = cos(a);
-                m_wStIm[(size_t)(half - 1 + k)] = sin(a);
-            }
-        }
-        int bits = 0;
-        while ((1 << bits) < M) ++bits;
-        for (int i = 0; i < M; ++i) {
-            int r = 0;
-            for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
-            m_wRev[(size_t)i] = r;
-        }
+        hannTable(M, false, M, &m_wWin[0]);
+        fftTables(M, M, 0, &m_wStRe[0], &m_wStIm[0], &m_wRev[0], nullptr, nullptr);
     }
 
     // The crackle floor stage, sized from crackleFloorN, crackleFloorLo,
@@ -2528,30 +2501,8 @@ void Channel::configure(const Config & cfg) {
             if (m_nShelf) m_nWs[(size_t)b] = in * s;
         }
         m_nShelfRel = (cfg.crackleFloorShelfRelease > 0.0) ? exp(-(double)H / cfg.rate / cfg.crackleFloorShelfRelease) : 0.0;
-        const double twoPi = 6.283185307179586;
-        for (int i = 0; i < N; ++i)              // periodic Hann, as scipy's
-            m_nWin[(size_t)i] = 0.5 - 0.5 * cos(twoPi * (double)i / (double)N);
-        double norm = 0.0;
-        for (int i = 0; i < N; i += H) norm += m_nWin[(size_t)i] * m_nWin[(size_t)i];
-        m_nNorm = (norm > 0.0) ? norm : 1.0;
-        for (int k = 0; k <= M; ++k) {
-            m_nTwRe[(size_t)k] = cos(twoPi * (double)k / (double)N);
-            m_nTwIm[(size_t)k] = sin(twoPi * (double)k / (double)N);
-        }
-        for (int half = 1; half < M; half <<= 1) {
-            for (int k = 0; k < half; ++k) {
-                const double a = twoPi * (double)k / (double)(2 * half);
-                m_nStRe[(size_t)(half - 1 + k)] = cos(a);
-                m_nStIm[(size_t)(half - 1 + k)] = sin(a);
-            }
-        }
-        int bits = 0;
-        while ((1 << bits) < M) ++bits;
-        for (int i = 0; i < M; ++i) {
-            int r = 0;
-            for (int b = 0; b < bits; ++b) r |= ((i >> b) & 1) << (bits - 1 - b);
-            m_nRev[(size_t)i] = r;
-        }
+        m_nNorm = hannTable(N, false, H, &m_nWin[0]);
+        fftTables(M, N, M + 1, &m_nStRe[0], &m_nStIm[0], &m_nRev[0], &m_nTwRe[0], &m_nTwIm[0]);
         m_nRel = (cfg.crackleFloorRelease > 0.0) ? exp(-(double)H / cfg.rate / cfg.crackleFloorRelease) : 0.0;
     } else {
         m_nN = 0;
@@ -3917,20 +3868,8 @@ void Channel::crackleFloorHop(uint64_t start) {
         if (Ws) cut += shelfCut * Ws[b];
         cut *= key;
         if (!(cut > 0.0)) continue;
-        // Packed for the inverse as in fineHop(): bin k takes X + i X e^(2 pi
-        // i k/N), its mirror the conjugates; the Nyquist bin is its own.
         const int k = m0 + b;
-        const double vr = cut * cxr[b], vi = cut * cxi[b];
-        const double c = twRe[k], sn = twIm[k];
-        const double ur = vr * c - vi * sn, ui = vr * sn + vi * c;
-        const int kr = rev[k & (M - 1)];
-        re[kr] += vr - ui;
-        im[kr] += vi + ur;
-        if (k != N - k) {
-            const int mr = rev[M - k];
-            re[mr] += vr + ui;
-            im[mr] += ur - vi;
-        }
+        packBin(re, im, rev, M, k, cut * cxr[b], cut * cxi[b], twRe[k], twIm[k]);
         any = true;
     }
     if (!any) return;
@@ -4161,16 +4100,8 @@ void Channel::bodyHop(uint64_t start) {
                 if (cut > cap) cut = cap;
                 cut *= beta;
                 if (!(cut > 0.0)) continue;
-                // Packed for the inverse: bin k takes X + i X e^(2 pi i k/N),
-                // and its mirror M - k the conjugates of both.
-                const double vr = cut * cr[k - m_bK0], vi = cut * ci[k - m_bK0];
-                const double c = twRe[k], sn = twIm[k];
-                const double ur = vr * c - vi * sn, ui = vr * sn + vi * c;
-                const int kr = rev[k], mr = rev[M - k];  // see fftRadix2
-                re[kr] += vr - ui;
-                im[kr] += vi + ur;
-                re[mr] += vr + ui;
-                im[mr] += ur - vi;
+                packBin(re, im, rev, M, k, cut * cr[k - m_bK0], cut * ci[k - m_bK0],
+                        twRe[k], twIm[k]);
                 any = true;
             }
             if (any) {
@@ -4410,21 +4341,8 @@ void Channel::fineHop(uint64_t start) {
             cut = (1.0 - g) * beta;
         }
         if (!(cut > 0.0)) continue;
-        // Packed for the inverse: bin k takes X + i X e^(2 pi i k/N), and its
-        // mirror N - k the conjugates of both. The Nyquist bin is its own
-        // mirror, and real for real input; it folds onto Z[0].
         const int k = k0 + b;
-        const double vr = cut * cxr[b], vi = cut * cxi[b];
-        const double c = twRe[k], sn = twIm[k];
-        const double ur = vr * c - vi * sn, ui = vr * sn + vi * c;
-        const int kr = rev[k & (M - 1)];      // see fftRadix2
-        re[kr] += vr - ui;
-        im[kr] += vi + ur;
-        if (k != N - k) {
-            const int mr = rev[M - k];
-            re[mr] += vr + ui;
-            im[mr] += ur - vi;
-        }
+        packBin(re, im, rev, M, k, cut * cxr[b], cut * cxi[b], twRe[k], twIm[k]);
         any = true;
         if (b < nd) anyD = true;
     }
@@ -4550,17 +4468,7 @@ void Channel::microHop(uint64_t start) {
         const double cut = (1.0 - g) * beta;
         if (!(cut > 0.0)) continue;
         const int k = m_mK0 + b;
-        const double vr = cut * cxr[b], vi = cut * cxi[b];
-        const double cc = twRe[k], sn = twIm[k];
-        const double ur = vr * cc - vi * sn, ui = vr * sn + vi * cc;
-        const int kr = rev[k & (M - 1)];
-        re[kr] += vr - ui;
-        im[kr] += vi + ur;
-        if (k != N - k) {
-            const int mr = rev[M - k];
-            re[mr] += vr + ui;
-            im[mr] += ur - vi;
-        }
+        packBin(re, im, rev, M, k, cut * cxr[b], cut * cxi[b], twRe[k], twIm[k]);
         any = true;
     }
     if (!any) return;
