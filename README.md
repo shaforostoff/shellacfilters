@@ -1,6 +1,6 @@
 ShellacFilters use framework from Airwindows (MIT licensed).
 
-Declick and Dehum had been trained on various shelllac transfers, including those from [tangotunes.com](https://tangotunes.com) and [tangotimetravel.be](https://tangotimetravel.be)
+Declick and Dehum had been trained on various shellac transfers, including those from [tangotunes.com](https://tangotunes.com) and [tangotimetravel.be](https://tangotimetravel.be)
 
 Dehum was inspired by loud noise around 40Hz in several transfers, primarily in Cachirulo and Tablada by Anibal Troilo. TT transfers were compared with TTT which have no low frequency noise.
 
