@@ -17,6 +17,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -134,6 +135,94 @@ bool parseFloat(const char * s, float & out) {
     return true;
 }
 
+//! The calibration flags, each one Config field: set before compute(), which
+//! derives the rest from them (whether the body stage and the flank repair
+//! run sets the latency), or after it, where compute() would overwrite them.
+//! A negative value leaves the calibrated one.
+struct ConfigFlag {
+    const char * name;
+    double declick::Config::* d;     //!< one of these two
+    int    declick::Config::* i;
+    bool   late;                     //!< after compute()
+};
+#define DBL(n, f)      { n, &declick::Config::f, nullptr, false }
+#define INT(n, f)      { n, nullptr, &declick::Config::f, false }
+#define DBL_LATE(n, f) { n, &declick::Config::f, nullptr, true }
+#define INT_LATE(n, f) { n, nullptr, &declick::Config::f, true }
+const ConfigFlag kConfigFlags[] = {
+    INT("--body",                  body),
+    DBL("--body-floor",            bodyFloor),
+    DBL("--body-peak",             bodyPeak),
+    DBL("--body-rate0",            bodyRate0),
+    DBL("--body-rate1",            bodyRate1),
+    DBL("--body-release",          bodyRelease),
+    INT("--fine",                  fine),
+    DBL("--fine-lo",               fineLo),
+    DBL("--fine-hi",               fineHi),
+    DBL("--fine-alpha",            fineAlpha),
+    DBL("--fine-q",                fineQ),
+    DBL("--fine-floor",            fineFloor),
+    DBL("--fine-mid",              fineMid),
+    DBL("--fine-p0",               finePeriodic0),
+    DBL("--fine-p1",               finePeriodic1),
+    INT("--micro",                 micro),
+    DBL("--micro-ms",              microMs),
+    DBL("--micro-alpha",           microAlpha),
+    DBL("--micro-q",               microQ),
+    INT("--mid",                   mid),
+    DBL("--mid-lo",                midLo),
+    DBL("--mid-peak",              midPeak),
+    DBL("--mid-p0",                midPeriodic0),
+    DBL("--mid-p1",                midPeriodic1),
+    INT("--mid-yield",             midYield),
+    DBL("--carpet-first",          carpetFirst),
+    INT("--carpet-fano",           carpetFano),
+    DBL("--fano-rate0",            fanoRate0),
+    DBL("--fano-rate1",            fanoRate1),
+    DBL("--fano0",                 fano0),
+    DBL("--fano1",                 fano1),
+    DBL("--fano-first",            fanoFirst),
+    INT("--crackle-floor",         crackleFloor),
+    DBL("--crackle-floor-lo",      crackleFloorLo),
+    DBL("--crackle-floor-beta",    crackleFloorBeta),
+    DBL("--crackle-floor-min",     crackleFloorMin),
+    DBL("--crackle-floor-q",       crackleFloorQ),
+    DBL("--crackle-floor-win",     crackleFloorWin),
+    DBL("--crackle-floor-release", crackleFloorRelease),
+    DBL("--crackle-floor-hi",      crackleFloorHi),
+    INT("--flank",                 flank),
+    DBL("--flank-pad-ms",          flankPadMs),
+    DBL("--flank-hz",              flankHz),
+    DBL("--flank-edge0",           flankEdge0),
+    DBL("--flank-edge1",           flankEdge1),
+    DBL("--flank-wide",            flankWide),
+    DBL("--flank-hold",            flankHold),
+    INT("--carpet",                carpet),
+    DBL("--carpet-peak",           carpetPeak),
+    INT("--carpet-win",            carpetWin),
+    DBL("--carpet-q",              carpetQ),
+    DBL("--carpet-rate0",          carpetRate0),
+    DBL("--carpet-rate1",          carpetRate1),
+    DBL("--carpet-warm",           carpetWarm),
+    INT("--carpet-min",            carpetMin),
+    DBL_LATE("--wmax",             wienerMax),
+    INT_LATE("--rerepair",         rerepair),
+    INT_LATE("--dip",              dip),
+    DBL_LATE("--dip-far",          dipFar),
+    DBL_LATE("--dip-peak",         dipPeak),
+    DBL_LATE("--soft-min",         softMin),
+    DBL_LATE("--soft-span",        softSpan),
+};
+#undef DBL
+#undef INT
+#undef DBL_LATE
+#undef INT_LATE
+
+const ConfigFlag * findFlag(const std::string & a) {
+    for (const ConfigFlag & f : kConfigFlags) if (a == f.name) return &f;
+    return nullptr;
+}
+
 } // anonymous namespace
 
 int main(int argc, char ** argv) {
@@ -143,27 +232,7 @@ int main(int argc, char ** argv) {
     const std::string outPath = argv[2];
     declick::Params params = declick::Params::defaults();
     bool delta = false, quiet = false;
-    float wmax = -1.0f;   // negative: leave the calibrated value
-    float rerepair = -1.0f;
-    float dip = -1.0f;
-    float dipFar = -1.0f;
-    float dipPeak = -1.0f;
-    float softMin = -1.0f;
-    float softSpan = -1.0f;
-    float body = -1.0f, bodyFloor = -1.0f, bodyPeak = -1.0f;
-    float bodyRate0 = -1.0f, bodyRate1 = -1.0f, bodyRelease = -1.0f;
-    float fine = -1.0f, fineLo = -1.0f, fineHi = -1.0f, fineAlpha = -1.0f, fineQ = -1.0f;
-    float fineFloor = -1.0f, fineMid = -1.0f, fineP0 = -1.0f, fineP1 = -1.0f;
-    float micro = -1.0f, microMs = -1.0f, microAlpha = -1.0f, microQ = -1.0f;
-    float mid = -1.0f, midLo = -1.0f, midPeak = -1.0f, midP0 = -1.0f, midP1 = -1.0f, midYield = -1.0f;
-    float carpetFirst = -1.0f;
-    float carpetFano = -1.0f, fanoRate0 = -1.0f, fanoRate1 = -1.0f, fano0 = -1.0f, fano1 = -1.0f, fanoFirst = -1.0f;
-    float crackleFloor = -1.0f, crackleFloorLo = -1.0f, crackleFloorBeta = -1.0f, crackleFloorMin = -1.0f;
-    float crackleFloorQ = -1.0f, crackleFloorWin = -1.0f, crackleFloorRelease = -1.0f, crackleFloorHi = -1.0f;
-    float flank = -1.0f, flankPadMs = -1.0f, flankHz = -1.0f, flankEdge0 = -1.0f, flankEdge1 = -1.0f;
-    float flankWide = -1.0f, flankHold = -1.0f;
-    float carpet = -1.0f, carpetPeak = -1.0f, carpetWin = -1.0f, carpetQ = -1.0f;
-    float carpetRate0 = -1.0f, carpetRate1 = -1.0f, carpetWarm = -1.0f, carpetMin = -1.0f;
+    std::vector<std::pair<const ConfigFlag *, float> > flags;   // in the order given
     float warmStart = 0.0f;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
@@ -178,68 +247,7 @@ int main(int argc, char ** argv) {
             return 2;
         }
         ++i;
-        if      (a == "--wmax") wmax = v;
-        else if (a == "--rerepair") rerepair = v;
-        else if (a == "--dip") dip = v;
-        else if (a == "--dip-far") dipFar = v;
-        else if (a == "--dip-peak") dipPeak = v;
-        else if (a == "--soft-min") softMin = v;
-        else if (a == "--soft-span") softSpan = v;
-        else if (a == "--body") body = v;
-        else if (a == "--body-floor") bodyFloor = v;
-        else if (a == "--body-peak") bodyPeak = v;
-        else if (a == "--body-rate0") bodyRate0 = v;
-        else if (a == "--body-rate1") bodyRate1 = v;
-        else if (a == "--body-release") bodyRelease = v;
-        else if (a == "--fine") fine = v;
-        else if (a == "--fine-lo") fineLo = v;
-        else if (a == "--fine-hi") fineHi = v;
-        else if (a == "--fine-alpha") fineAlpha = v;
-        else if (a == "--fine-q") fineQ = v;
-        else if (a == "--fine-floor") fineFloor = v;
-        else if (a == "--fine-mid") fineMid = v;
-        else if (a == "--fine-p0") fineP0 = v;
-        else if (a == "--fine-p1") fineP1 = v;
-        else if (a == "--micro") micro = v;
-        else if (a == "--micro-ms") microMs = v;
-        else if (a == "--micro-alpha") microAlpha = v;
-        else if (a == "--micro-q") microQ = v;
-        else if (a == "--mid") mid = v;
-        else if (a == "--mid-lo") midLo = v;
-        else if (a == "--mid-peak") midPeak = v;
-        else if (a == "--mid-p0") midP0 = v;
-        else if (a == "--mid-p1") midP1 = v;
-        else if (a == "--mid-yield") midYield = v;
-        else if (a == "--carpet-first") carpetFirst = v;
-        else if (a == "--carpet-fano") carpetFano = v;
-        else if (a == "--fano-rate0") fanoRate0 = v;
-        else if (a == "--fano-rate1") fanoRate1 = v;
-        else if (a == "--fano0") fano0 = v;
-        else if (a == "--fano1") fano1 = v;
-        else if (a == "--fano-first") fanoFirst = v;
-        else if (a == "--crackle-floor") crackleFloor = v;
-        else if (a == "--crackle-floor-lo") crackleFloorLo = v;
-        else if (a == "--crackle-floor-beta") crackleFloorBeta = v;
-        else if (a == "--crackle-floor-min") crackleFloorMin = v;
-        else if (a == "--crackle-floor-q") crackleFloorQ = v;
-        else if (a == "--crackle-floor-win") crackleFloorWin = v;
-        else if (a == "--crackle-floor-release") crackleFloorRelease = v;
-        else if (a == "--crackle-floor-hi") crackleFloorHi = v;
-        else if (a == "--flank") flank = v;
-        else if (a == "--flank-pad-ms") flankPadMs = v;
-        else if (a == "--flank-hz") flankHz = v;
-        else if (a == "--flank-edge0") flankEdge0 = v;
-        else if (a == "--flank-edge1") flankEdge1 = v;
-        else if (a == "--flank-wide") flankWide = v;
-        else if (a == "--flank-hold") flankHold = v;
-        else if (a == "--carpet") carpet = v;
-        else if (a == "--carpet-peak") carpetPeak = v;
-        else if (a == "--carpet-win") carpetWin = v;
-        else if (a == "--carpet-q") carpetQ = v;
-        else if (a == "--carpet-rate0") carpetRate0 = v;
-        else if (a == "--carpet-rate1") carpetRate1 = v;
-        else if (a == "--carpet-warm") carpetWarm = v;
-        else if (a == "--carpet-min") carpetMin = v;
+        if (const ConfigFlag * f = findFlag(a)) flags.push_back(std::make_pair(f, v));
         else if (a == "--warm-start") warmStart = v;
         else if (a == "-s") params.sensitivity = v;
         else if (a == "-e") params.extent = v;
@@ -263,71 +271,16 @@ int main(int argc, char ** argv) {
     const size_t frames = audio.frames();
 
     declick::Config cfg;
-    // Before compute(): whether the body stage and the flank repair run sets
-    // the latency.
-    if (body >= 0.0f) cfg.body = (int)body;
-    if (bodyFloor >= 0.0f) cfg.bodyFloor = bodyFloor;
-    if (bodyPeak >= 0.0f) cfg.bodyPeak = bodyPeak;
-    if (bodyRate0 >= 0.0f) cfg.bodyRate0 = bodyRate0;
-    if (bodyRate1 >= 0.0f) cfg.bodyRate1 = bodyRate1;
-    if (bodyRelease >= 0.0f) cfg.bodyRelease = bodyRelease;
-    if (fine >= 0.0f) cfg.fine = (int)fine;
-    if (fineLo >= 0.0f) cfg.fineLo = fineLo;
-    if (fineHi >= 0.0f) cfg.fineHi = fineHi;
-    if (fineAlpha >= 0.0f) cfg.fineAlpha = fineAlpha;
-    if (fineQ >= 0.0f) cfg.fineQ = fineQ;
-    if (fineFloor >= 0.0f) cfg.fineFloor = fineFloor;
-    if (fineMid >= 0.0f) cfg.fineMid = fineMid;
-    if (fineP0 >= 0.0f) cfg.finePeriodic0 = fineP0;
-    if (fineP1 >= 0.0f) cfg.finePeriodic1 = fineP1;
-    if (micro >= 0.0f) cfg.micro = (int)micro;
-    if (microMs >= 0.0f) cfg.microMs = microMs;
-    if (microAlpha >= 0.0f) cfg.microAlpha = microAlpha;
-    if (microQ >= 0.0f) cfg.microQ = microQ;
-    if (mid >= 0.0f) cfg.mid = (int)mid;
-    if (midLo >= 0.0f) cfg.midLo = midLo;
-    if (midPeak >= 0.0f) cfg.midPeak = midPeak;
-    if (midP0 >= 0.0f) cfg.midPeriodic0 = midP0;
-    if (midP1 >= 0.0f) cfg.midPeriodic1 = midP1;
-    if (midYield >= 0.0f) cfg.midYield = (int)midYield;
-    if (carpetFirst >= 0.0f) cfg.carpetFirst = carpetFirst;
-    if (carpetFano >= 0.0f) cfg.carpetFano = (int)carpetFano;
-    if (fanoRate0 >= 0.0f) cfg.fanoRate0 = fanoRate0;
-    if (fanoRate1 >= 0.0f) cfg.fanoRate1 = fanoRate1;
-    if (fano0 >= 0.0f) cfg.fano0 = fano0;
-    if (fano1 >= 0.0f) cfg.fano1 = fano1;
-    if (fanoFirst >= 0.0f) cfg.fanoFirst = fanoFirst;
-    if (crackleFloor >= 0.0f) cfg.crackleFloor = (int)crackleFloor;
-    if (crackleFloorLo >= 0.0f) cfg.crackleFloorLo = crackleFloorLo;
-    if (crackleFloorBeta >= 0.0f) cfg.crackleFloorBeta = crackleFloorBeta;
-    if (crackleFloorMin >= 0.0f) cfg.crackleFloorMin = crackleFloorMin;
-    if (crackleFloorQ >= 0.0f) cfg.crackleFloorQ = crackleFloorQ;
-    if (crackleFloorWin >= 0.0f) cfg.crackleFloorWin = crackleFloorWin;
-    if (crackleFloorRelease >= 0.0f) cfg.crackleFloorRelease = crackleFloorRelease;
-    if (crackleFloorHi >= 0.0f) cfg.crackleFloorHi = crackleFloorHi;
-    if (flank >= 0.0f) cfg.flank = (int)flank;
-    if (flankPadMs >= 0.0f) cfg.flankPadMs = flankPadMs;
-    if (flankHz >= 0.0f) cfg.flankHz = flankHz;
-    if (flankEdge0 >= 0.0f) cfg.flankEdge0 = flankEdge0;
-    if (flankEdge1 >= 0.0f) cfg.flankEdge1 = flankEdge1;
-    if (flankWide >= 0.0f) cfg.flankWide = flankWide;
-    if (flankHold >= 0.0f) cfg.flankHold = flankHold;
-    if (carpet >= 0.0f) cfg.carpet = (int)carpet;
-    if (carpetPeak >= 0.0f) cfg.carpetPeak = carpetPeak;
-    if (carpetWin >= 0.0f) cfg.carpetWin = (int)carpetWin;
-    if (carpetQ >= 0.0f) cfg.carpetQ = carpetQ;
-    if (carpetRate0 >= 0.0f) cfg.carpetRate0 = carpetRate0;
-    if (carpetRate1 >= 0.0f) cfg.carpetRate1 = carpetRate1;
-    if (carpetWarm >= 0.0f) cfg.carpetWarm = carpetWarm;
-    if (carpetMin >= 0.0f) cfg.carpetMin = (int)carpetMin;
+    const auto apply = [&](bool late) {
+        for (const auto & s : flags) {
+            if (s.first->late != late || s.second < 0.0f) continue;
+            if (s.first->d) cfg.*(s.first->d) = s.second;
+            else cfg.*(s.first->i) = (int)s.second;
+        }
+    };
+    apply(false);
     cfg.compute(params, (double)audio.sampleRate);
-    if (wmax >= 0.0f) cfg.wienerMax = wmax;
-    if (rerepair >= 0.0f) cfg.rerepair = (int)rerepair;
-    if (dip >= 0.0f) cfg.dip = (int)dip;
-    if (dipFar >= 0.0f) cfg.dipFar = dipFar;
-    if (dipPeak >= 0.0f) cfg.dipPeak = dipPeak;
-    if (softMin >= 0.0f) cfg.softMin = softMin;
-    if (softSpan >= 0.0f) cfg.softSpan = softSpan;
+    apply(true);
 
     std::vector<std::unique_ptr<declick::Channel> > chans;
     for (unsigned c = 0; c < channels; ++c) {
