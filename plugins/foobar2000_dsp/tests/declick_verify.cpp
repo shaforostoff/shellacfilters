@@ -192,6 +192,7 @@ void testBandedSolve() {
 //! from `p` and the rate, so a stage it turns off is off in the latency too.
 std::vector<double> runChannel(const std::vector<double> & in, const Params & p,
                                double sr, void (*tweak)(Config &) = 0) {
+    const scoped_flush_denormals ftz;                // as every host runs the core
     Config cfg;
     if (tweak) tweak(cfg);
     cfg.compute(p, sr);

@@ -294,6 +294,9 @@ int main(int argc, char ** argv) {
     out.sampleRate = audio.sampleRate;
     out.samples.assign(audio.samples.size(), 0.0);
 
+    // As every host does around the core: denormals cost x86 dearly.
+    const declick::scoped_flush_denormals ftz;
+
     // Feed in modest blocks so the streaming path gets a realistic workout.
     const size_t CHUNK = 4096;
     size_t written = 0;
