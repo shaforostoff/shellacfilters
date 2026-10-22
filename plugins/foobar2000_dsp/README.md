@@ -4034,7 +4034,7 @@ different versions in two different hosts. `vst_host_verify` checks each against
 `0x00010001 (1.0.1)` beside whatever it should have been.
 
 The numbers are the Audio Units': **Declick and Dehum at 1.1.1, ParaEQ at
-1.0.1**, matching `k<Name>Version` and the `version` integer in each bundle's
+1.0.2**, matching `k<Name>Version` and the `version` integer in each bundle's
 `Info.plist`, so that one plug-in is one version wherever it is loaded. Moving a
 version means moving all of them — nothing here is a single place a version
 lives across three plug-in formats, only checks that the copies agree.
@@ -4136,7 +4136,7 @@ could build them. Now that they ship, the constant is doing its real job: it is
 what the bundle registers with, what a host displays, and what the Component
 Manager keys a cached registration on. A shipped 1.0.1 that registers as
 `0x00010000` is one a host may keep serving from cache. So the three here carry
-their own versions — Declick and Dehum at 1.1.1, ParaEQ at 1.0.1 — and the
+their own versions — Declick and Dehum at 1.1.1, ParaEQ at 1.0.2 — and the
 other 542 are untouched. The VST2 ports carry the same
 three numbers in `kVersion`, for the same reason and with the same consequence
 if they drift: see [What version a host shows](#what-version-a-host-shows).

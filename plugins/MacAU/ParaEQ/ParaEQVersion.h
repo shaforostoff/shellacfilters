@@ -46,7 +46,7 @@
 #ifdef DEBUG
 	#define kParaEQVersion 0xFFFFFFFF
 #else
-	#define kParaEQVersion 0x00010001
+	#define kParaEQVersion 0x00010002
 #endif
 
 //~~~~~~~~~~~~~~  Change!!! ~~~~~~~~~~~~~~~~~~~~~//
