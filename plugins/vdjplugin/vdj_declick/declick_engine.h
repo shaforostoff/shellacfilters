@@ -79,20 +79,11 @@ public:
         }
     }
 
-    //! Sliders to core units, identical to Declick::paramsFromControls() in the
-    //! VST2 port. The quantised ones use equal-width buckets, so Passes at 0.5
-    //! lands on the 2 the tuning was done at and Model order at 0.4677 on 128.
+    //! Sliders to core units: the core's own mapping, as the VST2 and AU
+    //! ports'.
     declick::Params params() const {
-        declick::Params p = declick::Params::defaults();
-        p.sensitivity = pinParameter(m_a);
-        p.extent      = pinParameter(m_b);
-        p.maxLengthMs = pinParameter(m_c) * 20.0f;                  // 0.2 .. 20 ms
-        p.depth       = pinParameter(m_d);
-        p.passes      = 1 + (int)(pinParameter(m_e) * 2.999f);      // 1, 2, 3
-        p.order       = 16 + 8 * (int)(pinParameter(m_f) * 30.999f); // 16 .. 256 in eights
-        p.dryWet      = pinParameter(m_g);
-        p.sanitize();
-        return p;
+        const float s[7] = { m_a, m_b, m_c, m_d, m_e, m_f, m_g };
+        return declick::Params::fromSliders(s);
     }
 
     // -- pipeline ------------------------------------------------------------

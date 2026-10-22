@@ -266,20 +266,14 @@ ComponentResult Declick::Initialize()
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //	Declick::paramsFromControls
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//Sliders to core units. The quantized ones use equal-width buckets, so E at 0.5
-//lands on the 2 passes the tuning was done at, and F at 0.4677 on order 128.
+//Sliders to core units: the core's own mapping, as the VST's and VirtualDJ's.
 declick::Params Declick::paramsFromControls()
 {
-	declick::Params p = declick::Params::defaults();
-	p.sensitivity = GetParameter( kParam_A );
-	p.extent      = GetParameter( kParam_B );
-	p.maxLengthMs = GetParameter( kParam_C ) * 20.0f;        //0.2 .. 20 ms, clamped below
-	p.depth       = GetParameter( kParam_D );
-	p.passes      = 1 + (int)(GetParameter( kParam_E ) * 2.999f);     //1, 2, 3
-	p.order       = 16 + 8 * (int)(GetParameter( kParam_F ) * 30.999f); //16 .. 256 in eights
-	p.dryWet      = GetParameter( kParam_G );
-	p.sanitize();
-	return p;
+	const float s[7] = { GetParameter( kParam_A ), GetParameter( kParam_B ),
+	                     GetParameter( kParam_C ), GetParameter( kParam_D ),
+	                     GetParameter( kParam_E ), GetParameter( kParam_F ),
+	                     GetParameter( kParam_G ) };
+	return declick::Params::fromSliders(s);
 }
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

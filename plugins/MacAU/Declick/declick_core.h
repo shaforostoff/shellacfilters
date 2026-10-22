@@ -91,6 +91,12 @@ struct Params {
         p.delta       = false;
         return p;
     }
+    //! The plug-in formats' seven sliders, each 0..1 and pinned there, in the
+    //! order Sensitivity, Extent, Max repair, Repair depth, Passes, Model
+    //! order, Dry/Wet. Max repair is 0.2 .. 20 ms; the quantised ones use
+    //! equal-width buckets, so Passes at 0.5 lands on the 2 the tuning was
+    //! done at, and Model order (16 .. 256 in eights) at 0.4677 on 128.
+    static Params fromSliders(const float s[7]);
     void sanitize();
     bool operator==(const Params & o) const;
     bool operator!=(const Params & o) const { return !(*this == o); }

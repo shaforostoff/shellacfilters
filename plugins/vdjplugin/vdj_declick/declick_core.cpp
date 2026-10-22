@@ -1696,6 +1696,21 @@ void allowWideKernels(bool allow) { g_kernels = pickKernels(allow); }
 
 // ---------------------------------------------------------------------------
 
+Params Params::fromSliders(const float s[7]) {
+    float v[7];
+    for (int i = 0; i < 7; ++i) v[i] = (s[i] > 0.0f) ? ((s[i] < 1.0f) ? s[i] : 1.0f) : 0.0f;   // NaN to 0
+    Params p = defaults();
+    p.sensitivity = v[0];
+    p.extent      = v[1];
+    p.maxLengthMs = v[2] * 20.0f;                  // clamped to 0.2 below
+    p.depth       = v[3];
+    p.passes      = 1 + (int)(v[4] * 2.999f);
+    p.order       = 16 + 8 * (int)(v[5] * 30.999f);
+    p.dryWet      = v[6];
+    p.sanitize();
+    return p;
+}
+
 void Params::sanitize() {
     sensitivity = clampf(sensitivity, 0.0f, 1.0f);
     extent      = clampf(extent, 0.0f, 1.0f);

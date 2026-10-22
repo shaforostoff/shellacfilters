@@ -67,20 +67,12 @@ static float pinParameter(float data)
 	return data;
 }
 
-//Sliders to core units. The quantized ones use equal-width buckets, so E at 0.5
-//lands on the 2 passes the tuning was done at, and F at 0.4677 on order 128.
+//Sliders to core units: the core's own mapping, which the AU and VirtualDJ
+//ports use too, so a setting means the same in every format.
 declick::Params Declick::paramsFromControls()
 {
-	declick::Params p = declick::Params::defaults();
-	p.sensitivity = A;
-	p.extent      = B;
-	p.maxLengthMs = C * 20.0f;                     //0.2 .. 20 ms, clamped below
-	p.depth       = D;
-	p.passes      = 1 + (int)(E * 2.999f);         //1, 2, 3
-	p.order       = 16 + 8 * (int)(F * 30.999f);   //16 .. 256 in eights
-	p.dryWet      = G;
-	p.sanitize();
-	return p;
+	const float s[7] = { A, B, C, D, E, F, G };
+	return declick::Params::fromSliders(s);
 }
 
 //Called at the top of every process call, because a VST finds out about sample
