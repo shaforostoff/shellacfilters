@@ -119,9 +119,8 @@ struct Config {
     //!
     //! `wienerMax` is the fraction of the click estimate that gets subtracted
     //! at depth 0; depth scales it towards 1, so at the default depth of 1 it
-    //! plays no part. 0.45 was measured against injected-click ground truth
-    //! and against four reference transfers; it beats the length-indexed
-    //! curve it replaced on every axis of both.
+    //! plays no part. For how 0.45 was chosen see the README, "What did not
+    //! work: per-sample Wiener weighting".
     double wienerMax    = 0.45;
 
     //! Re-repair. Not user-facing; declick_cli can sweep it.
@@ -130,44 +129,25 @@ struct Config {
     //! was fitted on the crackle as well as the music. 1 repairs them again
     //! with the refitted model at the start of every later pass; 2 also
     //! refits once more after the last pass and repairs everything found in
-    //! the block again; 0 repairs every run exactly once.
-    //!
-    //! 1 because on dense crackle it takes the largest events from -6.8 to
-    //! -8.9 dB removed for ~1 dB of harm and 9% more CPU; 2 adds another
-    //! 0.6 dB on those for a further 27%. It needs passes >= 2 to do
-    //! anything at all at 1.
+    //! the block again; 0 repairs every run exactly once. It needs passes >= 2
+    //! to do anything at all at 1. For why 1, see the README, "Dense crackle".
     int    rerepair     = 1;
 
     //! How many samples below the hysteresis floor a run may step over, and
     //! how far above the floor - as a fraction of the way up to the trigger -
     //! the detection function must be on the other side. Not user-facing;
-    //! declick_cli sweeps them as --dip and --dip-far. The figures in this
-    //! paragraph predate dipPeak, below.
-    //! A click's prediction error rings, and on band-limited material - an
-    //! MP3 is empty above 16 kHz - it swings through zero inside the click.
-    //! Where that dipped under the floor the run ended early, and the repair
-    //! leaned on damaged samples just past its edge: it left the click in,
-    //! sometimes rebuilt it larger. On such a transfer (Canaro, Hotel
-    //! Victoria) these settings take the clicks left above 8 sigma from
-    //! 1.1/s to 0.48/s; the injected crackle loses -6.8 dB instead of -6.1,
-    //! -10.4 instead of -8.9 on the largest events, for 1.1 dB of whole-file
-    //! SNR. Raising Extent instead pays more for less.
-    //! dipFar 0 (any return above the floor) went further, to 0.3/s, but
-    //! also spread into the attacks of clean, crisp recordings - audibly so
-    //! on a clean D'Arienzo transfer, where it changed the music by -30.9 dB
-    //! against -46.4 with no dip at all; 0.5 changes it by -35.6 and was
-    //! heard to remove no more attack than none. dip 0 is plain hysteresis.
+    //! declick_cli sweeps them as --dip and --dip-far. dip 0 is plain
+    //! hysteresis, and dipFar 0 accepts any return above the floor.
+    //! A click's prediction error rings, and on band-limited material it
+    //! swings through zero inside the click; where that dipped under the floor
+    //! the run ended early, and the repair leaned on damaged samples just past
+    //! its edge.
     //!
     //! dipPeak (--dip-peak): only a run whose detection peaks at this many
     //! sigma may step over a dip. Most runs that are stretched barely cross
-    //! the trigger - noise alone crosses 3.2 sigma ~100 times a second - and
-    //! on clean material those carried most of what the dip removed: two
-    //! thirds of it on the Malvon master. At 6 the Malvon master goes from
-    //! -33.6 to -36.4 dB removed (-36.8 with no dip), the clean D'Arienzo
-    //! from -35.6 to -45.5 (-46.4), while a crackly D'Arienzo MP3 keeps
-    //! 85% of what the dip gained on clicks above 8 sigma. Benchmark: SNR
-    //! back to 25.4 dB, change to clean music -34.6, largest crackle -9.8.
-    //! Preferred by ear over 5 and over no limit.
+    //! the trigger, and on clean material those carried most of what the dip
+    //! removed. For the measurements and the listening behind all three, see
+    //! the README, "Dense crackle".
     int    dip          = 1;
     double dipFar       = 0.5;
     double dipPeak      = 6.0;
@@ -175,18 +155,10 @@ struct Config {
     //! Partial repair of weak detections. Not user-facing; declick_cli sweeps
     //! them as --soft-min and --soft-span. A run whose detection peaks right
     //! at the trigger has only softMin of its discrepancy taken out, rising
-    //! linearly to all of it softSpan sigma above the trigger.
-    //! A run that barely crosses the trigger is about as likely noise or
-    //! music as a click - noise alone crosses 3.2 sigma ~100 times a second -
-    //! and on clean records those runs carry most of what is removed. Raising
-    //! the trigger instead loses the small clicks with the false ones;
-    //! repairing them by half keeps most of what they were worth. Together
-    //! with Sensitivity 0.9 (trigger 2.85 sigma), against the hard repair at
-    //! 0.8: the Malvon master -36.4 -> -38.6 dB removed, the clean D'Arienzo
-    //! -45.5 -> -47.3, while a crackly D'Arienzo MP3 keeps 2.08/s clicks
-    //! above 8 sigma against 1.93 (Sensitivity 0.7 alone: -37.2 dB, 2.28/s).
-    //! Benchmark: small crackle -3.9 dB removed against -3.8, all of it
-    //! -6.2 against -6.4, harm -15.5 against -13.9. Chosen by ear over 0.6.
+    //! linearly to all of it softSpan sigma above the trigger. A run that
+    //! barely crosses the trigger is about as likely noise or music as a
+    //! click; this was tuned together with Sensitivity 0.9 (trigger 2.85
+    //! sigma). See the README, "Dense crackle".
     //! The half repair is what m_win holds, so the refits and the detection
     //! see it, but a repair's estimate is solved against Channel::m_full,
     //! where every run is in full; see there for why.
@@ -195,33 +167,24 @@ struct Config {
 
     //! The body stage. Not user-facing; declick_cli sweeps it as --body,
     //! --body-floor, --body-peak, --body-rate0 and --body-rate1.
-    //! Each crackle on a shellac transfer is a sharp core and a smooth bump
-    //! around it, 0.3-0.6 ms wide. The detector finds and repairs the core,
-    //! but an AR model predicts the bump as if it were music. Under a held note
-    //! the bumps come at ~750 a second, and in 1-2 kHz they are heard as a
-    //! "squirt" that the decrackled version removes. At that density they are
-    //! not events that could be detected one by one: they are a carpet about
-    //! 12 dB under the note in their band, as loud next to a repaired core as
-    //! away from one.
-    //! So the stage treats them as noise. In an STFT of the repaired audio
-    //! (N ~46 ms, hop N/4), a bin in bodyLo..bodyHi is cut by its non-tonal
-    //! share H^2 / (H^2 + P^2), never below bodyFloor. P is the median over
-    //! ~370 Hz of the same frame. H is the louder of the medians over the
-    //! frames before and the frames after, so that an onset or a release
-    //! counts as tonal. How much of that cut is applied is the key: the
-    //! number of runs per second that peak at bodyPeak sigma or more, over
-    //! 0.1 s, and then the minimum of that over the last 0.5 s. Crackle on a
-    //! surface is steady, and the bursts musical attacks fire come and go. The
-    //! cut ramps in from bodyRate0 to bodyRate1, and once open it is held for
-    //! bodyRelease seconds: at 0.1 s the count is a handful of runs, and its
-    //! minimum dips below bodyRate0 under crackle that has not changed, which
-    //! let the squirt back in patches. Where the key never opens the stage
-    //! subtracts nothing, and the output is the repaired audio to the bit.
-    //! On the held note of Tanturi's *Cuatro compases* this takes 45% of what
-    //! the decrackled version takes from 1-2 kHz, against 8% without it. On
-    //! the Malvon master and clean D'Arienzo transfers the key never opens.
-    //! The floor was chosen by ear: at 0.5 (-6 dB) the squirt could still be
-    //! heard, and at 0.25 it could not. See the README.
+    //! Each crackle on a shellac transfer is a sharp core, which the detector
+    //! repairs, and a smooth bump around it, 0.3-0.6 ms wide, which an AR
+    //! model predicts as if it were music. On dense crackle the bumps are a
+    //! carpet, heard in 1-2 kHz as a "squirt", too dense to be detected one by
+    //! one, so the stage treats them as noise.
+    //! In an STFT of the repaired audio (N ~46 ms, hop N/4), a bin in
+    //! bodyLo..bodyHi is cut by its non-tonal share H^2 / (H^2 + P^2), never
+    //! below bodyFloor. P is the median over ~370 Hz of the same frame. H is
+    //! the louder of the medians over the frames before and the frames after,
+    //! so that an onset or a release counts as tonal. How much of that cut is
+    //! applied is the key: the number of runs per second that peak at bodyPeak
+    //! sigma or more, over 0.1 s, and then the minimum of that over the last
+    //! 0.5 s. Crackle on a surface is steady, and the bursts musical attacks
+    //! fire come and go. The cut ramps in from bodyRate0 to bodyRate1, and
+    //! once open it is held for bodyRelease seconds. Where the key never opens
+    //! the stage subtracts nothing, and the output is the repaired audio to
+    //! the bit. For the measurements and how the floor and the release were
+    //! chosen, see the README, "The body of dense crackle: the body stage".
     //! It costs bodyLatency samples of latency, ~70 ms at 44.1 kHz. A host
     //! that reads ahead does not hear that as delay.
     int    body         = 1;
@@ -240,11 +203,9 @@ struct Config {
     //! The fine stage. Not user-facing; declick_cli sweeps it as --fine,
     //! --fine-lo, --fine-hi, --fine-alpha, --fine-q and --fine-floor.
     //! Above ~4 kHz a shellac transfer's music is weak and its crackle is not:
-    //! each crackle leaves a burst of ringing 1-2 ms long there, 5-10 times
-    //! the floor between them, and on dense crackle they come every few
-    //! milliseconds. The detector repairs the largest. The decrackled version
-    //! takes nearly all of them, and on Tanturi's *Tu olvido* (Videla, Ribo,
-    //! 1946) only its version of the band above 4 kHz was heard as clean.
+    //! each crackle leaves a burst of ringing 1-2 ms long there, and on dense
+    //! crackle they come every few milliseconds. The detector repairs only the
+    //! largest.
     //! In an STFT of the repaired audio with frames of ~2.9 ms (hop N/4, a
     //! square-root Hann either side), a bin from fineLo up is clipped to
     //! fineAlpha times its background, never below fineFloor. The background
@@ -254,15 +215,13 @@ struct Config {
     //! onset or a release is left alone. It runs alongside the body stage on
     //! the same repaired audio and adds to what that stage removes; the two
     //! bands do not meet. It is gated by the body stage's key, so where that
-    //! is shut it subtracts nothing, and the Malvon master and the clean
-    //! D'Arienzo transfers come out to the bit as without it - and by the
-    //! carpet key, which opens it on a steady carpet of crackle where the body
-    //! key stays shut (see Config::carpet). Its delay, a
-    //! frame and the larger of fineM hops and the voice guard's 24 ms (below),
-    //! fits inside the body stage's, so it adds no latency. It needs the body
-    //! stage, and is off when that is.
-    //! alpha 2 was heard as good on *Tu olvido*; it is the gentler of the two
-    //! settings auditioned (1.5 takes more). See the README.
+    //! is shut it subtracts nothing - and by the carpet key, which opens it on
+    //! a steady carpet of crackle where the body key stays shut (see
+    //! Config::carpet). Its delay, a frame and the larger of fineM hops and the
+    //! voice guard's 24 ms (below), fits inside the body stage's, so it adds no
+    //! latency. It needs the body stage, and is off when that is.
+    //! For the measurements and how fineAlpha was chosen by ear, see the
+    //! README, "The top band of dense crackle: the fine stage".
     int    fine         = 1;
     double fineLo       = 4500.0;
     //! Bins above this are not processed. Nothing in them can be heard, and at
@@ -275,17 +234,12 @@ struct Config {
     int    fineN        = 128;       //!< from the sample rate alone
     //! The voice guard. A voice's top band, and a reed's, comes as one burst
     //! per period, every 4-8 ms, and the clip above cannot tell that from
-    //! crackle: on *Tu olvido* it cut the singers' 4.5-8 kHz pulse by pulse,
-    //! heard as vocals "split", where the decrackled version leaves that band
-    //! almost alone. So below fineMid the cut backs off as far as the band's
+    //! crackle. So below fineMid the cut backs off as far as the band's
     //! envelope repeats: by the normalised autocorrelation of the fineLo ..
     //! fineMid envelope over +-24 ms, at its best lag in 2.5-12 ms, it is full
     //! at finePeriodic0 and gone at finePeriodic1. Above fineMid a voice on
-    //! shellac has little, and the clip stays as it was. Back-offs from 0.3 to
-    //! 0.6 and from 0.2 to 0.4 were heard as keeping the vocals whole, and as
-    //! leaving less crackle than starting the stage at fineMid. Asked for the
-    //! least destructive, the user chose 0.1 to 0.3, which backs off sooner
-    //! still.
+    //! shellac has little, and the clip stays as it was. For the settings
+    //! heard, see the README, "The top band of dense crackle: the fine stage".
     double fineMid       = 8000.0;
     double finePeriodic0 = 0.1;
     double finePeriodic1 = 0.3;
@@ -293,12 +247,8 @@ struct Config {
     //! The micro stage. Not user-facing; declick_cli sweeps it as --micro,
     //! --micro-ms, --micro-alpha and --micro-q.
     //! On a dense carpet the crackle's micro-clicks come closer together than
-    //! the fine stage's 2.9 ms frame: on five Calo .m4a, measured against
-    //! vinyl transfers of the same records warped onto them, those above 8
-    //! times their floor came 350-500 a second, a median 1.5-1.75 ms apart,
-    //! 67-80% of the gaps shorter than the frame. The fine stage's background
-    //! is then made of clicks, and in passages with no voice the output kept
-    //! 53-86 such events a second where the decrackled version kept 15-26.
+    //! the fine stage's 2.9 ms frame, and the fine stage's background is then
+    //! made of clicks.
     //! So the fine stage's clip runs again on its output, at a quarter of its
     //! frame (~0.73 ms, hop N/2), with a background of the louder of the
     //! microQ quantiles over microMs either side, over the fine stage's band
@@ -307,12 +257,8 @@ struct Config {
     //! fine stage's output once that is final, so its delay is the fine
     //! stage's plus microM hops and a frame, and that fits inside the body
     //! stage's: it adds no latency. It needs the fine stage, and is off when
-    //! that is. Against the vinyl, with the wide pad below, 7-10 kHz came
-    //! 0.3-1.7 dB closer and the strong events left fell by 7-50%; nothing
-    //! moved below 3 kHz. A variant with a guard that read the voice's period
-    //! from the 0.2-3.5 kHz band was liked more on those five, but took 1.25-2
-    //! times a decrackled version's voice; this one, with the fine stage's own
-    //! guard, was chosen as the safer.
+    //! that is. For the measurements and the guard chosen, see the README,
+    //! "Micro-clicks closer than the fine frame: the micro stage".
     int    micro        = 1;
     double microMs      = 6.0;
     double microAlpha   = 2.0;
@@ -322,20 +268,12 @@ struct Config {
 
     //! The mid stage. Not user-facing; declick_cli sweeps it as --mid,
     //! --mid-lo, --mid-peak, --mid-p0, --mid-p1 and --mid-yield.
-    //! A shellac click's 2-4.5 kHz part outlasts its run. On four Pugliese
-    //! .m4a, measured against vinyl copies of the same records warped onto
-    //! them, 96-98% of the 2-4.5 kHz click impulses had a repaired run within
-    //! 0.5 ms, but the run was the onset, a median 5 samples, while the band
-    //! stayed above its level 3 ms away for +-0.6-0.9 ms around it: the AR
-    //! model predicts that ringing, so it is never flagged, and the repair
-    //! left 56-85% of its energy, where the decrackled version left 4-35%.
-    //! Interpolating a wider span took 1.5-11% of the music at 2-3 kHz; the
-    //! fine stage's clip moved down to the band with no guard took 21-59% of
-    //! the record's own 2-4.5 kHz events.
-    //! What tells the two apart in the .m4a alone is how the band's envelope
-    //! repeats: by the fine guard's statistic on this band (+-24 ms, lags of
-    //! 2.5-12 ms), 0.21-0.24 at the clicks, 0.81-0.83 at the record's own
-    //! events. So the fine stage's frames also take the bins from midLo up to
+    //! A shellac click's 2-4.5 kHz part outlasts its run: the run is the
+    //! onset, the AR model predicts the ringing after it, so it is never
+    //! flagged and the repair leaves it. What tells it from the record's own
+    //! events is how the band's envelope repeats, by the fine guard's
+    //! statistic taken on this band.
+    //! So the fine stage's frames also take the bins from midLo up to
     //! fineLo, clipped as its own are - fineAlpha times the louder of the
     //! fineQ quantiles either side, floor fineFloor, under its key - but only
     //! in frames that hold, or neighbour, a repaired run that peaked at
@@ -343,13 +281,9 @@ struct Config {
     //! repeats, from midPeriodic0 (none) to midPeriodic1 (all). In the body
     //! stage's band, where the body key is open, it yields to that stage by
     //! the key (midYield): the two read the same audio, and their cuts would
-    //! add on one click. No latency added.
-    //! Against the vinyl it took a median 30-72% of the click impulses' energy
-    //! where the stages before took 15-44%, and 1-5% at the record's own
-    //! events, as before; 0.3-1.7% of the music at 2-3 kHz (before 0.2-0.9%,
-    //! the decrackled version 0.4-2.3%). Heard as right against a stronger guard
-    //! (0.4-0.6) and a lower key; the Malvon master, Olga, El Marne and 51 of
-    //! a 98-song sample are untouched, as their keys never open.
+    //! add on one click. No latency added. A record whose keys never open is
+    //! untouched. For the measurements and the guard heard, see the README,
+    //! "Clicks that outlast their run: the mid stage".
     int    mid          = 1;
     double midLo        = 2000.0;
     double midPeak      = 4.0;       //!< sigma
@@ -359,15 +293,9 @@ struct Config {
 
     //! The flank repair. Not user-facing; declick_cli sweeps it as --flank,
     //! --flank-pad-ms, --flank-hz, --flank-edge0 and --flank-edge1.
-    //! On a transfer band-limited near 11 kHz - the .m4a copies of D'Arienzo's
-    //! 1940s sides fall 40 dB by 11.7-14.4 kHz, their .flac copies by 21 kHz -
-    //! a click is a 3-4 sample spike that rings for +-10-15 samples, and that
-    //! one shape runs through all four songs. A run ends inside the ringing,
-    //! the interpolation is pinned to flanks that are still click, and it
-    //! rebuilds part of it: measured against the .flac copy, warped onto the
-    //! .m4a to a fraction of a sample, the detector found 99-100% of the
-    //! crackle above 4.5 kHz and the repairs left 36-55% of its energy. A full
-    //! repair of every weak run changed that by a point.
+    //! On a band-limited transfer a click is a 3-4 sample spike that rings
+    //! for +-10-15 samples. A run ends inside the ringing, the interpolation
+    //! is pinned to flanks that are still click, and it rebuilds part of it.
     //! So once a block is repaired, each of its runs is widened by flankPad
     //! samples either side, into the samples between it and its neighbours but
     //! never into one, and interpolated again against every repair in full, at
@@ -375,28 +303,17 @@ struct Config {
     //! is kept, so below that the audio is exactly what the repair made of it.
     //! The difference goes into m_flAcc, which is added as each block leaves
     //! for the body stage, a block later than it would have: room for the next
-    //! block's flanks and the filter's spill. On *La madrugada* (.m4a) the
-    //! crackle events left above 4.5 kHz go 36 -> 22%, the decrackled
-    //! version's 21%, and 3-7 kHz comes as close to the clean copy as that
-    //! version or closer; below 3 kHz nothing moves by more than 0.1 dB.
+    //! block's flanks and the filter's spill.
     //! It acts only as far as the transfer is band-limited: the pad is full
     //! where the long-term spectrum falls 40 dB under its 2-5 kHz level by
-    //! flankEdge0, and gone by flankEdge1. A full-band record gets none, so the
-    //! Malvon master, *No esta*, *Va a cantar un ruisenor* and *Cornetin* come
-    //! out to the bit as without it, with flankStage more latency. Off below
-    //! 32 kHz, where a low sample rate cannot be told from a band-limited
-    //! transfer.
+    //! flankEdge0, and gone by flankEdge1. Off below 32 kHz, where a low
+    //! sample rate cannot be told from a band-limited transfer.
     //! And it acts where the body stage's key is open, then fades out over
-    //! flankHold seconds once it shuts. The key counts runs at 6 sigma, and a
-    //! dense carpet inflates sigma until few reach it: on *Amarras* (.m4a) it
-    //! shuts over 2:04-2:08, where the .m4a stands furthest above the clean
-    //! copy, and the repair stopped there. Over 12 s the fade covers that and
-    //! brings it 0.6-1.3 dB closer, and the events left over the song go
-    //! 40 -> 36% and 69 -> 61%. A record whose key never opens is untouched by
-    //! it, which a softer repair everywhere was not: at half strength it took
-    //! -20 to -27 dB of 3-10 kHz from nearly every band-limited 1950s
-    //! remaster in a sample of 98. 12 s was heard as right on *Amarras*, and
-    //! as taking no music from two remasters it reaches further on.
+    //! flankHold seconds once it shuts: a dense carpet inflates sigma until
+    //! few runs reach the key's 6 sigma, and the key shuts where the crackle
+    //! is worst. A record whose key never opens is untouched by it. For the
+    //! measurements and how flankHold was heard, see the README, "Band-limited
+    //! transfers: the flank repair".
     //! Its strength is also at least the carpet key's; see Config::carpet.
     int    flank        = 1;
     double flankPadMs   = 0.18;      //!< 8 samples at 44.1 kHz
@@ -405,14 +322,8 @@ struct Config {
     double flankEdge1   = 15000.0;
     double flankHold    = 12.0;      //!< seconds
     //! Where the key is open: the share of the pad a full-band transfer gets.
-    //! It was 0 because on *No esta*, *Ruisenor* and *Cornetin* what it took
-    //! correlated as much with what the decrackled version keeps as with what
-    //! it removes. Against vinyl transfers of five Calo .m4a, warped onto
-    //! them, the full pad brought the three whose body key opens 0.1-0.3 dB
-    //! closer at 3-4.5 kHz and 0.2-0.6 dB at 4.5-7 kHz, and their quietest
-    //! third's 3-4.5 kHz crackle left from 56-64% to 42-52%, for 1.7-3.1% of
-    //! the music at 3-4.5 kHz, where the decrackled version takes 1.3-2.9%.
-    //! See Config::micro, which it was heard with.
+    //! For why it went from 0 to 1, see the README, "Micro-clicks closer than
+    //! the fine frame: the micro stage", which it was heard with.
     double flankWide    = 1.0;
     int    flankPad     = 8;         //!< from flankPadMs and the rate
     int    flankHalf    = 63;        //!< the high-pass's half length, from the rate
@@ -423,19 +334,12 @@ struct Config {
     //! The carpet key. Not user-facing; declick_cli sweeps it as --carpet,
     //! --carpet-peak, --carpet-win, --carpet-q, --carpet-rate0, --carpet-rate1,
     //! --carpet-warm and --carpet-min.
-    //! The body key counts runs that peak at bodyPeak sigma, and on a crackly
-    //! transfer that count sits right at its ramp: dense crackle inflates
-    //! sigma, so fewer of its clicks reach 6 sigma just where it is densest,
-    //! and the key flickers or stays shut. *Yo quiero cantar un tango* (.m4a)
-    //! had it open 3% of the song, *Si supiera* 36%, *Viejo ciego* 34%, and
-    //! where it is shut the fine stage and the flank repair do nothing.
-    //! Measured against a clean copy of the record, the crackle there was not
-    //! denser from one second to the next: on *Amarras* 1:48-2:21 the detector
-    //! repaired 1200-1500 runs a second throughout, ~300 of them at 4 sigma
-    //! or more, and the worst seconds were where the music dropped by 8 dB.
-    //! What tells a crackly transfer from a clean one is the record: its
-    //! surface keeps a carpet of runs going through the quiet passages, where
-    //! on a clean record runs come and go with the music.
+    //! The body key counts runs that peak at bodyPeak sigma, and dense crackle
+    //! inflates sigma, so fewer of its clicks reach that just where it is
+    //! densest, and the key flickers or stays shut. What tells a crackly
+    //! transfer from a clean one is the record: its surface keeps a carpet of
+    //! runs going through the quiet passages, where on a clean record runs
+    //! come and go with the music.
     //! So in every repair block this counts the runs that peak at carpetPeak
     //! sigma, where the body key counts its own, and takes their rate per
     //! 44.1k samples over each second. The carpetQ quantile of the last
@@ -443,21 +347,12 @@ struct Config {
     //! carpetRate0 to carpetRate1. It may open once carpetMin seconds are in,
     //! and while the ring fills both thresholds stand up to carpetWarm higher:
     //! a loud opening of a few seconds is little evidence. Crackly transfers
-    //! read 100-350 here; the clean band-limited 1958-75 remasters of a
-    //! 98-song sample read up to 77, *El Marne* 108 after its opening (120 on
-    //! its first seconds), the Malvon master 66.
+    //! read 100-350 here, the clean records measured at most 108.
     //! It opens the fine stage and the flank repair, never the body stage: the
     //! fine stage cuts by the larger of this key and the body key's, and the
-    //! flank repair's strength is at least this key. Against clean copies of
-    //! seven songs - four D'Arienzo .m4a against their .flac copies, three Calo
-    //! .m4a against vinyl transfers, each warped onto the .m4a - the output
-    //! below 3 kHz is the same as without it and above 3 kHz closer on all
-    //! seven: on *Yo quiero* the crackle events left at 4.5-10 kHz go from
-    //! 56/86% to 37/65%. Opening the body stage as well moved six of them
-    //! 1.1-3.1 dB further from the clean copy at 0.5-1 kHz, which is music.
-    //! The Malvon master, *Olga*, *El Marne* and 44 more clean records come
-    //! out to the bit as without it. Heard as helping on *Homero* and *Si
-    //! supiera*.
+    //! flank repair's strength is at least this key. Opening the body stage
+    //! as well took music. For the measurements, see the README, "Crackle the
+    //! body key misses: the carpet key".
     int    carpet       = 1;
     double carpetPeak   = 4.0;       //!< sigma
     int    carpetWin    = 20;        //!< seconds, 1 .. kCarpetMax
@@ -468,43 +363,30 @@ struct Config {
     int    carpetMin    = 3;         //!< seconds, 1 .. carpetWin
     //! The key's first seconds. Its first rate needs a whole second, and it
     //! may not open before carpetMin, so on a crackly record the stages it
-    //! opens stayed off for three seconds, and those were heard as noisier
-    //! than the rest (*La vida me engano*: 25 and 13 impulses a second left at
-    //! 7-10 kHz in its first two seconds, 0-2 after). So from carpetFirst
-    //! seconds until carpetMin, the key follows the rate of runs at
-    //! carpetPeak sigma over everything seen so far, against the thresholds
-    //! raised by the whole of carpetWarm: 25 and 13 became 4 and 0. On a
-    //! 98-song sample 51 songs change, only in their first three seconds and
-    //! by -46 to -116 dB, mostly the run-in at the needle drop; the Malvon
-    //! master and Olga are untouched. 0 turns it off.
+    //! opens stayed off for three seconds, heard as noisier than the rest. So
+    //! from carpetFirst seconds until carpetMin, the key follows the rate of
+    //! runs at carpetPeak sigma over everything seen so far, against the
+    //! thresholds raised by the whole of carpetWarm. 0 turns it off. See the
+    //! README, "The first seconds: an early carpet key".
     double carpetFirst  = 0.25;      //!< seconds
     //! The Poisson key, a second ramp for the carpet key. Not user-facing;
     //! declick_cli sweeps it as --carpet-fano, --fano-rate0, --fano-rate1,
     //! --fano0 and --fano1.
-    //! On Pugliese's *El rodeo* (.m4a, 1943) the carpet count reads ~104 at
-    //! its median, under the 110-150 ramp, and the stages the key opens were
-    //! off at 40-90 s and from 120 s on. No threshold on the count separates
-    //! it from clean records: *El Marne* reaches 108 after its opening. How the
-    //! runs arrive does. A surface's crackle is a Poisson process, and a clean
-    //! record's runs bunch on the music's attacks. So the runs at carpetPeak
-    //! sigma are also counted in bins of ~11.6 ms (a repair block, or as many
-    //! as make that at the rate), and each second's Fano factor (variance /
-    //! mean of those counts) goes into a ring beside the rates. The key also
-    //! opens as far as ramp(K, fanoRate0 .. fanoRate1) x ramp(median Fano,
-    //! fano0 down to fano1), K the carpet value above, with the same warm-up;
-    //! the carpet key is the larger of the two. Over the songs: the four
-    //! Pugliese read 1.01-1.09, other crackly .m4a 1.0-1.1, *El Marne* 7.6,
-    //! *Cachirulo* .flac 1.57, the Malvon master 1.61, *La tablada* .flac
-    //! 1.33, and every song whose count is near *El rodeo*'s 1.5-6.
-    //! *El rodeo*'s key goes from a mean of 0.19 to 0.72, open on 99% of the
-    //! song. Of a 101-song check set 99 are bit-identical, among them the
-    //! Malvon master, *Olga*, *El Marne* and *La tablada*; *Bien milonga* (1951,
-    //! crackly) changes by -53 dB and *Cachirulo* .flac by -78 dB on 4% of its
-    //! seconds. From fanoFirst until carpetMin it reads the counts so far, as
-    //! the carpet key does from carpetFirst, so on *El rodeo* it is open from
-    //! 0.5 s, not 3 s. Not from carpetFirst: over a quarter second the Fano
-    //! factor is too rough, and *La tablada*'s .flac read 1.28 there, at the
-    //! needle drop. 0 turns it off.
+    //! On some crackly records the carpet count sits under the carpetRate0
+    //! ramp, and no threshold on the count separates them from clean records.
+    //! How the runs arrive does. A surface's crackle is a Poisson process, and
+    //! a clean record's runs bunch on the music's attacks. So the runs at
+    //! carpetPeak sigma are also counted in bins of ~11.6 ms (a repair block,
+    //! or as many as make that at the rate), and each second's Fano factor
+    //! (variance / mean of those counts) goes into a ring beside the rates.
+    //! The key also opens as far as ramp(K, fanoRate0 .. fanoRate1) x
+    //! ramp(median Fano, fano0 down to fano1), K the carpet value above, with
+    //! the same warm-up; the carpet key is the larger of the two. From
+    //! fanoFirst until carpetMin it reads the counts so far, as the carpet key
+    //! does from carpetFirst; not from carpetFirst, because over a quarter
+    //! second the Fano factor is too rough. 0 turns it off. For the
+    //! measurements, see the README, "Crackle that comes at random: the
+    //! Poisson key".
     int    carpetFano   = 1;
     double fanoRate0    = 80.0;      //!< runs per second, per 44.1k samples
     double fanoRate1    = 110.0;
@@ -513,18 +395,12 @@ struct Config {
     double fanoFirst    = 0.5;       //!< seconds
     int    fanoBlocks   = 1;         //!< repair blocks per bin, from the rate
 
-    //! The crackle floor stage (named `denoise` in b525d0a7f). On by default
-    //! since its mid-song openings were fixed, with no control of its own in
-    //! the plug-ins. declick_cli turns it off with --crackle-floor 0 and sweeps
-    //! --crackle-floor-lo, -hi, -beta, -min, -q, -win and -release, and the
-    //! shelf's --crackle-floor-shelf, -shelf-gain, -shelf-x0, -shelf-x1 and
-    //! -shelf-release.
-    //! On a dense carpet - 600-900 runs a second on Pugliese's *El rodeo* and
-    //! *El abrojito* - the crackle merges into a floor, heard as sizzle and
-    //! frying, and the click stages cut only what stands above it. Against
-    //! vinyl copies of the two, *El abrojito*'s output already had no more
-    //! clicks standing out than the copy, but its floor at 4.5-7 kHz was 5 dB
-    //! over the copy's; *El rodeo*'s was 12-13 dB over at 2-7 kHz.
+    //! The crackle floor stage (named `denoise` in b525d0a7f). On by default,
+    //! with no control of its own in the plug-ins. declick_cli turns it off
+    //! with --crackle-floor 0 and sweeps --crackle-floor-lo, -hi, -beta, -min,
+    //! -q, -win and -release.
+    //! On a dense carpet the crackle merges into a floor, heard as sizzle and
+    //! frying, and the click stages cut only what stands above it.
     //! So this is a spectral denoiser on the finished output, under the key the
     //! fine stage follows. An STFT of ~23 ms (hop N/4, Hann either side); per
     //! bin from crackleFloorLo up (ramped in over the half octave below), the
@@ -535,51 +411,28 @@ struct Config {
     //! crackleFloorMin, rising at once and falling back over
     //! crackleFloorRelease, then averaged over 3 bins: a stretch of pure noise
     //! gets one steady cut rather than bins that twinkle.
+    //! The per-bin cut stops at crackleFloorHi: full up to crackleFloorHi /
+    //! sqrt 2, none from crackleFloorHi up, and the top is left as it was:
+    //! above ~5 kHz the music lies under the crackle, so a cut there follows
+    //! the crackle and makes the hiss uneven. crackleFloorHi <= 0 cuts to
+    //! Nyquist as before.
     //! The history leaves out the stream's first second (before 2 s, the first
-    //! half of it): the TangoTunes transfers fade in over ~0.5 s from 30 dB
-    //! under their crackle, and those frames held the quantile under the floor
-    //! for seconds, so the stage started late. Where the key is shut nothing is
-    //! cut. In the stream's first two seconds the history then waits, as it
-    //! always did, so a record's start is cut as before; from then on it goes
-    //! on under the shut key too, a quarter as often (each value standing for
-    //! four), so the window is the last crackleFloorWin seconds whatever the
-    //! key did.
-    //! Heard as the prototype's "A", which looked ahead and behind +-3 s for the
-    //! floor; this looks behind only, and takes 0.7 dB more. It brought
-    //! *El rodeo*'s quiet floor from 12.2 to 9.6 dB over the copy at 2-3 kHz,
-    //! for 1.1-1.9% of *El abrojito*'s music at 1-4.5 kHz (before 0.4-1.2%).
-    //! Over the whole band it was heard as removing crackle but leaving
-    //! high-frequency noise that feels unnatural. The reason is that above
-    //! ~5 kHz these records' music lies ~15 dB under the crackle, so the cut
-    //! there follows the crackle itself. At 6-10 kHz it opened 0.5 dB per dB
-    //! of the crackle's level on *El abrojito* (0.3 on *El rodeo*) and not
-    //! for the music, against the vinyl copies. It let the crackle's swells
-    //! through and pushed the bed between them down, which stretched the
-    //! band's level swings 1.3-1.5 times, as a 2-8 Hz wobble in 300 Hz
-    //! patches. Wiener's law alone does it to steady noise.
-    //! So the per-bin cut stops at crackleFloorHi: full up to
-    //! crackleFloorHi / sqrt 2, none from crackleFloorHi up, and the top is
-    //! left as it was. Of the four remedies heard, that was liked best.
-    //! crackleFloorHi <= 0 cuts to Nyquist as before.
-    //! The history used to wait wherever the key was shut, so where the key
-    //! opened again mid-song the first-second rule threw out what it held,
-    //! and the window was a few frames of the music itself: *Y_ahora*'s
-    //! opens at 82 s on loud music, and for ~3 s the stage took up to
-    //! 0.8-1.5 dB of 1-3 kHz, following the music's spectrum. Now the history
-    //! goes on under a shut key, and the first-second rule leaves out only
-    //! what was taken in the first two seconds. On its own that took more
-    //! than before where the old history had kept a lower floor from the last
-    //! opening: a floor taken under the open key is the crackle's, one taken
-    //! while it was shut may be the music's. So after the key opens again,
-    //! until the window has been renewed under it, the floor is no higher
-    //! than it stood when the key last shut (not in the first two seconds,
-    //! which are cut as before). On the 109-song check set the stage then
-    //! takes no more than before from any song, over the whole song.
+    //! half of it), so that a record that fades in does not hold the quantile
+    //! under the floor. Where the key is shut nothing is cut. In the stream's
+    //! first two seconds the history then waits, so a record's start is cut as
+    //! before; from then on it goes on under the shut key too, a quarter as
+    //! often (each value standing for four), so the window is the last
+    //! crackleFloorWin seconds whatever the key did. After the key opens
+    //! again, until the window has been renewed under it, the floor is no
+    //! higher than it stood when the key last shut (not in the first two
+    //! seconds): a floor taken while the key was shut may be the music's.
     //! The floor is followed only as far up as the cut needs (~0.4 MB a
     //! channel at 44.1 kHz rather than ~2.2 MB). The stage adds
     //! crackleFloorLatency. Where its key is open it costs 20-30% more than
-    //! the rest of the core (the full band 80-95%); where it is shut, 1-3%
-    //! more than when the history waited there.
+    //! the rest of the core; where it is shut, 1-3% more than when the history
+    //! waited there. For the auditions, the top band and the mid-song
+    //! openings, see the README, "The floor under dense crackle: the crackle
+    //! floor stage (on)".
     int    crackleFloor        = 1;
     double crackleFloorLo      = 1000.0;
     double crackleFloorHi      = 4500.0;  //!< Hz; <= 0 for no upper edge
