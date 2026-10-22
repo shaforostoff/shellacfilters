@@ -323,6 +323,9 @@ void testRepair(const std::vector<float> & inL, const std::vector<float> & inR,
         double before = 0.0, after = 0.0;
         for (size_t k = 0; k < clickAt.size(); ++k) {
             const int p = clickAt[k];
+            // The last clicks come out after the end of the stream: see the
+            // same guard in declick_vst_verify.
+            if ((size_t)(p + 8 + cfg.latency) > aL.size()) continue;
             for (int j = -2; j < 8; ++j) {
                 before = fmax(before, fabs((double)inL[(size_t)(p + j)]));
                 after  = fmax(after, fabs((double)aL[(size_t)(p + j + cfg.latency)]));

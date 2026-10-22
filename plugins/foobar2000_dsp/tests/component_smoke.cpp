@@ -419,16 +419,42 @@ int wmain(int argc, wchar_t ** argv) {
     check(!instance->need_track_change_mark(), "does not request track change marks");
 
     // --- dsp_v3 live reconfiguration ----------------------------------------
+    // Same GUID, a different payload, in the component's own layout: one it
+    // could not parse would fall back to its defaults and change nothing.
+    const bool isDeclick = std::strncmp(name.get_ptr(), "Declick", 7) == 0;
     dsp_preset_impl altered;
     {
-        // Same GUID, different payload: Surface off, half wet.
         dsp_preset_builder b;
-        b << (t_uint32)1;
-        b << 0.25f << 0.80f << 0.30f << 0.0f << 0.5f;
+        if (isDeclick) {
+            // version 3: sensitivity, extent, max ms, depth, wet, passes,
+            // order, delta. Order 64 against the default 128.
+            b << (t_uint32)3;
+            b << 0.7f << 0.3f << 8.0f << 0.5f << 0.5f;
+            b << (t_uint32)1 << (t_uint32)64 << (t_uint32)0;
+        } else if (std::strncmp(name.get_ptr(), "Dehum", 5) == 0) {
+            // version 2: sensitivity, bandwidth, search to, frequency,
+            // rumble, wet, harmonics, delta. Pinned to 60 Hz, half wet.
+            b << (t_uint32)2;
+            b << 0.4f << 2.0f << 400.0f << 60.0f << 0.0f << 0.5f;
+            b << (t_uint32)3 << (t_uint32)0;
+        } else {
+            // DeCrackle's version 1: Surface off, half wet.
+            b << (t_uint32)1;
+            b << 0.25f << 0.80f << 0.30f << 0.0f << 0.5f;
+        }
         b.finish(dspGuid, altered);
     }
+    // Declick's latency counts what its warm start holds, which grows with
+    // every chunk pumped; a flush empties the hold and leaves the pipeline's.
+    if (isDeclick) instance->flush();
+    const double latencyBefore = instance->get_latency();
     check(instance->apply_preset_(altered), "accepts a live preset change (dsp_v3)");
     check(pump(instance, 2, 44100, 1024, 10, NULL), "still finite after a live preset change");
+    if (isDeclick) {
+        instance->flush();
+        check(instance->get_latency() < latencyBefore,
+              "the live preset was read: order 64 has the shorter latency");
+    }
 
     // --- robustness against a corrupt stored preset -------------------------
     dsp_preset_impl corrupt;

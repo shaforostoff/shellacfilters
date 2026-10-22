@@ -444,7 +444,7 @@ void testParameterMapping() {
         { kParamF, 0.0f, 16.0,  "Model order at 0.0 reads 16" },
         { kParamF, 1.0f, 256.0, "Model order at 1.0 reads 256" }
     };
-    for (int c = 0; c < 9; ++c) {
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; ++c) {
         fx.setParameter(cases[c].index, cases[c].set);
         memset(t, 0, sizeof t);
         fx.getParameterDisplay(cases[c].index, t);
