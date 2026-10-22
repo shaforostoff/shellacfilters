@@ -410,7 +410,14 @@ private:
         unpark();
         std::unique_lock<std::mutex> lk(m_mutex);
         m_done.wait(lk, [this] {
-            return !busy(m_state.load(std::memory_order_acquire));
+            // A worker that was still chasing when unpark() looked parks
+            // after it, without reading m_cancel: send it on to read it.
+            const int st = m_state.load(std::memory_order_acquire);
+            if (st == kParked) {
+                m_state.store(kChasing, std::memory_order_release);
+                m_wake.notify_one();
+            }
+            return !busy(st);
         });
     }
 
