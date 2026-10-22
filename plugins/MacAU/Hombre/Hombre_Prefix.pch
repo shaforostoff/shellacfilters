@@ -1,5 +1,0 @@
-//
-// Prefix header for all source files of the 'Hombre' target in the 'Hombre' project.
-//
-
-#include <CoreServices/CoreServices.h>

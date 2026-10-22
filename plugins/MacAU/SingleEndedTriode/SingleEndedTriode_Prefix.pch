@@ -1,5 +1,0 @@
-//
-// Prefix header for all source files of the 'SingleEndedTriode' target in the 'SingleEndedTriode' project.
-//
-
-#include <CoreServices/CoreServices.h>
