@@ -1821,9 +1821,6 @@ void Config::compute(const Params & pIn, double sampleRate) {
         if (crackleFloorHist < 1) crackleFloorHist = 1;
         if (crackleFloorHist > 16383) crackleFloorHist = 16383;
         crackleFloorQ = dmin(dmax(crackleFloorQ, 0.0), 1.0);
-        crackleFloorShelfGain = dmin(dmax(crackleFloorShelfGain, 0.0), 1.0);
-        if (!(crackleFloorShelfX0 > 0.0)) crackleFloorShelfX0 = 5.0;
-        if (!(crackleFloorShelfX1 > crackleFloorShelfX0)) crackleFloorShelfX1 = 8.0 * crackleFloorShelfX0;
     }
     crackleFloorLatency = crackleFloor ? bodyDelay(crackleFloorN) : 0;
     latency = pad + (int)kBlock + bodyLatency + flankStage + crackleFloorLatency;
@@ -1977,44 +1974,6 @@ bool solveBandedToeplitz(const double * d, int band, double * b, int n,
     return true;
 }
 
-bool bandedInverseDiagonal(const std::vector<double> & chol, int band, int n,
-                           std::vector<double> & work, double * diag) {
-    if (n <= 0 || diag == NULL) return false;
-    if (band >= n) band = n - 1;                  // same clipping as the solve
-    const int W = band + 1;
-    if (chol.size() < (size_t)n * (size_t)W) return false;
-    const double * L = &chol[0];
-
-    // S holds the banded slice of the inverse: S(i,j), 0 <= j-i <= band, at
-    // work[i*W + (j-i)]. Rows are filled bottom to top and, within a row,
-    // right to left - the j == i entry is last because it is the one that
-    // needs the rest of its own row.
-    work.assign((size_t)n * (size_t)W, 0.0);
-    double * S = &work[0];
-
-    for (int i = n - 1; i >= 0; --i) {
-        const double lii = L[(size_t)i * W];
-        if (!(lii > 0.0) || !finite(lii)) return false;
-        const int khi = (i + band < n - 1) ? (i + band) : (n - 1);
-
-        for (int j = khi; j >= i; --j) {
-            double s = (i == j) ? 1.0 / (lii * lii) : 0.0;
-            for (int k = i + 1; k <= khi; ++k) {
-                const double lki = L[(size_t)k * W + (k - i)] / lii;
-                const double skj = (j >= k) ? S[(size_t)k * W + (j - k)]
-                                            : S[(size_t)j * W + (k - j)];
-                s -= lki * skj;
-            }
-            S[(size_t)i * W + (j - i)] = s;
-        }
-
-        const double v = S[(size_t)i * W];
-        if (!(v > 0.0) || !finite(v)) return false;   // G is PD; this must hold
-        diag[i] = v;
-    }
-    return true;
-}
-
 // ---------------------------------------------------------------------------
 
 //! Allocation-free, deliberately: configure() is what sizes the buffers, and
@@ -2146,18 +2105,6 @@ void Channel::configure(const Config & cfg) {
         }
     } else {
         m_hannLen = 0;                            // fitModel falls back to cos()
-    }
-
-    // The Wiener path only runs when wienerAlpha > 0, and its two buffers are
-    // the largest things here - at 192 kHz they are 1.06 MB of a 1.3 MB total -
-    // so there is no reason to hold them when it cannot run. interpolate()
-    // short-circuits on wienerAlpha before it touches either.
-    if (cfg.wienerAlpha > 0.0) {
-        m_pvar.assign(bm + 1, 0.0);
-        m_sinv.assign((bm + 1) * (bo + 1), 0.0);
-    } else {
-        m_pvar.clear();
-        m_sinv.clear();
     }
 
     // Per-block and per-click scratch, at the worst case interpolate() and
@@ -2413,10 +2360,9 @@ void Channel::configure(const Config & cfg) {
     }
 
     // The crackle floor stage, sized from crackleFloorN, crackleFloorLo,
-    // crackleFloorHi, crackleFloorShelf and crackleFloorHist, and - unlike the
-    // stages above - only held while it is on, as the Wiener buffers are: its
-    // floor history is ~0.4 MB a channel at 44.1 kHz (~1 MB with the shelf, ~2
-    // MB with no upper edge), and it is off unless asked for. Turning it on or
+    // crackleFloorHi and crackleFloorHist, and - unlike the stages above -
+    // only held while it is on: its floor history is ~0.4 MB a channel at
+    // 44.1 kHz (~2 MB with no upper edge), and it is off unless asked for. Turning it on or
     // off is a structural change, so it goes through configure().
     if (cfg.crackleFloor) {
         const int N = cfg.crackleFloorN;
@@ -2440,9 +2386,7 @@ void Channel::configure(const Config & cfg) {
         // The per-bin cut fades out over the half octave below crackleFloorHi
         // and is none from its first bin kHi up. Its floor and gain are
         // followed to four bins past kHi, so the 7-bin sums of the bins whose
-        // gains the last 3-bin average reads are whole. The shelf needs the
-        // transform to Nyquist and the floor through its band, 4-11 kHz (or
-        // 0.45 x the rate).
+        // gains the last 3-bin average reads are whole.
         const bool hasHi = cfg.crackleFloorHi > 0.0;
         int kTop = M;
         if (hasHi) {
@@ -2450,20 +2394,8 @@ void Channel::configure(const Config & cfg) {
             if (kHi < k0) kHi = k0;
             kTop = (kHi + 4 < M) ? kHi + 4 : M;
         }
-        m_nShelf = hasHi && cfg.crackleFloorShelf != 0 && kTop < M;
-        int kFollow = kTop;
-        if (m_nShelf) {
-            const double dHi = dmin(11000.0, 0.45 * cfg.rate);
-            int kd0 = (int)ceil(4000.0 / binHz), kd1 = (int)ceil(dHi / binHz) - 1;
-            if (kd0 < m_nM0) kd0 = m_nM0;
-            if (kd1 > M) kd1 = M;
-            if (kd1 < kd0) kd1 = kd0;
-            m_nKd0 = kd0 - m_nM0;
-            m_nKd1 = kd1 - m_nM0;
-            if (kd1 > kFollow) kFollow = kd1;
-        }
-        m_nNb = (m_nShelf ? M : kTop) - m_nM0 + 1;
-        m_nTop = kFollow - m_nM0 + 1;
+        m_nNb = kTop - m_nM0 + 1;
+        m_nTop = m_nNb;
         const size_t nb = (size_t)m_nNb, nt = (size_t)m_nTop, W = (size_t)cfg.crackleFloorHist;
         m_nY.assign(ring, 0.0);
         m_nD.assign(ring, 0.0);
@@ -2490,7 +2422,6 @@ void Channel::configure(const Config & cfg) {
         m_nAt.assign(W, 0);
         m_nG.assign(nt, 1.0);
         m_nWf.assign(nb, 0.0);
-        m_nWs.assign(m_nShelf ? nb : 0, 0.0);
         const double hiFade = hasHi ? cfg.crackleFloorHi / 1.4142135623730951 : 0.0;
         for (int b = 0; b < m_nNb; ++b) {
             const double f = (double)(m_nM0 + b) * binHz;
@@ -2498,9 +2429,7 @@ void Channel::configure(const Config & cfg) {
             const double in = dmin(dmax(w, 0.0), 1.0);
             const double s = hasHi ? dmin(dmax(log2(dmax(f, 1.0) / hiFade) / 0.5, 0.0), 1.0) : 0.0;
             m_nWf[(size_t)b] = in * (1.0 - s);
-            if (m_nShelf) m_nWs[(size_t)b] = in * s;
         }
-        m_nShelfRel = (cfg.crackleFloorShelfRelease > 0.0) ? exp(-(double)H / cfg.rate / cfg.crackleFloorShelfRelease) : 0.0;
         m_nNorm = hannTable(N, false, H, &m_nWin[0]);
         fftTables(M, N, M + 1, &m_nStRe[0], &m_nStIm[0], &m_nRev[0], &m_nTwRe[0], &m_nTwIm[0]);
         m_nRel = (cfg.crackleFloorRelease > 0.0) ? exp(-(double)H / cfg.rate / cfg.crackleFloorRelease) : 0.0;
@@ -2508,14 +2437,13 @@ void Channel::configure(const Config & cfg) {
         m_nN = 0;
         m_nNb = 0;
         m_nTop = 0;
-        m_nShelf = false;
         m_nY.clear(); m_nD.clear(); m_nR.clear(); m_nWin.clear();
         m_nRe.clear(); m_nIm.clear(); m_nStRe.clear(); m_nStIm.clear();
         m_nTwRe.clear(); m_nTwIm.clear(); m_nRev.clear();
         m_nP.clear(); m_nPb.clear(); m_nXRe.clear(); m_nXIm.clear();
         m_nRing.clear(); m_nSorted.clear(); m_nFloor.clear(); m_nSaved.clear(); m_nWarm.clear(); m_nG.clear();
         m_nAt.clear();
-        m_nWf.clear(); m_nWs.clear();
+        m_nWf.clear();
     }
 
     // The output ring. Between one pull and the next a caller can push maxBlock
@@ -2530,7 +2458,7 @@ void Channel::configure(const Config & cfg) {
 size_t Channel::heapBytes() const {
     return (m_win.capacity() + m_dry.capacity() + m_full.capacity() + m_fwd.capacity()
             + m_bwd.capacity() + m_det.capacity() + m_a.capacity()
-            + m_ra.capacity() + m_aa.capacity() + m_pvar.capacity() + m_sinv.capacity()
+            + m_ra.capacity() + m_aa.capacity()
             + m_madRing.capacity() + m_scratch.capacity()
             + m_fitWin.capacity() + m_fitR.capacity() + m_delta.capacity()
             + m_corr.capacity() + m_runGain.capacity()
@@ -2563,8 +2491,7 @@ size_t Channel::heapBytes() const {
             + m_nP.capacity() + m_nPb.capacity() + m_nXRe.capacity() + m_nXIm.capacity()
             + m_nRing.capacity() + m_nSorted.capacity()
             + m_nFloor.capacity() + m_nSaved.capacity() + m_nWarm.capacity() + m_nAt.capacity()
-            + m_nG.capacity() + m_nWf.capacity()
-            + m_nWs.capacity()) * sizeof(double)
+            + m_nG.capacity() + m_nWf.capacity()) * sizeof(double)
            + m_flag.capacity() + m_strong.capacity() + m_stS.capacity() + m_dRun.capacity()
            + m_runs.capacity() * sizeof(int)
            + (m_bRev.capacity() + m_bCount.capacity() + m_fRev.capacity()
@@ -2721,9 +2648,6 @@ void Channel::resetPath() {
     m_nHasSaved = false;
     m_nKeep = false;
     m_nCuts = 0;
-    m_nShelfG = 1.0;
-    m_nDHave = 0;
-    m_nDPos = 0;
     std::fill(m_dRun.begin(), m_dRun.end(), (uint8_t)0);
     m_dCuts = 0;
     m_fNextHop = (uint64_t)m_fN;
@@ -3170,17 +3094,6 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
 
     if (!solveSpan(s, e)) return false;
 
-    // Optional per-sample confidence. Under the model's Gaussian
-    // innovation the posterior covariance of the interpolated run is
-    // sigma^2 * G^-1, and the solve already produced the factor of G, so
-    // the diagonal costs one more banded recursion. Off by default; see
-    // Config::wienerAlpha for why.
-    // The && matters: with wienerAlpha at 0 the two Wiener buffers are not
-    // even allocated, and nothing to the right of it is evaluated.
-    const bool haveVar =
-        m_cfg.wienerAlpha > 0.0 && !m_pvar.empty() &&
-        bandedInverseDiagonal(m_solve, order, m, m_sinv, &m_pvar[0]);
-
     // Never let a repair leave the local dynamic range - of the input. Taken
     // from m_win it compounded: on dense runs each repair read the last one
     // as context, could reach 1.5x it, and an ill-conditioned model (an MP3's
@@ -3198,10 +3111,8 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
     // click itself sits only ~18 dB below the music. Removing a fixed
     // fraction keeps most of the click while leaving the underlying signal
     // where the estimate would have done more harm than good.
-    const double sigma2 = m_scale * m_scale;
     const double depth = m_cfg.depth;
-    const double alpha = m_cfg.wienerAlpha;
-    const double wcap = m_cfg.wienerMax;
+    const double wcap = dmin(m_cfg.wienerMax, 1.0);
     int touched = 0;
     int clamped = 0;   // see clampedSamples()
 
@@ -3217,16 +3128,7 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
         const double xf = again ? m_dry[s + j] : m_full[s + j];
         const double dj = x - v;
 
-        // The Wiener gain reduces to 1 wherever the discrepancy dwarfs the
-        // estimate's own uncertainty, which on this material is almost
-        // everywhere - hence the flat default.
-        double w = 1.0;
-        if (haveVar) {
-            const double P = alpha * sigma2 * m_pvar[(size_t)j];
-            const double d2 = dj * dj;
-            w = (d2 > P) ? (1.0 - P / d2) : 0.0;
-        }
-        if (w > wcap) w = wcap;
+        double w = wcap;
         w += depth * (1.0 - w);   // at depth 1 this is outright replacement
         if (w > 0.0) m_full[s + j] = xf - w * (xf - v);
         w *= gain;
@@ -3264,10 +3166,10 @@ void Channel::flankPass() {
     else if (m_flSince < (1 << 30)) ++m_flSince;
     // Where the key is open, at full strength and with flankWide's pad on a
     // full-band transfer; where it is shut, only as far as the transfer is
-    // band-limited, fading over flankHold seconds from full to flankShut.
+    // band-limited, fading over flankHold seconds from full to none.
     const bool open = m_bBeta > 0.0;
     const int P = open ? m_flPOpen : m_flP;
-    double strength = open ? 1.0 : m_cfg.flankShut;
+    double strength = open ? 1.0 : 0.0;
     if (!open && m_cfg.flankHold > 0.0) {
         const double t = (double)m_flSince * (double)kBlock / m_cfg.rate;
         strength = dmax(strength, 1.0 - t / m_cfg.flankHold);
@@ -3302,7 +3204,6 @@ void Channel::flankPass() {
         }
         if (s > s0 || e < e0) continue;       // no room either side: nothing new
         if (s == s0 && e == e0) continue;
-        if (!open && m_flGain[(size_t)r] < m_cfg.flankShutGain) { prev = e0; continue; }
         flankSpan(s, e, m_flGain[(size_t)r], strength);
         prev = e;
     }
@@ -3639,8 +3540,6 @@ void Channel::crackleFloorHop(uint64_t start) {
         const uint64_t ph = late ? m_nShutHops++ % (uint64_t)kShutCycle : (uint64_t)kShutCycle;
         if (ph >= (uint64_t)kFloorFrames) {
             m_nHist = 0;           // the frames have a hole; start them again
-            m_nDHave = 0;
-            m_nDPos = 0;
             return;
         }
         shutTake = ph == (uint64_t)kFloorFrames - 1;
@@ -3816,48 +3715,14 @@ void Channel::crackleFloorHop(uint64_t start) {
                               m_cfg.crackleFloorBeta, m_cfg.crackleFloorMin, m_nRel };
         g_kernels->floorGain(p, g0, nt, m_nG.data());
     }
-    // The shelf's gain (see Config::crackleFloorShelf): the newest frame's
-    // power over its band against the sum of the band's floors, the median of
-    // the last nine such ratios, smoothstep in the log from X0 to X1; it rises
-    // at once and falls back with its release.
-    if (m_nShelf) {
-        const double * Pn = Pq[0];
-        double sp = 0.0, sf = 0.0;
-        for (int b = m_nKd0; b <= m_nKd1; ++b) {
-            sp += Pn[b];
-            double f = kept ? dmin(Fl[b], Sv[b]) : Fl[b];
-            if (capped) f = dmin(f, Wm[b]);
-            sf += f;
-        }
-        m_nDRing[m_nDPos] = sp / (sf + 1e-30);
-        m_nDPos = (m_nDPos + 1 < (int)kShelfMed) ? m_nDPos + 1 : 0;
-        if (m_nDHave < (int)kShelfMed) ++m_nDHave;
-        double v[kShelfMed];
-        const int n = m_nDHave;
-        for (int i = 0; i < n; ++i) {
-            const double d = m_nDRing[i];
-            int j = i;
-            while (j > 0 && v[j - 1] > d) { v[j] = v[j - 1]; --j; }
-            v[j] = d;
-        }
-        const double x0 = m_cfg.crackleFloorShelfX0, x1 = m_cfg.crackleFloorShelfX1;
-        double u = log(dmax(v[n / 2], 1e-300) / x0) / log(x1 / x0);
-        u = dmin(dmax(u, 0.0), 1.0);
-        u = u * u * (3.0 - 2.0 * u);
-        const double gs = m_cfg.crackleFloorShelfGain, g0s = gs + (1.0 - gs) * u, a = m_nShelfRel;
-        m_nShelfG = (m_nCutCount == 0) ? g0s : dmax(g0s, a * m_nShelfG + (1.0 - a) * g0s);
-    }
     ++m_nCutCount;
 
-    // The cut, scaled by the key: the per-bin cut where its weight reaches,
-    // the shelf's above.
+    // The cut, scaled by the key, where its weight reaches.
     memset(re, 0, (size_t)M * sizeof(double));
     memset(im, 0, (size_t)M * sizeof(double));
     bool any = false;
     const double * G = &m_nG[0];
     const double * Wf = &m_nWf[0];
-    const double * Ws = m_nShelf ? &m_nWs[0] : nullptr;
-    const double shelfCut = 1.0 - m_nShelfG;
     for (int b = m_nK0 - m0; b < nb; ++b) {
         double cut = 0.0;
         if (Wf[b] > 0.0) {
@@ -3865,7 +3730,6 @@ void Channel::crackleFloorHop(uint64_t start) {
             const double gs = (G[b - 1] + G[b] + G[(b + 1 < nt) ? b + 1 : b]) / 3.0;
             cut = (1.0 - gs) * Wf[b];
         }
-        if (Ws) cut += shelfCut * Ws[b];
         cut *= key;
         if (!(cut > 0.0)) continue;
         const int k = m0 + b;

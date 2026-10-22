@@ -514,18 +514,15 @@ int main() {
     // hold open. It holds its buffers only while it is on, so turning it on or
     // off is a configure() - outside the counted region, like the rest of this
     // test's setup - and it must cut frames and allocate nothing.
-    // Then with its top shelf, which follows the floor further up and keeps a
-    // ring of its ratios.
-    for (int shelf = 0; shelf <= 1; ++shelf) {
+    {
         Config cn;
         cn.crackleFloor = 1;
-        cn.crackleFloorShelf = shelf;
         cn.compute(Params::defaults(), rate);
         ch.configure(cn);
         ch.prime();
         arm();
         perSample(ch, sig, 0, 6 * R);
-        requireQuiet(shelf ? "the crackle floor stage with its shelf" : "the crackle floor stage, under the body key");
+        requireQuiet("the crackle floor stage, under the body key");
         const bool ran = ch.crackleFloorFrames() > 0;
         printf("  %-50s %-4s %llu frames cut\n", "... and it ran",
                ran ? "ok" : "FAIL", (unsigned long long)ch.crackleFloorFrames());
@@ -946,20 +943,6 @@ int main() {
                 if (!ok) ++g_failures;
             }
         }
-    }
-
-    // --- the Wiener path, which is off by default -------------------------
-    {
-        Config cw = cfg;
-        cw.wienerAlpha = 4.0;
-        Channel w;
-        w.configure(cw);
-        w.prime();
-        printf("\n  (Wiener weighting on: %.1f kB per channel)\n",
-               (double)w.heapBytes() / 1024.0);
-        arm();
-        perSample(w, sig, 0, 2 * R);
-        requireQuiet("push/pull with Wiener weighting engaged");
     }
 
     // --- the one documented exception --------------------------------------

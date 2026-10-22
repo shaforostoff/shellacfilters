@@ -40,7 +40,6 @@ void usage() {
         "  --no-neon    The same\n"
         "\n"
         "  Calibration only, not exposed in the component:\n"
-        "  --alpha <x>  Over-subtraction on the estimate variance\n"
         "  --wmax <x>   Ceiling on the subtracted fraction\n"
         "  --rerepair <0..2>  Repair runs again once the model is refitted (default 1)\n"
         "  --dip <n>    Samples below the floor a run may step over (default 1)\n"
@@ -82,9 +81,7 @@ void usage() {
         "  --flank-hz <Hz>    Above this the widened repair is kept (default 3000)\n"
         "  --flank-edge0 <Hz> -40 dB edge at or below which the pad is full (default 13000)\n"
         "  --flank-edge1 <Hz> ... and at or above which there is none (default 15000)\n"
-        "  --flank-shut <0..1> Its strength where the key is shut, band-limited only (default 0)\n"
         "  --flank-wide <0..1> Share of the pad a full-band transfer gets under the key (default 1)\n"
-        "  --flank-shut-gain <0..1> ... where it is shut, only runs repaired at this gain or more (default 0)\n"
         "  --flank-hold <s>   Seconds it fades out over once the key shuts (default 12)\n"
         "  --carpet <0|1>     The carpet key: opens the fine stage and the flank repair\n"
         "                     on a steady carpet of crackle, where the body key is shut (default 1)\n"
@@ -123,17 +120,6 @@ void usage() {
         "                     Seconds of history the floor is taken over (default 6)\n"
         "  --crackle-floor-release <s>\n"
         "                     Time constant the cut comes back with (default 0.06)\n"
-        "  --crackle-floor-shelf <0|1>\n"
-        "                     Above crackle-floor-hi, one smooth shelf that opens with the\n"
-        "                     music there (default 0)\n"
-        "  --crackle-floor-shelf-gain <0..1>\n"
-        "                     The shelf's cut, as a gain (default 0.63)\n"
-        "  --crackle-floor-shelf-x0 <x>\n"
-        "                     It starts to open at this many times its band's floor (default 5)\n"
-        "  --crackle-floor-shelf-x1 <x>\n"
-        "                     ... and is fully open at this many (default 40)\n"
-        "  --crackle-floor-shelf-release <s>\n"
-        "                     Time constant it closes with (default 0.15)\n"
         "  --warm-start <s>   Before the stream, run the core over its first s seconds\n"
         "                     with the output held back, so the start is processed with\n"
         "                     the keys and crackle floor those seconds give; -1 for the\n"
@@ -157,7 +143,7 @@ int main(int argc, char ** argv) {
     const std::string outPath = argv[2];
     declick::Params params = declick::Params::defaults();
     bool delta = false, quiet = false;
-    float alpha = -1.0f, wmax = -1.0f;   // negative: leave the calibrated value
+    float wmax = -1.0f;   // negative: leave the calibrated value
     float rerepair = -1.0f;
     float dip = -1.0f;
     float dipFar = -1.0f;
@@ -174,10 +160,8 @@ int main(int argc, char ** argv) {
     float carpetFano = -1.0f, fanoRate0 = -1.0f, fanoRate1 = -1.0f, fano0 = -1.0f, fano1 = -1.0f, fanoFirst = -1.0f;
     float crackleFloor = -1.0f, crackleFloorLo = -1.0f, crackleFloorBeta = -1.0f, crackleFloorMin = -1.0f;
     float crackleFloorQ = -1.0f, crackleFloorWin = -1.0f, crackleFloorRelease = -1.0f, crackleFloorHi = -1.0f;
-    float crackleFloorShelf = -1.0f, crackleFloorShelfGain = -1.0f, crackleFloorShelfX0 = -1.0f;
-    float crackleFloorShelfX1 = -1.0f, crackleFloorShelfRelease = -1.0f;
     float flank = -1.0f, flankPadMs = -1.0f, flankHz = -1.0f, flankEdge0 = -1.0f, flankEdge1 = -1.0f;
-    float flankShut = -1.0f, flankWide = -1.0f, flankShutGain = -1.0f, flankHold = -1.0f;
+    float flankWide = -1.0f, flankHold = -1.0f;
     float carpet = -1.0f, carpetPeak = -1.0f, carpetWin = -1.0f, carpetQ = -1.0f;
     float carpetRate0 = -1.0f, carpetRate1 = -1.0f, carpetWarm = -1.0f, carpetMin = -1.0f;
     float warmStart = 0.0f;
@@ -194,8 +178,7 @@ int main(int argc, char ** argv) {
             return 2;
         }
         ++i;
-        if      (a == "--alpha") alpha = v;
-        else if (a == "--wmax") wmax = v;
+        if      (a == "--wmax") wmax = v;
         else if (a == "--rerepair") rerepair = v;
         else if (a == "--dip") dip = v;
         else if (a == "--dip-far") dipFar = v;
@@ -242,19 +225,12 @@ int main(int argc, char ** argv) {
         else if (a == "--crackle-floor-win") crackleFloorWin = v;
         else if (a == "--crackle-floor-release") crackleFloorRelease = v;
         else if (a == "--crackle-floor-hi") crackleFloorHi = v;
-        else if (a == "--crackle-floor-shelf") crackleFloorShelf = v;
-        else if (a == "--crackle-floor-shelf-gain") crackleFloorShelfGain = v;
-        else if (a == "--crackle-floor-shelf-x0") crackleFloorShelfX0 = v;
-        else if (a == "--crackle-floor-shelf-x1") crackleFloorShelfX1 = v;
-        else if (a == "--crackle-floor-shelf-release") crackleFloorShelfRelease = v;
         else if (a == "--flank") flank = v;
         else if (a == "--flank-pad-ms") flankPadMs = v;
         else if (a == "--flank-hz") flankHz = v;
         else if (a == "--flank-edge0") flankEdge0 = v;
         else if (a == "--flank-edge1") flankEdge1 = v;
-        else if (a == "--flank-shut") flankShut = v;
         else if (a == "--flank-wide") flankWide = v;
-        else if (a == "--flank-shut-gain") flankShutGain = v;
         else if (a == "--flank-hold") flankHold = v;
         else if (a == "--carpet") carpet = v;
         else if (a == "--carpet-peak") carpetPeak = v;
@@ -329,19 +305,12 @@ int main(int argc, char ** argv) {
     if (crackleFloorWin >= 0.0f) cfg.crackleFloorWin = crackleFloorWin;
     if (crackleFloorRelease >= 0.0f) cfg.crackleFloorRelease = crackleFloorRelease;
     if (crackleFloorHi >= 0.0f) cfg.crackleFloorHi = crackleFloorHi;
-    if (crackleFloorShelf >= 0.0f) cfg.crackleFloorShelf = (int)crackleFloorShelf;
-    if (crackleFloorShelfGain >= 0.0f) cfg.crackleFloorShelfGain = crackleFloorShelfGain;
-    if (crackleFloorShelfX0 >= 0.0f) cfg.crackleFloorShelfX0 = crackleFloorShelfX0;
-    if (crackleFloorShelfX1 >= 0.0f) cfg.crackleFloorShelfX1 = crackleFloorShelfX1;
-    if (crackleFloorShelfRelease >= 0.0f) cfg.crackleFloorShelfRelease = crackleFloorShelfRelease;
     if (flank >= 0.0f) cfg.flank = (int)flank;
     if (flankPadMs >= 0.0f) cfg.flankPadMs = flankPadMs;
     if (flankHz >= 0.0f) cfg.flankHz = flankHz;
     if (flankEdge0 >= 0.0f) cfg.flankEdge0 = flankEdge0;
     if (flankEdge1 >= 0.0f) cfg.flankEdge1 = flankEdge1;
-    if (flankShut >= 0.0f) cfg.flankShut = flankShut;
     if (flankWide >= 0.0f) cfg.flankWide = flankWide;
-    if (flankShutGain >= 0.0f) cfg.flankShutGain = flankShutGain;
     if (flankHold >= 0.0f) cfg.flankHold = flankHold;
     if (carpet >= 0.0f) cfg.carpet = (int)carpet;
     if (carpetPeak >= 0.0f) cfg.carpetPeak = carpetPeak;
@@ -352,7 +321,6 @@ int main(int argc, char ** argv) {
     if (carpetWarm >= 0.0f) cfg.carpetWarm = carpetWarm;
     if (carpetMin >= 0.0f) cfg.carpetMin = (int)carpetMin;
     cfg.compute(params, (double)audio.sampleRate);
-    if (alpha >= 0.0f) cfg.wienerAlpha = alpha;
     if (wmax >= 0.0f) cfg.wienerMax = wmax;
     if (rerepair >= 0.0f) cfg.rerepair = (int)rerepair;
     if (dip >= 0.0f) cfg.dip = (int)dip;
@@ -462,8 +430,7 @@ int main(int argc, char ** argv) {
                "max %.1f ms, %d pass%s, order %d\n",
                params.sensitivity, cfg.thresholdHi, params.extent, cfg.thresholdLo,
                params.maxLengthMs, cfg.passes, cfg.passes == 1 ? "" : "es", cfg.order);
-        printf("  depth %.3f, alpha %.3f, wmax %.3f\n",
-               params.depth, cfg.wienerAlpha, cfg.wienerMax);
+        printf("  depth %.3f, wmax %.3f\n", params.depth, cfg.wienerMax);
         printf("  kernels %s\n", declick::kernelName());
         printf("  latency %d samples (%.1f ms)\n", cfg.latency,
                1000.0 * cfg.latency / (double)audio.sampleRate);

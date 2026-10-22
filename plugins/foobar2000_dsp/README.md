@@ -453,9 +453,8 @@ cost memory, and it does not:
 The old code simply reached its footprint later, on the audio thread, one
 reallocation at a time. Two things keep the new figure down: the ring is 139 kB
 where the grown FIFO reached 720 kB, and the Wiener buffers — 455 kB of it, and
-the largest single item — are **not reserved at all** unless
-`Config::wienerAlpha` is greater than zero, which by default it is not. With the
-Wiener path deliberately engaged it is 1.2 MB per channel.
+the largest single item — were **not reserved at all** while the Wiener path
+was off, as it always was (it has since been removed).
 
 The refactor is bit-exact: 8 parameter/sample-rate combinations × 3 block
 patterns × Wiener off and on, hashed before and after, identical.
@@ -607,10 +606,9 @@ up entirely past 28 samples and was too timid between 7 and 23.
 | old length-indexed curve | 1.37 dB | −41.5 dB | +0.07 dB | 31 |
 | **flat 0.45** (depth 0) | **1.79 dB** | **−42.4 dB** | **+0.60 dB** | **28** |
 
-The machinery is still in the tree, off by default (`Config::wienerAlpha = 0`,
-so the recursion is not even run) and sweepable from `declick_cli --alpha`.
-Material with different click statistics — louder clicks on stereo vinyl, say —
-might land somewhere else, and the code costs nothing while it is off.
+The machinery stayed in the tree, off, for a while, and has since been removed;
+the git history has it, should material with different click statistics —
+louder clicks on stereo vinyl, say — want it tried again.
 
 #### What did not work: robust (M-estimation) AR fitting
 
@@ -1635,11 +1633,11 @@ audio is exactly what the repair made of it.
   furthest above the clean copy, and with the key alone nothing was repaired
   there. A record whose key never opens is untouched by the fade.
   * Tried instead: a softer repair wherever the key is shut, on band-limited
-    transfers (`--flank-shut`). At half strength it did as much for *Amarras*
+    transfers (`flankShut`, since removed). At half strength it did as much for *Amarras*
     as the fade, but it also took −20 to −27 dB of 3–10 kHz from nearly every
     band-limited 1950s remaster in the sample below, whose key never opens.
   * Tried too: only the strong runs where the key is shut
-    (`--flank-shut-gain`). That gained nothing; the gain there comes from the
+    (`flankShutGain`, since removed). That gained nothing; the gain there comes from the
     weak runs, the carpet.
   * And a pad for full-band transfers under the key (`--flank-wide`). On *No
     está*, *Ruiseñor* and *Cornetín* what it took beyond the stage
@@ -2270,8 +2268,8 @@ but when the Denoise stage is applied, the leftover noise feels unnatural".
   A steady cut is a treble cut. So the top is left as it was:
   `crackleFloorHi = 4500`; `0` cuts to Nyquist as before.
 
-**The top shelf (`crackleFloorShelf`, off).** Heard in folder 8, and not chosen;
-kept as an option.
+**The top shelf (`crackleFloorShelf`, since removed).** Heard in folder 8, and
+not chosen.
 
 * Above `crackleFloorHi`, every bin gets one gain, so nothing moves in patches.
 * The gain is −4 dB (`crackleFloorShelfGain`) while the 4–11 kHz band as a whole
@@ -2304,7 +2302,7 @@ kept as an option.
 
 **What it holds.**
 
-* **Buffers** only while it is on, as the Wiener path's are.
+* **Buffers** only while it is on.
   * It needs ~0.4 MB a channel at 44.1 kHz, mostly the floor's history and
     its sorted copy, for the ~100 bins up to just past 4.5 kHz.
   * It needs ~1 MB with the shelf, and ~2.2 MB with no upper edge.
@@ -3332,11 +3330,9 @@ SSE2 and the scalar path. It also:
 force — this is the part where a subtle error yields plausible but wrong audio
 rather than an obvious failure. `levinson()` against a Gaussian-elimination
 solve of the Yule–Walker system (worst deviation **5.6e-16**),
-`solveBandedToeplitz()` against dense elimination (**3.8e-15**), and
-`bandedInverseDiagonal()` against a full dense inverse (**1.6e-15**), over
+and `solveBandedToeplitz()` against dense elimination (**3.8e-15**), over
 random positive-definite systems across the whole order and run-length range.
-The single-missing-sample posterior variance is pinned separately against its
-closed form `1/Σaₖ²`, which anchors the scale of the rest. It also covers
+It also covers
 streaming properties end to end: silence in, silence out; clean audio passes
 through untouched; injected clicks come out 26 dB smaller; NaN, ±infinity and
 denormals produce nothing non-finite and the stream recovers afterwards;

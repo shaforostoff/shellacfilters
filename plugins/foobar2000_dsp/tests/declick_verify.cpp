@@ -8,7 +8,6 @@
  *    levinson()               vs. solving the Yule-Walker system by
  *                                Gaussian elimination
  *    solveBandedToeplitz()    vs. dense Gaussian elimination
- *    bandedInverseDiagonal()  vs. a full dense inverse
  *
  *  Plus end-to-end properties of the streaming Channel: silence in, silence
  *  out; clean audio is left essentially alone; an injected click is reduced;
@@ -185,87 +184,6 @@ void testBandedSolve() {
     }
     printf("  worst solution deviation %.3e\n", worst);
     if (!(worst < 1e-7)) { printf("  FAIL  banded solve disagrees with dense\n"); ++g_failures; }
-}
-
-void testInverseDiagonal() {
-    printf("bandedInverseDiagonal vs. a full dense inverse\n");
-    Rng rng(4242u);
-    double worst = 0.0;
-    int cases = 0;
-
-    for (int trial = 0; trial < 60; ++trial) {
-        const int order = 4 + (int)(rng.uniform() * 28.0);
-        const int n = 1 + (int)(rng.uniform() * 80.0);
-
-        std::vector<double> r;
-        makeAutocorr(rng, order, 8 * order + 64, r);
-        std::vector<double> a((size_t)order + 1, 0.0);
-        if (!levinson(&r[0], order, &a[0])) continue;
-
-        std::vector<double> d((size_t)order + 1, 0.0);
-        for (int k = 0; k <= order; ++k) {
-            double acc = 0.0;
-            for (int t = 0; t + k <= order; ++t) acc += a[(size_t)t] * a[(size_t)(t + k)];
-            d[(size_t)k] = acc;
-        }
-        d[0] *= 1.0 + 1e-9;
-
-        std::vector<double> rhs((size_t)n, 0.0), scratch, work;
-        if (!solveBandedToeplitz(&d[0], order, &rhs[0], n, scratch)) continue;
-
-        std::vector<double> diag((size_t)n, 0.0);
-        if (!bandedInverseDiagonal(scratch, order, n, work, &diag[0])) {
-            printf("  FAIL  inverse diagonal refused a PD matrix (n=%d order=%d)\n", n, order);
-            ++g_failures;
-            continue;
-        }
-
-        // Dense reference: solve G z = e_i and read z_i, for every i.
-        std::vector<double> G((size_t)n * n, 0.0);
-        for (int i = 0; i < n; ++i) {
-            for (int j = 0; j < n; ++j) {
-                const int k = abs(i - j);
-                G[(size_t)i * n + j] = (k <= order) ? d[(size_t)k] : 0.0;
-            }
-        }
-        for (int i = 0; i < n; ++i) {
-            std::vector<double> e((size_t)n, 0.0);
-            e[(size_t)i] = 1.0;
-            if (!denseSolve(G, e, n)) break;
-            const double rel = fabs(diag[(size_t)i] - e[(size_t)i])
-                             / (fabs(e[(size_t)i]) + 1e-300);
-            if (rel > worst) worst = rel;
-        }
-        ++cases;
-    }
-    printf("  %d cases, worst relative deviation %.3e\n", cases, worst);
-    if (!(cases > 40)) { printf("  FAIL  too few cases exercised\n"); ++g_failures; }
-    if (!(worst < 1e-8)) { printf("  FAIL  inverse diagonal disagrees with dense\n"); ++g_failures; }
-
-    // The posterior variance of a single missing sample has a closed form:
-    // 1 / sum(a_k^2). Worth pinning separately - it is the one value that can
-    // be checked by hand, and it anchors the scale of everything above.
-    {
-        const int order = 8;
-        std::vector<double> r;
-        Rng r2(77u);
-        makeAutocorr(r2, order, 512, r);
-        std::vector<double> a((size_t)order + 1, 0.0);
-        levinson(&r[0], order, &a[0]);
-        double ra0 = 0.0;
-        for (int k = 0; k <= order; ++k) ra0 += a[(size_t)k] * a[(size_t)k];
-
-        std::vector<double> d((size_t)order + 1, 0.0);
-        for (int k = 0; k <= order; ++k) {
-            double acc = 0.0;
-            for (int t = 0; t + k <= order; ++t) acc += a[(size_t)t] * a[(size_t)(t + k)];
-            d[(size_t)k] = acc;
-        }
-        std::vector<double> rhs(1, 0.0), scratch, work, diag(1, 0.0);
-        solveBandedToeplitz(&d[0], order, &rhs[0], 1, scratch);
-        bandedInverseDiagonal(scratch, order, 1, work, &diag[0]);
-        checkClose(diag[0], 1.0 / ra0, 1e-12, "single-sample posterior variance");
-    }
 }
 
 // -------------------------------------------------------------------------
@@ -826,7 +744,6 @@ void testRetune() {
 int main() {
     testLevinson();
     testBandedSolve();
-    testInverseDiagonal();
     testStreaming();
     testOrderSweep();
     testKernels();

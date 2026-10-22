@@ -116,15 +116,6 @@ struct Config {
     //! plays no part. 0.45 was measured against injected-click ground truth
     //! and against four reference transfers; it beats the length-indexed
     //! curve it replaced on every axis of both.
-    //!
-    //! `wienerAlpha` scales the model's own per-sample estimate variance,
-    //! turning the flat fraction into a true Wiener gain. It is 0 - i.e. off -
-    //! because it was measured and does not pay on 78 rpm material: the click
-    //! is nearly always far larger than the estimate's uncertainty, so the
-    //! gain saturates and only the cap binds. Retained because it costs
-    //! nothing when off and material with different click statistics may
-    //! behave differently; declick_cli can sweep it. See the README.
-    double wienerAlpha  = 0.0;
     double wienerMax    = 0.45;
 
     //! Re-repair. Not user-facing; declick_cli can sweep it.
@@ -407,13 +398,6 @@ struct Config {
     double flankEdge0   = 13000.0;
     double flankEdge1   = 15000.0;
     double flankHold    = 12.0;      //!< seconds
-    //! Where the key is shut, past the hold: the strength left there, on a
-    //! band-limited transfer only. 0: see flankHold for what it costs.
-    double flankShut    = 0.0;
-    //! ... and there only for runs repaired with at least this gain (see
-    //! Config::softMin). The gain there comes from the weak runs, the carpet:
-    //! strong runs alone did nothing for *Amarras*.
-    double flankShutGain = 0.0;
     //! Where the key is open: the share of the pad a full-band transfer gets.
     //! It was 0 because on *No esta*, *Ruisenor* and *Cornetin* what it took
     //! correlated as much with what the decrackled version keeps as with what
@@ -602,29 +586,6 @@ struct Config {
     int    crackleFloorHist    = 259;     //!< floor values over crackleFloorWin
     int    crackleFloorLatency = 0;       //!< bodyDelay(crackleFloorN), if on
 
-    //! The top shelf: off, heard and not chosen (the top untouched was liked
-    //! better), kept as an option. Above crackleFloorHi (crossfading over the
-    //! same half octave) every bin gets one gain, so nothing moves in patches.
-    //! The gain is crackleFloorShelfGain while the 4-11 kHz band as a whole
-    //! sits near its floor (the sum of its power over the sum of its floors),
-    //! and it opens to 1 from crackleFloorShelfX0 to crackleFloorShelfX1 times
-    //! that, smoothstep in the log. The ratio is a median over 9 frames, so a
-    //! crackle shorter than ~25 ms cannot open it. The 9 frames end two hops
-    //! after the cut frame, where the prototype's were centred on it, so the
-    //! shelf opens up to 12 ms late. It rises at once and falls back over
-    //! crackleFloorShelfRelease.
-    //! It takes the top's crackle down 1.5-2.4 dB with the music taken as
-    //! A's. But it still opens a little with the crackle (0.08-0.17 dB per
-    //! dB, the level swings 1.08-1.17 times), as anything driven by the top
-    //! band's own level does; only a steady cut does not, and that is a
-    //! treble cut (-4 dB took 29-39% of the 4.5-7 kHz music). Needs
-    //! crackleFloorHi > 0; it follows the floor up to 11 kHz.
-    int    crackleFloorShelf        = 0;
-    double crackleFloorShelfGain    = 0.63;   //!< about -4 dB
-    double crackleFloorShelfX0      = 5.0;
-    double crackleFloorShelfX1      = 40.0;
-    double crackleFloorShelfRelease = 0.15;   //!< seconds
-
     double rate         = 44100.0;   //!< the sample rate compute() was given
 
     int    pad          = 272;   //!< context needed either side of a block
@@ -683,7 +644,7 @@ struct Config {
     //! Only `order`, `maxRun`, `madWindow`, `body`, `bodyN`, `fineN`, `fineM`,
     //! `microN`, `microM`, `mid`, `midLo`, `flankStage`, `flankHalf` and the
     //! crackle floor stage's `crackleFloor`, `crackleFloorN`, `crackleFloorLo`,
-    //! `crackleFloorHi`, `crackleFloorShelf` and `crackleFloorHist` size
+    //! `crackleFloorHi` and `crackleFloorHist` size
     //! anything or set the latency (`pad` and `latency` are derived from them);
     //! thresholds, depth, wet, delta, passes and whether the fine and micro
     //! stages run are read per block and can change under a live stream.
@@ -696,7 +657,7 @@ struct Config {
             && flankHalf == o.flankHalf && flankHz == o.flankHz
             && crackleFloor == o.crackleFloor && crackleFloorN == o.crackleFloorN
             && crackleFloorLo == o.crackleFloorLo && crackleFloorHi == o.crackleFloorHi
-            && crackleFloorShelf == o.crackleFloorShelf && crackleFloorHist == o.crackleFloorHist && rate == o.rate;
+            && crackleFloorHist == o.crackleFloorHist && rate == o.rate;
     }
 };
 
@@ -1143,8 +1104,6 @@ private:
     int    m_fitLead = 0;
     std::vector<double> m_rhs;       //!< interpolation right hand side
     std::vector<double> m_solve;     //!< Cholesky factor
-    std::vector<double> m_sinv;      //!< banded slice of G^-1
-    std::vector<double> m_pvar;      //!< diag(G^-1), per damaged sample
     //! Runs repaired in the current block, as (start, end) pairs, for
     //! Config::rerepair. Runs are disjoint and start inside the block, so
     //! there can be no more than kBlock of them.
@@ -1334,24 +1293,17 @@ private:
     //! audio (m_nY), its dry counterpart (m_nD) and what the stage removes
     //! (m_nR), indexed by its sample count m_nT. Per kept bin, m_nM0 .. m_nM0 +
     //! m_nNb - 1: the last five frames' transform and power, the per-bin cut's
-    //! weight (the band ramped in and out) and the shelf's. Per followed bin,
-    //! the first m_nTop of those: the power summed over 7 bins, the floor's
+    //! weight (the band ramped in and out). Per followed bin, the first
+    //! m_nTop of those: the power summed over 7 bins, the floor's
     //! history as a ring and kept sorted, the floor, the floor as it stood
     //! when the key last shut, the gain with its release. Per place in the
-    //! ring, the take it stands at. The shelf: its bins m_nKd0 .. m_nKd1
-    //! (relative), the last kShelfMed ratios, its gain. Held only while the
-    //! stage is on.
-    enum { kFloorFrames = 5, kFloorDec = 4, kShelfMed = 9, kShutCycle = 16 };
+    //! ring, the take it stands at. Held only while the stage is on.
+    enum { kFloorFrames = 5, kFloorDec = 4, kShutCycle = 16 };
     int    m_nN = 0, m_nH = 0;
     size_t m_nMask = 0;
     uint64_t m_nT = 0;
     uint64_t m_nNextHop = 0;      //!< as m_bNextHop
     int    m_nK0 = 0, m_nM0 = 0, m_nNb = 0, m_nTop = 0;
-    bool   m_nShelf = false;
-    int    m_nKd0 = 0, m_nKd1 = 0;
-    double m_nShelfG = 1.0, m_nShelfRel = 0.0;
-    double m_nDRing[kShelfMed];
-    int    m_nDHave = 0, m_nDPos = 0;
     int    m_nHist = 0;           //!< consecutive frames transformed, to 5
     int    m_nSlot = 0;
     uint64_t m_nCutCount = 0;     //!< frames whose gain has been worked out
@@ -1381,7 +1333,7 @@ private:
     std::vector<double> m_nIn, m_nOut;
     std::vector<double> m_nWarm;     //!< m_nTop: the floor a warm pass ended with
     std::vector<uint64_t> m_nAt;     //!< crackleFloorHist
-    std::vector<double> m_nWf, m_nWs;     //!< m_nNb
+    std::vector<double> m_nWf;     //!< m_nNb
 
     std::vector<double> m_madRing; //!< |forward residual| history
     int    m_madPos = 0;
@@ -1430,20 +1382,9 @@ bool levinson(const double * r, int order, double * a);
 //! Banded symmetric Toeplitz Cholesky solve, half-bandwidth `band`.
 //! `d` holds the Toeplitz first column (band+1 entries). Solves G x = b in
 //! place on `b`. Returns false if not positive definite. `scratch` is left
-//! holding the Cholesky factor, for bandedInverseDiagonal() below.
+//! holding the Cholesky factor.
 bool solveBandedToeplitz(const double * d, int band, double * b, int n,
                          std::vector<double> & scratch);
-
-//! Diagonal of G^-1, from the factor solveBandedToeplitz() left behind.
-//! Pass the same `band` and `n`; `chol` is that call's scratch vector and
-//! `work` is separate scratch of the caller's. Writes n entries to `diag`.
-//!
-//! Uses Takahashi's recursion, which computes the banded slice of the inverse
-//! in O(n * band^2) rather than inverting outright: filling from the bottom
-//! right, every term needed is either already written or the symmetric
-//! counterpart of one that is.
-bool bandedInverseDiagonal(const std::vector<double> & chol, int band, int n,
-                           std::vector<double> & work, double * diag);
 
 } // namespace declick
 
