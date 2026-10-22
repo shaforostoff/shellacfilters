@@ -376,11 +376,12 @@ private:
         m_active = params;
 
         // A thread per channel for the warm pass, as far as the cores go: on a
-        // two-core machine, stereo warms in half the time.
+        // two-core machine, stereo warms in half the time. With the warm start
+        // off, neither the threads nor the ring.
         unsigned threads = std::thread::hardware_concurrency();
         if (threads < 1) threads = 1;
         try {
-            m_hold.configure(&ptrs[0], channels, cfg, (double)rate, threads);
+            m_hold.configure(&ptrs[0], channels, cfg, (double)rate, threads, m_warmOn);
         } catch (const std::bad_alloc &) {
             // Without its ring there is no warm start in this format, and the
             // hold passes straight through; without the channels, nothing.

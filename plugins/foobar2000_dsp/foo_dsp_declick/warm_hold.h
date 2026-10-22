@@ -45,13 +45,14 @@ public:
     //! next configure() for a warm pass to share. Fewer threads than asked
     //! for if the system will not start them; one does it all on the
     //! caller's thread. The Channels stay the caller's, and must outlive this
-    //! or the next configure(). Passes straight through until arm().
+    //! or the next configure(). Passes straight through until arm(), and
+    //! for good with `warm` false: then it takes no ring and no threads.
     //!
     //! Throws std::bad_alloc. If channels() is `channels` after it did, only
     //! the ring could not be had: there is no warm start, and arm() leaves it
     //! passing straight through. If it is 0, there is nothing to feed.
     void configure(Channel * const * chans, unsigned channels, const Config & cfg,
-                   double rate, unsigned threads) {
+                   double rate, unsigned threads, bool warm = true) {
         clear();
         m_chan.assign(chans, chans + channels);
         m_ch = channels;
@@ -59,6 +60,7 @@ public:
         m_warm = (size_t)(cfg.warmSeconds() * rate);
         if (m_warm == 0) m_warm = 1;
         m_slice = (size_t)cfg.maxBlock;
+        if (!warm) return;
         m_ring.assign(m_warm * channels, Sample());
         if (threads > channels) threads = channels;
         m_workers.reserve(threads > 1 ? threads - 1 : 0);

@@ -246,13 +246,13 @@ struct HoldRig {
     bool overflow = false;
 
     HoldRig(const Config & cfg, unsigned channels, double rate, unsigned threads,
-            size_t expect) {
+            size_t expect, bool warm = true) {
         for (unsigned c = 0; c < channels; ++c) {
             chan.push_back(std::unique_ptr<Channel>(new Channel()));
             chan.back()->configure(cfg);
             ptrs.push_back(chan.back().get());
         }
-        hold.configure(&ptrs[0], channels, cfg, rate, threads);
+        hold.configure(&ptrs[0], channels, cfg, rate, threads, warm);
         out.resize(channels);
         for (unsigned c = 0; c < channels; ++c) out[c].reserve(expect);
         scratch.resize((size_t)cfg.maxBlock * 4);
@@ -792,6 +792,25 @@ int main() {
             requireSame("... left channel against the cold stream",
                         rig.out[0], warmReference(cfg, x, 0, 0, 0, T));
             requireSame("... right channel", rig.out[1], warmReference(cfg, x, 1, 0, 0, T));
+        }
+
+        // Off from the start, as the component configures it then: no ring,
+        // no threads, and arm() passes straight through too.
+        {
+            HoldRig rig(cfg, 2, rate, 2, expect, false);
+            rig.hold.arm();
+            const bool bare = !rig.hold.holding() && rig.hold.threads() == 1;
+            {
+                scoped_flush_denormals ftz;
+                rig.feed(x, 0, T, 4096);
+            }
+            rig.finish();
+            printf("  %-50s %-4s %u thread(s), %llu warm passes\n", "warm hold configured off: no ring, no threads",
+                   (bare && rig.hold.warmPasses() == 0) ? "ok" : "FAIL", rig.hold.threads(),
+                   (unsigned long long)rig.hold.warmPasses());
+            if (!(bare && rig.hold.warmPasses() == 0)) ++g_failures;
+            requireSame("... left channel against the cold stream",
+                        rig.out[0], warmReference(cfg, x, 0, 0, 0, T));
         }
 
         const size_t at = (size_t)R * 9, S = (size_t)R * 6;
