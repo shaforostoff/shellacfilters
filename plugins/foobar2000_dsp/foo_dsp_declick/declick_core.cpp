@@ -2473,7 +2473,7 @@ void Channel::configure(const Config & cfg) {
 size_t Channel::heapBytes() const {
     return (m_win.capacity() + m_dry.capacity() + m_full.capacity() + m_fwd.capacity()
             + m_bwd.capacity() + m_det.capacity() + m_a.capacity()
-            + m_ra.capacity() + m_aa.capacity()
+            + m_ra.capacity() + m_aa.capacity() + m_arev.capacity() + m_hann.capacity()
             + m_madRing.capacity() + m_scratch.capacity()
             + m_fitWin.capacity() + m_fitR.capacity() + m_delta.capacity()
             + m_corr.capacity() + m_runGain.capacity()
@@ -2506,7 +2506,8 @@ size_t Channel::heapBytes() const {
             + m_nP.capacity() + m_nPb.capacity() + m_nXRe.capacity() + m_nXIm.capacity()
             + m_nRing.capacity() + m_nSorted.capacity()
             + m_nFloor.capacity() + m_nSaved.capacity() + m_nWarm.capacity() + m_nAt.capacity()
-            + m_nG.capacity() + m_nWf.capacity()) * sizeof(double)
+            + m_nG.capacity() + m_nWf.capacity() + m_nIn.capacity() + m_nOut.capacity())
+             * sizeof(double)
            + m_flag.capacity() + m_strong.capacity() + m_stS.capacity() + m_dRun.capacity()
            + m_runs.capacity() * sizeof(int)
            + (m_bRev.capacity() + m_bCount.capacity() + m_fRev.capacity()
