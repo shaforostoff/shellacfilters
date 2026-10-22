@@ -718,6 +718,45 @@ void testDelta() {
     }
 }
 
+//! A stream that starts or stops mid-note - a seek, or a gapless change of
+//! track, where the wrapper resets and drains the pipeline - must come out
+//! with its edges alone. The step from or to the silence either side used to
+//! read as a click: the first and last 10 ms were rebuilt from the silence,
+//! changed by -10 to -25 dB, and at the default order the step opened the
+//! body key, whose stages then cut this steady tone by 25 dB for two seconds.
+void testEdges() {
+    printf("stream edges\n");
+    const double sr = 44100.0;
+    const size_t N = (size_t)(3.0 * sr), W = (size_t)(0.010 * sr), T = (size_t)(2.0 * sr);
+    const int orders[3] = { 32, 128, 256 };
+    for (int a = 0; a < 2; ++a) {
+        const double amp = a ? 0.5 : 0.1;
+        std::vector<double> x(N);
+        Rng rng(5u);
+        for (size_t i = 0; i < N; ++i) {
+            const double t = (double)i / sr;
+            x[i] = amp * (sin(6.283185307 * 220.0 * t + 1.3) + 0.5 * sin(6.283185307 * 1330.0 * t + 0.4))
+                 + 1e-3 * rng.centred();
+        }
+        for (int o = 0; o < 3; ++o) {
+            Params p = Params::defaults();
+            p.order = orders[o];
+            const std::vector<double> y = runChannel(x, p, sr);
+            std::vector<double> d(N);
+            for (size_t i = 0; i < N; ++i) d[i] = y[i] - x[i];
+            const double first = 20.0 * log10(rms(d, 0, W) / rms(x, 0, W) + 1e-30);
+            const double last = 20.0 * log10(rms(d, N - W, N) / rms(x, N - W, N) + 1e-30);
+            const double opening = 20.0 * log10(rms(d, 0, T) / rms(x, 0, T) + 1e-30);
+            printf("  amplitude %.1f, order %3d: first 10 ms %6.1f dB, last 10 ms %6.1f dB,"
+                   " first 2 s %6.1f dB\n", amp, orders[o], first, last, opening);
+            if (!(first < -40.0 && last < -40.0 && opening < -40.0)) {
+                printf("  FAIL  the edges of the stream were repaired as clicks\n");
+                ++g_failures;
+            }
+        }
+    }
+}
+
 } // anonymous namespace
 
 int main() {
@@ -728,6 +767,7 @@ int main() {
     testOrderSweep();
     testKernels();
     testDelta();
+    testEdges();
 
     if (g_failures == 0) { printf("\nOK\n"); return 0; }
     printf("\n%d failure(s)\n", g_failures);

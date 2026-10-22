@@ -830,7 +830,10 @@ public:
     template<typename Sample>
     void pull(Sample * out, size_t frames, size_t stride);
 
-    //! End of stream: run `latency` zeros through so the tail comes out.
+    //! End of stream: run `latency` zeros through so the tail comes out. The
+    //! zeros are not audio, as prime()'s are not: the stream's last samples
+    //! are judged against the music before them, not against the silence
+    //! after. Anything pushed afterwards starts as a stream does after prime().
     void drain();
 
     //! Pre-roll, for a host that insists on n samples out for n samples in.
@@ -873,7 +876,7 @@ public:
     //! they stay out of the noise estimate: the stream's first `latency`
     //! samples are exactly silent, and the first real ones are judged against
     //! real noise rather than against silence.
-    void prime() { m_silentUntil = m_fill + m_cfg.latency; drain(); }
+    void prime() { m_silentUntil = m_fill + m_cfg.latency; feedZeros(); }
 
     //! WARM START, the same idea for the core's slow state. A host that can
     //! read the track ahead - foobar2000 and VirtualDJ can, a VST or an AU
@@ -998,6 +1001,7 @@ public:
 private:
     void pushOne(double v);
     void outPush(double v);
+    void feedZeros();             //!< `latency` zeros: prime()'s and drain()'s
     //! reset() in parts: the audio path and everything that restarts with it,
     //! and the state a warm start keeps (see beginWarm()).
     void resetPath();
@@ -1101,7 +1105,10 @@ private:
     //! gain is 1, so the hard repair is unchanged bit for bit.
     AlignedBuf m_full;
     int    m_fill = 0;            //!< samples currently held in m_win
-    int    m_silentUntil = 0;     //!< m_win below this is prime()'s zeros
+    //! m_win below this is not audio: reset()'s pad, or prime()'s zeros. From
+    //! m_tailFrom on, while drain() runs, it is drain()'s; 1 << 30 otherwise.
+    int    m_silentUntil = 0;
+    int    m_tailFrom = 1 << 30;
     int    m_pad = 0;
 
     AlignedBuf m_fwd, m_bwd;

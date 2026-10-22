@@ -2734,7 +2734,7 @@ void Channel::resetPath() {
     m_seen = 0;
     m_clamped = 0;
     m_reclamped = 0;
-    m_silentUntil = 0;
+    m_tailFrom = 1 << 30;
     m_blocks = 0;
     std::fill(m_bY.begin(), m_bY.end(), 0.0);
     std::fill(m_bD.begin(), m_bD.end(), 0.0);
@@ -2800,8 +2800,10 @@ void Channel::resetPath() {
     m_flP = 0;
     m_flPOpen = 0;
     // Prime with `pad` zeros so the first real sample lands at window index
-    // pad and nothing is dropped off the front of the stream.
+    // pad and nothing is dropped off the front of the stream. They are not
+    // audio, as prime()'s are not: see detect().
     m_fill = m_pad;
+    m_silentUntil = m_pad;
 }
 
 void Channel::resetCarpet() {
@@ -3028,9 +3030,11 @@ void Channel::detect(int from, int to, int pass) {
 
     if (pass == 0) {
         // Refresh the robust noise estimate from this block's forward error -
-        // but not from prime()'s zeros, or right after priming the median is
-        // zero and the first real samples read as one enormous click.
-        for (int i = (from > m_silentUntil) ? from : m_silentUntil; i < to; ++i) {
+        // but not from the zeros either side of the audio, or right after a
+        // reset the median is zero and the first real samples read as one
+        // enormous click.
+        const int end = (to < m_tailFrom) ? to : m_tailFrom;
+        for (int i = (from > m_silentUntil) ? from : m_silentUntil; i < end; ++i) {
             m_madRing[(size_t)m_madPos] = fabs(m_fwd[i]);
             if (++m_madPos >= (int)m_madRing.size()) { m_madPos = 0; m_madFull = true; }
         }
@@ -3041,9 +3045,17 @@ void Channel::detect(int from, int to, int pass) {
         }
     }
 
+    // Nothing is detected where the residual reads those zeros: within
+    // `order` of the first real sample, or of the last before drain()'s. The
+    // music stepping from or to silence is a click as far as the model can
+    // tell, and repairing it rebuilt the edge from the silence - the first and
+    // last 10 ms of every seek and every gapless change of track, and at the
+    // default order the step opened the body key for its two second release.
     const double inv = 1.0 / m_scale;
+    const int live0 = m_silentUntil + order;
+    const int live1 = (m_tailFrom < (1 << 30)) ? m_tailFrom - order : to;
     for (int i = from; i < to; ++i) {
-        m_det[i] = dmax(fabs(m_fwd[i]), fabs(m_bwd[i])) * inv;
+        m_det[i] = (i >= live0 && i < live1) ? dmax(fabs(m_fwd[i]), fabs(m_bwd[i])) * inv : 0.0;
     }
 }
 
@@ -3053,10 +3065,10 @@ void Channel::interpolate(int from, int to, int reach) {
     const int dip = m_cfg.dip;
     const double far = lo + m_cfg.dipFar * (hi - lo);
 
-    // Never into the zeros prime() fed: they are not audio, and the first
-    // onset after them reads as a click whose backward error reaches back
-    // into them - a repair there writes a pre-echo where the stream has to
-    // be silent.
+    // Never into the zeros reset() or prime() fed: they are not audio, and the
+    // first onset after them reads as a click whose backward error reaches
+    // back into them - a repair there writes a pre-echo where the stream has
+    // to be silent.
     if (from < m_silentUntil) from = m_silentUntil;
 
     int i = from;
@@ -3434,13 +3446,17 @@ void Channel::processBlock() {
     const int dFrom = (from - order > 0) ? (from - order) : order;
     const int dTo = (to < m_fill - order) ? to : (m_fill - order);
 
+    // The fit stops where drain()'s zeros start: tapered, a window that is half
+    // silence is a poor model of the half that is music.
+    const int fitTo = (m_tailFrom < m_fill) ? m_tailFrom : m_fill;
+
     m_nruns = 0;
     m_flN = 0;
     for (int pass = 0; pass < m_cfg.passes; ++pass) {
         if (dTo <= dFrom) break;
         // Refit each pass: once the worst clicks are gone the model fits the
         // music better, which is the whole point of running more than one.
-        fitModel(0, m_fill);
+        fitModel(0, fitTo);
         if (pass > 0 && m_cfg.rerepair > 0) rerepairRuns();
         // The margin below the block only feeds the noise estimate, which
         // pass 0 alone refreshes; interpolate() never reads below m_pad.
@@ -3451,7 +3467,7 @@ void Channel::processBlock() {
         interpolate(m_pad, (m_pad + blk < dTo) ? (m_pad + blk) : dTo, dTo);
     }
     if (m_cfg.rerepair > 1 && m_nruns > 0) {
-        fitModel(0, m_fill);
+        fitModel(0, fitTo);
         rerepairRuns();
     }
 }
@@ -3547,6 +3563,7 @@ void Channel::pushOne(double v) {
     m_fill -= blk;
     m_fitLen = 0;                 // the next fit is of a different window
     m_silentUntil = (m_silentUntil > blk) ? (m_silentUntil - blk) : 0;
+    if (m_tailFrom < (1 << 30)) m_tailFrom -= blk;
 }
 
 void Channel::emitMixed(double y, double d) {
@@ -4599,8 +4616,16 @@ void Channel::pull(Sample * out, size_t frames, size_t stride) {
     for (size_t i = give; i < frames; ++i) out[i * stride] = (Sample)0;
 }
 
-void Channel::drain() {
+void Channel::feedZeros() {
     for (int i = 0; i < m_cfg.latency; ++i) pushOne(0.0);
+}
+
+void Channel::drain() {
+    if (m_tailFrom > m_fill) m_tailFrom = m_fill;
+    feedZeros();
+    // Every real sample is out. Whatever comes next follows silence.
+    m_tailFrom = 1 << 30;
+    m_silentUntil = m_fill;
 }
 
 template void Channel::push<float>(const float *, size_t, size_t);
