@@ -757,6 +757,70 @@ void testEdges() {
     }
 }
 
+//! What the wrappers rely on when a slider moves under a running stream:
+//! retune() takes effect from the next sample out, without a reset, and
+//! refuses whatever would need other buffers.
+void testRetune() {
+    printf("live retune\n");
+    const double sr = 44100.0;
+    const size_t N = 65536;
+    std::vector<double> dirty(N);
+    Rng rng(17u);
+    for (size_t i = 0; i < N; ++i) {
+        const double t = (double)i / sr;
+        dirty[i] = 0.30 * sin(6.283185307 * 330.0 * t) + 0.01 * rng.centred();
+    }
+    for (size_t i = 2000; i + 16 < N; i += 211 + (rng.next() % 97)) {
+        dirty[i] += 0.3 * rng.centred();
+    }
+
+    Params p = Params::defaults();
+    Config a;
+    a.compute(p, sr);
+    Channel ch;
+    ch.configure(a);
+
+    // Half the stream wet, then Dry/Wet to 0 between two pulls.
+    std::vector<double> out(N, 0.0);
+    size_t got = 0;
+    ch.push(&dirty[0], N / 2, 1);
+    got = ch.available();
+    ch.pull(&out[0], got, 1);
+    p.dryWet = 0.0f;
+    Config b;
+    b.compute(p, sr);
+    if (!ch.retune(b)) {
+        printf("  FAIL  Dry/Wet needs a reconfigure\n");
+        ++g_failures;
+        return;
+    }
+    ch.push(&dirty[N / 2], N - N / 2, 1);
+    ch.drain();
+    ch.pull(&out[got], N - got, 1);
+
+    double before = 0.0, after = 0.0;
+    for (size_t i = 0; i < got; ++i) before = fmax(before, fabs(out[i] - dirty[i]));
+    for (size_t i = got; i < N; ++i) after = fmax(after, fabs(out[i] - dirty[i]));
+    printf("  wet until sample %zu: worst change %.3g; dry after it: %.3g\n", got, before, after);
+    if (!(before > 0.01)) {
+        printf("  FAIL  nothing was repaired before the retune\n");
+        ++g_failures;
+    }
+    if (after != 0.0) {
+        printf("  FAIL  Dry/Wet 0 is not the input, bit for bit, from the next sample out\n");
+        ++g_failures;
+    }
+
+    // Max repair sizes the pipeline: a live move has to be refused.
+    p.maxLengthMs = 2.0f * Params::defaults().maxLengthMs;
+    Config c;
+    c.compute(p, sr);
+    if (c.maxRun == a.maxRun || ch.retune(c)) {
+        printf("  FAIL  retune() took a Max repair move (maxRun %d -> %d)\n", a.maxRun, c.maxRun);
+        ++g_failures;
+    }
+}
+
 } // anonymous namespace
 
 int main() {
@@ -768,6 +832,7 @@ int main() {
     testKernels();
     testDelta();
     testEdges();
+    testRetune();
 
     if (g_failures == 0) { printf("\nOK\n"); return 0; }
     printf("\n%d failure(s)\n", g_failures);
