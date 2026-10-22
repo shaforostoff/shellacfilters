@@ -3980,6 +3980,37 @@ static bool frameQuantile(const std::vector<double> & ring, int S, size_t slot, 
     return g_kernels->frameQuantile(fr, n, nb, p, q);
 }
 
+//! The quantile at p of each of nb bins over the n frames ending at frame f,
+//! in `slot` of a ring of S frames, into q: by frameQuantile() where the
+//! kernels can, else from `srt`, each bin's window kept sorted. That is
+//! rebuilt when the frames start again (`restart`) or the kernels had the
+//! last one, and otherwise moved on a frame by sortedRow(); `live` says
+//! whether it holds the window that ended at the frame before.
+static void windowQuantile(const std::vector<double> & ring, int S, size_t slot, uint64_t f,
+                           int n, int nb, const QuantilePos & p, bool restart,
+                           bool & live, double * srt, double * q) {
+    const size_t nbs = (size_t)nb;
+    if (frameQuantile(ring, S, slot, n, nb, p, q)) {
+        live = false;                   // the windows have fallen behind
+    } else if (restart || !live) {
+        live = true;
+        for (int j = 0; j < n; ++j) {
+            const double * pj = &ring[(size_t)((f - (uint64_t)j) % (uint64_t)S) * nbs];
+            for (int b = 0; b < nb; ++b) srt[(size_t)b * (size_t)n + (size_t)j] = pj[b];
+        }
+        for (int b = 0; b < nb; ++b) {
+            double * w = srt + (size_t)b * (size_t)n;
+            std::sort(w, w + n);
+            q[b] = sortedQuantile(w, p);
+        }
+    } else {
+        const double * gone = &ring[(size_t)((f - (uint64_t)n) % (uint64_t)S) * nbs];
+        g_kernels->sortedRow(srt, n, n, nb, gone, &ring[slot * nbs]);
+        for (int b = 0; b < nb; ++b)
+            q[b] = sortedQuantile(srt + (size_t)b * (size_t)n, p);
+    }
+}
+
 //! The newest frame starts at sample `start` of the stage's input, and the
 //! one cut here m_fD hops before it: its background needs the fineM frames
 //! either side, and the voice guard the m_fW either side. As in bodyHop(),
@@ -4088,28 +4119,9 @@ void Channel::fineHop(uint64_t start) {
     // quantile, into the row of frame f.
     const QuantilePos qp = quantilePos(Mf, m_cfg.fineQ);
     const uint64_t QS = (uint64_t)m_fQSlots;
-    const double * mag = &m_fMag[sl];
-    double * srt = &m_fSorted[1];       // one place of pad either side
     double * qNew = &m_fQ[(size_t)(f % QS) * nbs];
-    if (frameQuantile(m_fMag, S, slot, Mf, nb, qp, qNew)) {
-        m_fSortedLive = false;          // the windows have fallen behind
-    } else if (m_fHist == Mf || !m_fSortedLive) {
-        m_fSortedLive = true;
-        for (int j = 0; j < Mf; ++j) {
-            const double * pj = &m_fMag[(size_t)((f - (uint64_t)j) % (uint64_t)S) * nbs];
-            for (int b = 0; b < nb; ++b) srt[(size_t)b * (size_t)Mf + (size_t)j] = pj[b];
-        }
-        for (int b = 0; b < nb; ++b) {
-            double * w = srt + (size_t)b * (size_t)Mf;
-            std::sort(w, w + Mf);
-            qNew[b] = sortedQuantile(w, qp);
-        }
-    } else {
-        const double * gone = &m_fMag[(size_t)((f - (uint64_t)Mf) % (uint64_t)S) * nbs];
-        g_kernels->sortedRow(srt, Mf, Mf, nb, gone, mag);
-        for (int b = 0; b < nb; ++b)
-            qNew[b] = sortedQuantile(srt + (size_t)b * (size_t)Mf, qp);
-    }
+    windowQuantile(m_fMag, S, slot, f, Mf, nb, qp, m_fHist == Mf, m_fSortedLive,
+                   &m_fSorted[1], qNew);       // one place of pad either side
     if (m_fHist < 2 * D + 1) return;
 
     // The cut frame c = f - D. After it, the window ending at c + fineM;
@@ -4254,28 +4266,9 @@ void Channel::microHop(uint64_t start) {
 
     const QuantilePos qp = quantilePos(Mm, m_cfg.microQ);
     const uint64_t QS = (uint64_t)m_mQSlots;
-    const double * mag = &m_mMag[sl];
-    double * srt = &m_mSorted[1];
     double * qNew = &m_mQ[(size_t)(f % QS) * nbs];
-    if (frameQuantile(m_mMag, S, slot, Mm, nb, qp, qNew)) {
-        m_mSortedLive = false;          // as the fine stage's
-    } else if (m_mHist == Mm || !m_mSortedLive) {
-        m_mSortedLive = true;
-        for (int j = 0; j < Mm; ++j) {
-            const double * pj = &m_mMag[(size_t)((f - (uint64_t)j) % (uint64_t)S) * nbs];
-            for (int b = 0; b < nb; ++b) srt[(size_t)b * (size_t)Mm + (size_t)j] = pj[b];
-        }
-        for (int b = 0; b < nb; ++b) {
-            double * w = srt + (size_t)b * (size_t)Mm;
-            std::sort(w, w + Mm);
-            qNew[b] = sortedQuantile(w, qp);
-        }
-    } else {
-        const double * gone = &m_mMag[(size_t)((f - (uint64_t)Mm) % (uint64_t)S) * nbs];
-        g_kernels->sortedRow(srt, Mm, Mm, nb, gone, mag);
-        for (int b = 0; b < nb; ++b)
-            qNew[b] = sortedQuantile(srt + (size_t)b * (size_t)Mm, qp);
-    }
+    windowQuantile(m_mMag, S, slot, f, Mm, nb, qp, m_mHist == Mm, m_mSortedLive,
+                   &m_mSorted[1], qNew);       // one place of pad either side
     if (m_mHist < 2 * D + 1) return;
 
     const uint64_t c = f - (uint64_t)D;
