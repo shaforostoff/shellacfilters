@@ -140,7 +140,7 @@ VstInt32 Declick::getGetTailSize()
 
 VstInt32 Declick::getChunk (void** data, bool isPreset)
 {
-	float *chunkData = (float *)calloc(kNumParameters, sizeof(float));
+	float *chunkData = chunk;
 	chunkData[0] = A;
 	chunkData[1] = B;
 	chunkData[2] = C;
@@ -182,7 +182,7 @@ void Declick::setParameter(VstInt32 index, float value) {
         case kParamE: E = value; break;
         case kParamF: F = value; break;
         case kParamG: G = value; break;
-        default: throw; // unknown parameter, shouldn't happen!
+        default: break;
     }
 	//no work here: updateConfig() picks the change up on the audio thread,
 	//where it can tell a live retune from a rebuild

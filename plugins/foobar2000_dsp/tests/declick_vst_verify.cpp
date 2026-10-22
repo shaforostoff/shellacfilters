@@ -418,7 +418,6 @@ void testChunk() {
     bool same = true;
     for (int i = 0; i < kNumParameters; ++i) if (b.getParameter(i) != vals[i]) same = false;
     check(same, "every parameter survives a chunk round trip");
-    free(blob);
 
     // Out-of-range values in a stored preset must be pinned, not trusted.
     Declick c(hostCallback);

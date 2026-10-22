@@ -74,6 +74,7 @@ private:
     float E;
     float F;
     float G;
+    float chunk[kNumParameters];   //!< what getChunk() hands the host, which never frees it
 
 	//A..G are the host's 0..1 sliders; these turn them into the core's units,
 	//and reconfigure or retune the two channels when anything actually moved.
