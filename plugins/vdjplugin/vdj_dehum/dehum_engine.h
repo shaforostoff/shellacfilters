@@ -39,7 +39,7 @@ public:
     // -- identity ------------------------------------------------------------
 
     static const char * pluginName() { return "Dehum"; }
-    static const char * pluginVersion() { return "1.1.0"; }
+    static const char * pluginVersion() { return "1.1.1"; }
     static const char * pluginDescription() {
         return "Finds continuous narrowband tones - mains hum, its harmonics, and "
                "the off-frequency drones on speed-corrected disc transfers - "

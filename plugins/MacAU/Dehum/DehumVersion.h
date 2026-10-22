@@ -46,7 +46,7 @@
 #ifdef DEBUG
 	#define kDehumVersion 0xFFFFFFFF
 #else
-	#define kDehumVersion 0x00010100
+	#define kDehumVersion 0x00010101
 #endif
 
 //~~~~~~~~~~~~~~  Change!!! ~~~~~~~~~~~~~~~~~~~~~//

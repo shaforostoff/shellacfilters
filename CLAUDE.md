@@ -10,7 +10,7 @@ Fork of Airwindows trimmed to four plugins: Declick, Dehum, ParaEQ, DeCrackle. W
 - `docs/`: study notes (alignment, crackle, hard cases). Read only when the task is about that study.
 
 ## Rules
-- Versions: Declick 1.1.1, Dehum 1.1.0. A bump touches VST `kVersion`, AU version header and plists, foobar2000 `version.h`, vdjplugin `declick_engine.h`, `CMakeLists.txt` and the NSIS script.
+- Versions: Declick 1.1.1, Dehum 1.1.1. A bump touches VST `kVersion`, AU version header and plists, foobar2000 `version.h`, vdjplugin `declick_engine.h`, `CMakeLists.txt` and the NSIS script.
 - Target hardware is a 2014 MacBook Air; keep DSP CPU cost low.
 - Hosts can read the whole track; never give up the first seconds for warm-up.
 - Tuning is judged by ear; prefer less music taken over a few clicks left.
