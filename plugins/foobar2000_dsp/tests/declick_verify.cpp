@@ -201,28 +201,37 @@ std::vector<double> runChannel(const std::vector<double> & in, const Params & p,
     std::vector<double> out;
     out.reserve(in.size());
     const size_t CHUNK = 257;                      // deliberately not a power of two
-    std::vector<double> buf(CHUNK);
+    double buf[CHUNK];
+    const auto pullAll = [&]() {
+        for (size_t avail; (avail = ch.available()) > 0; ) {
+            const size_t t = (avail < CHUNK) ? avail : CHUNK;
+            ch.pull(buf, t, 1);
+            out.insert(out.end(), buf, buf + t);
+        }
+    };
     for (size_t pos = 0; pos < in.size(); pos += CHUNK) {
         const size_t k = (in.size() - pos < CHUNK) ? (in.size() - pos) : CHUNK;
         ch.push(&in[pos], k, 1);
-        size_t avail = ch.available();
-        while (avail > 0) {
-            const size_t t = (avail < CHUNK) ? avail : CHUNK;
-            ch.pull(&buf[0], t, 1);
-            out.insert(out.end(), buf.begin(), buf.begin() + (ptrdiff_t)t);
-            avail = ch.available();
-        }
+        pullAll();
     }
     ch.drain();
-    size_t avail = ch.available();
-    while (avail > 0) {
-        const size_t t = (avail < CHUNK) ? avail : CHUNK;
-        ch.pull(&buf[0], t, 1);
-        out.insert(out.end(), buf.begin(), buf.begin() + (ptrdiff_t)t);
-        avail = ch.available();
-    }
+    pullAll();
     out.resize(in.size(), 0.0);
     return out;
+}
+
+//! A 330 Hz tone over a floor, with a click every 211 .. 307 samples.
+std::vector<double> clickedTone(size_t N, double sr, uint32_t seed) {
+    std::vector<double> x(N);
+    Rng rng(seed);
+    for (size_t i = 0; i < N; ++i) {
+        const double t = (double)i / sr;
+        x[i] = 0.30 * sin(6.283185307 * 330.0 * t) + 0.01 * rng.centred();
+    }
+    for (size_t i = 2000; i + 16 < N; i += 211 + (rng.next() % 97)) {
+        x[i] += 0.3 * rng.centred();
+    }
+    return x;
 }
 
 double rms(const std::vector<double> & v, size_t from, size_t to) {
@@ -583,16 +592,7 @@ void testDelta() {
     printf("delta output\n");
     const double sr = 44100.0;
     const size_t N = 32768;
-
-    std::vector<double> dirty(N);
-    Rng rng(91u);
-    for (size_t i = 0; i < N; ++i) {
-        const double t = (double)i / sr;
-        dirty[i] = 0.30 * sin(6.283185307 * 330.0 * t) + 0.01 * rng.centred();
-    }
-    for (size_t i = 2000; i + 16 < N; i += 211 + (rng.next() % 97)) {
-        dirty[i] += 0.3 * rng.centred();
-    }
+    const std::vector<double> dirty = clickedTone(N, sr, 91u);
 
     const float wets[2] = { 1.0f, 0.6f };
     for (int k = 0; k < 2; ++k) {
@@ -682,15 +682,7 @@ void testRetune() {
     printf("live retune\n");
     const double sr = 44100.0;
     const size_t N = 65536;
-    std::vector<double> dirty(N);
-    Rng rng(17u);
-    for (size_t i = 0; i < N; ++i) {
-        const double t = (double)i / sr;
-        dirty[i] = 0.30 * sin(6.283185307 * 330.0 * t) + 0.01 * rng.centred();
-    }
-    for (size_t i = 2000; i + 16 < N; i += 211 + (rng.next() % 97)) {
-        dirty[i] += 0.3 * rng.centred();
-    }
+    const std::vector<double> dirty = clickedTone(N, sr, 17u);
 
     Params p = Params::defaults();
     Config a;

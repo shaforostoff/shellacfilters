@@ -38,6 +38,7 @@
  * ======================================== */
 
 #include "Declick.h"
+#include "declick_wrapper_test.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -48,22 +49,7 @@
 
 namespace {
 
-//! What the plug-in opens on: the core's defaults, order 128 included. The
-//! slider runs 16 .. 256 in eights, and the default position lands on 128.
-declick::Params wrapperDefaults() {
-    return declick::Params::defaults();
-}
-
-int g_failures = 0;
 bool g_silenceCleared = true;
-
-void check(bool ok, const char * what, const char * detail = "") {
-    printf("  %-52s %-4s %s\n", what, ok ? "ok" : "FAIL", detail);
-    if (!ok) ++g_failures;
-}
-
-const int kRate = 44100;
-const int kFrames = 60000;
 
 //! What "silent" means in a dithered 32 bit float format. The house dither is
 //! added to a zero sample too - frexpf(0) reports exponent 0, so the noise
@@ -71,43 +57,6 @@ const int kFrames = 60000;
 //! emits is ever exactly zero and a test that asks for exactly zero is asking
 //! the wrong question. Measured peak on a silent stretch is 5.4e-08.
 const double kSilenceFloor = 1.2e-7;    // one ULP of 1.0f
-
-//! Deterministic, so a failure is reproducible.
-struct Rng {
-    uint32_t s;
-    explicit Rng(uint32_t seed) : s(seed ? seed : 1u) {}
-    double centred() { s ^= s << 13; s ^= s >> 17; s ^= s << 5;
-                       return (double)s / 4294967296.0 - 0.5; }
-};
-
-//! Tones over a surface-noise floor, optionally with clicks at known places.
-//! The floor is not decoration: the detector thresholds against a robust
-//! estimate of its own scale, and on noiseless synthetic material that estimate
-//! collapses towards its floor and everything reads as tens of sigmas.
-void makeSignal(std::vector<float> & l, std::vector<float> & r,
-                std::vector<int> & clickAt, int n, bool withClicks) {
-    l.assign((size_t)n, 0.0f);
-    r.assign((size_t)n, 0.0f);
-    clickAt.clear();
-    Rng rng(2463534242u);
-    for (int i = 0; i < n; ++i) {
-        const double t = (double)i / (double)kRate;
-        const double v = 0.30 * sin(6.283185307179586 * 220.0 * t)
-                       + 0.15 * sin(6.283185307179586 * 661.0 * t)
-                       + 0.07 * sin(6.283185307179586 * 1237.0 * t);
-        l[(size_t)i] = (float)(v + rng.centred() * 2.0e-3);   // about -60 dBFS
-        r[(size_t)i] = (float)(v * 0.8 + rng.centred() * 2.0e-3);
-    }
-    if (!withClicks) return;
-    for (int i = 4000; i < n - 4000; i += 3001) {
-        clickAt.push_back(i);
-        for (int k = 0; k < 4; ++k) {
-            const float s = (k & 1) ? -0.55f : 0.75f;
-            l[(size_t)(i + k)] += s;
-            r[(size_t)(i + k)] += s;
-        }
-    }
-}
 
 //! One render call, wired the way a host wires one.
 void render(Declick & fx, float * inL, float * inR, float * outL, float * outR, int frames) {
