@@ -2539,39 +2539,14 @@ void Channel::endWarm() {
 //! floor ceiling. The caller has checked that the ceilings are one size.
 template <class To, class From>
 void Channel::copyWarm(To & to, const From & w) {
-    to.m_cRuns = w.m_cRuns;
-    to.m_cSamp = w.m_cSamp;
-    std::copy(w.m_cRing, w.m_cRing + kCarpetMax, to.m_cRing);
-    to.m_cPos = w.m_cPos;
-    to.m_cHave = w.m_cHave;
-    to.m_cKey = w.m_cKey;
-    to.m_cTotRuns = w.m_cTotRuns;
-    to.m_cTotSamp = w.m_cTotSamp;
-    to.m_cBin = w.m_cBin;
-    to.m_cBinBlk = w.m_cBinBlk;
-    to.m_cS1 = w.m_cS1;
-    to.m_cS2 = w.m_cS2;
-    to.m_cBinN = w.m_cBinN;
-    to.m_cTotS1 = w.m_cTotS1;
-    to.m_cTotS2 = w.m_cTotS2;
-    to.m_cTotBinN = w.m_cTotBinN;
-    std::copy(w.m_cFRing, w.m_cFRing + kCarpetMax, to.m_cFRing);
+    to.m_c = w.m_c;
     to.m_warmBlocks = w.m_warmBlocks;
     to.m_nWarmT = w.m_nWarmT;
     std::copy(w.m_nWarm.begin(), w.m_nWarm.end(), to.m_nWarm.begin());
 }
 
-//! From another channel. "Taken nothing since" is m_seen, which resetPath()
-//! zeroes and every sample pushed counts.
-bool Channel::adoptWarm(const Channel & w) {
-    if (&w == this) return false;      // reset() would lose what there is to copy
-    reset();
-    if (w.m_warming || w.m_seen != 0 || !m_cfg.structurallyEquals(w.m_cfg)
-        || m_nWarm.size() != w.m_nWarm.size()) return false;
-    copyWarm(*this, w);
-    return true;
-}
-
+//! "Taken nothing since" is m_seen, which resetPath() zeroes and every
+//! sample pushed counts.
 bool Channel::saveWarm(WarmState & s) const {
     s.m_valid = false;
     if (m_warming || m_seen != 0) return false;
@@ -2682,19 +2657,7 @@ void Channel::resetPath() {
 }
 
 void Channel::resetCarpet() {
-    m_cRuns = 0.0;
-    m_cSamp = 0.0;
-    std::fill(m_cRing, m_cRing + kCarpetMax, 0.0);
-    m_cPos = 0;
-    m_cHave = 0;
-    m_cKey = 0.0;
-    m_cTotRuns = 0.0;
-    m_cTotSamp = 0.0;
-    m_cBin = 0.0;
-    m_cBinBlk = 0;
-    m_cS1 = m_cS2 = m_cBinN = 0.0;
-    m_cTotS1 = m_cTotS2 = m_cTotBinN = 0.0;
-    std::fill(m_cFRing, m_cFRing + kCarpetMax, 0.0);
+    m_c = Carpet();
 }
 
 void Channel::resetFloorHistory() {
@@ -3176,7 +3139,7 @@ void Channel::flankPass() {
     }
     // And at least the carpet key; see Config::carpet. With the key shut that
     // is 0, which changes nothing.
-    strength = dmax(strength, m_cKey);
+    strength = dmax(strength, m_c.key);
     if (n == 0 || P <= 0 || !(strength > 0.0)) return;
     int * ord = &m_flOrder[0];
     for (int k = 0; k < n; ++k) {             // a few dozen at most, mostly in order
@@ -3367,7 +3330,7 @@ void Channel::pushOne(double v) {
     }
     if (m_cfg.carpet) {
         if (fresh) carpetBlock();
-        if (m_cKey > 0.0) ++m_cOpen;
+        if (m_c.key > 0.0) ++m_cOpen;
     }
 
     const int Q = m_cfg.flankStage;
@@ -3517,7 +3480,7 @@ static void sortedTake(double * m, int n, double out) {
 //! cost is the sorted history, not the transforms). Only what is taken out is
 //! transformed back. See Config::crackleFloor.
 void Channel::crackleFloorHop(uint64_t start) {
-    const double key = dmax(m_bBeta, m_cKey);
+    const double key = dmax(m_bBeta, m_c.key);
     const bool open = key > 0.0;
     const bool late = (double)start >= 2.0 * m_cfg.rate;
     const int W = m_cfg.crackleFloorHist;
@@ -3778,69 +3741,69 @@ double Channel::bodyKey() const {
 //! values either side, on the ramp. Twenty numbers sorted once a second, on the
 //! stack.
 void Channel::carpetBlock() {
-    m_cRuns += m_cBlk;
-    m_cSamp += (double)kBlock;
-    m_cTotRuns += m_cBlk;
-    m_cTotSamp += (double)kBlock;
+    m_c.runs += m_cBlk;
+    m_c.samp += (double)kBlock;
+    m_c.totRuns += m_cBlk;
+    m_c.totSamp += (double)kBlock;
     // The Poisson key's bins: each finished bin's count into the sums, the
     // second's and the stream's.
     if (m_cfg.carpetFano) {
-        m_cBin += (double)m_cBlk;
-        if (++m_cBinBlk >= m_cfg.fanoBlocks) {
-            m_cS1 += m_cBin;
-            m_cS2 += m_cBin * m_cBin;
-            m_cBinN += 1.0;
-            m_cTotS1 += m_cBin;
-            m_cTotS2 += m_cBin * m_cBin;
-            m_cTotBinN += 1.0;
-            m_cBin = 0.0;
-            m_cBinBlk = 0;
+        m_c.bin += (double)m_cBlk;
+        if (++m_c.binBlk >= m_cfg.fanoBlocks) {
+            m_c.s1 += m_c.bin;
+            m_c.s2 += m_c.bin * m_c.bin;
+            m_c.binN += 1.0;
+            m_c.totS1 += m_c.bin;
+            m_c.totS2 += m_c.bin * m_c.bin;
+            m_c.totBinN += 1.0;
+            m_c.bin = 0.0;
+            m_c.binBlk = 0;
         }
     }
     // Before carpetMin seconds are in, from carpetFirst on: the rate over
     // everything seen so far, against the thresholds at their warmest; and
     // from fanoFirst on, the runs' Fano factor over it too.
-    if (m_cfg.carpetFirst > 0.0 && m_cHave < m_cfg.carpetMin
-        && m_cTotSamp >= m_cfg.carpetFirst * m_cfg.rate) {
-        const double K = m_cTotRuns * 44100.0 / m_cTotSamp;
+    if (m_cfg.carpetFirst > 0.0 && m_c.have < m_cfg.carpetMin
+        && m_c.totSamp >= m_cfg.carpetFirst * m_cfg.rate) {
+        const double K = m_c.totRuns * 44100.0 / m_c.totSamp;
         const double wf = 1.0 + m_cfg.carpetWarm;
         double key = carpetRamp(K, wf);
-        if (m_cTotSamp >= m_cfg.fanoFirst * m_cfg.rate)
-            key = dmax(key, fanoKey(K, fanoOf(m_cTotS1, m_cTotS2, m_cTotBinN), wf));
-        m_cKey = key;
+        if (m_c.totSamp >= m_cfg.fanoFirst * m_cfg.rate)
+            key = dmax(key, fanoKey(K, fanoOf(m_c.totS1, m_c.totS2, m_c.totBinN), wf));
+        m_c.key = key;
     }
-    if (m_cSamp < m_cfg.rate) return;
+    if (m_c.samp < m_cfg.rate) return;
     const int W = m_cfg.carpetWin;
-    m_cRing[m_cPos] = m_cRuns * 44100.0 / m_cSamp;
-    m_cFRing[m_cPos] = fanoOf(m_cS1, m_cS2, m_cBinN);
-    if (++m_cPos >= W) m_cPos = 0;
-    if (m_cHave < W) ++m_cHave;
-    m_cRuns = 0.0;
-    m_cSamp = 0.0;
-    m_cS1 = m_cS2 = m_cBinN = 0.0;
-    if (m_cHave < m_cfg.carpetMin) return;
+    m_c.ring[m_c.pos] = m_c.runs * 44100.0 / m_c.samp;
+    m_c.fRing[m_c.pos] = fanoOf(m_c.s1, m_c.s2, m_c.binN);
+    if (++m_c.pos >= W) m_c.pos = 0;
+    if (m_c.have < W) ++m_c.have;
+    m_c.runs = 0.0;
+    m_c.samp = 0.0;
+    m_c.s1 = m_c.s2 = m_c.binN = 0.0;
+    if (m_c.have < m_cfg.carpetMin) return;
     double v[kCarpetMax];
-    for (int k = 0; k < m_cHave; ++k) v[k] = m_cRing[k];
-    std::sort(v, v + m_cHave);
-    const double qp = m_cfg.carpetQ * (double)(m_cHave - 1);
+    for (int k = 0; k < m_c.have; ++k) v[k] = m_c.ring[k];
+    std::sort(v, v + m_c.have);
+    const double qp = m_cfg.carpetQ * (double)(m_c.have - 1);
     const int lo = (int)floor(qp);
     const double fr = qp - lo;
-    const double K = (lo + 1 < m_cHave) ? v[lo] + fr * (v[lo + 1] - v[lo]) : v[lo];
+    const double K = (lo + 1 < m_c.have) ? v[lo] + fr * (v[lo + 1] - v[lo]) : v[lo];
     // Less history, more evidence asked: the thresholds start carpetWarm
     // higher and come down to their own as the ring fills.
-    const double wf = 1.0 + m_cfg.carpetWarm * (double)(W - m_cHave) / (double)W;
+    const double wf = 1.0 + m_cfg.carpetWarm * (double)(W - m_c.have) / (double)W;
     double key = carpetRamp(K, wf);
     if (m_cfg.carpetFano) {
         // The median of the seconds' Fano factors, as K is taken of the rates.
-        for (int k = 0; k < m_cHave; ++k) v[k] = m_cFRing[k];
-        std::sort(v, v + m_cHave);
-        const double fp = 0.5 * (double)(m_cHave - 1);
+        for (int k = 0; k < m_c.have; ++k) v[k] = m_c.fRing[k];
+        std::sort(v, v + m_c.have);
+        const double fp = 0.5 * (double)(m_c.have - 1);
         const int fl = (int)floor(fp);
         const double ff = fp - fl;
-        const double F = (fl + 1 < m_cHave) ? v[fl] + ff * (v[fl + 1] - v[fl]) : v[fl];
+        const double F = (fl + 1 < m_c.have) ? v[fl] + ff * (v[fl + 1] - v[fl]) : v[fl];
         key = dmax(key, fanoKey(K, F, wf));
     }
-    m_cKey = key;
+    m_c.key = key;
 }
 
 double Channel::carpetRamp(double K, double wf) const {
@@ -4066,7 +4029,7 @@ void Channel::fineHop(uint64_t start) {
     const size_t mask = m_bMask;
     // The carpet key opens this stage, and only this one, where the body key
     // is shut; see Config::carpet.
-    const double beta = (m_fNb > 0) ? dmax(m_bBeta, m_cKey) : 0.0;
+    const double beta = (m_fNb > 0) ? dmax(m_bBeta, m_c.key) : 0.0;
     if (beta <= 0.0) {
         m_fHist = 0;           // the history has a hole; start it again
         return;
@@ -4242,7 +4205,7 @@ void Channel::microHop(uint64_t start) {
     const int N = m_mN, H = m_mH, nb = m_mNb, S = m_mSlots, Mm = m_cfg.microM;
     const int D = Mm;
     const size_t mask = m_bMask;
-    const double beta = (nb > 0) ? dmax(m_bBeta, m_cKey) : 0.0;
+    const double beta = (nb > 0) ? dmax(m_bBeta, m_c.key) : 0.0;
     if (beta <= 0.0) {
         m_mHist = 0;
         return;

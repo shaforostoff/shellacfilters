@@ -794,38 +794,10 @@ int main() {
             requireSame("... right channel", rig.out[1], warmReference(cfg, x, 1, 0, 0, T));
         }
 
-        // --- the warm start on another channel: Channel::adoptWarm() -------
-        //
-        // VirtualDJ's wrapper warms a channel of its own on a worker thread
-        // and starts the stream on its live one at every restart, at the top
-        // of the record or anywhere in it. The live channel has been playing
-        // something else entirely; once it has adopted, the stream must come
-        // out as the warmed channel's own would, to the bit, and the adoption
-        // must not allocate.
-        printf("\n");
-        Channel warmed[2];
-        for (unsigned c = 0; c < 2; ++c) {
-            warmed[c].configure(cfg);
-            warmOn(warmed[c], x, c, 0, W);
-        }
         const size_t at = (size_t)R * 9, S = (size_t)R * 6;
-        for (int where = 0; where < 2; ++where) {
-            const size_t from = where ? at : 0;
-            for (unsigned c = 0; c < 2; ++c) {
-                Channel live;
-                live.configure(cfg);
-                streamOut(live, x, 1 - c, (size_t)R * 2, (size_t)R * 3);   // something else
-                arm();
-                const bool took = live.adoptWarm(warmed[c]);
-                requireQuiet(where ? "adoptWarm(), then the stream from 9 s"
-                                   : "adoptWarm(), then the stream from the top");
-                if (!took) { printf("  FAIL  adoptWarm() refused a finished warm pass\n"); ++g_failures; }
-                requireSame(c ? "... right channel" : "... left channel against the core's warm start",
-                            streamOut(live, x, c, from, S), warmReferenceAt(cfg, x, c, 0, from, W, S));
-            }
-        }
-        // The cold restart it replaces, so that the comparison above is one a
-        // warm start can fail: at 9 s the cold stream is not the warm one.
+        // The cold restart a warm one replaces, so that the comparisons below
+        // are ones a warm start can fail: at 9 s the cold stream is not the
+        // warm one.
         {
             Channel cold;
             cold.configure(cfg);
@@ -837,36 +809,7 @@ int main() {
                    diff > 0 ? "ok" : "FAIL", diff);
             if (diff == 0) ++g_failures;
         }
-        // What it refuses, leaving the channel reset: a channel that has taken
-        // audio since its warm pass, one in the middle of it, and one of
-        // another shape. Each must then stream as a cold start would.
-        {
-            Channel used, mid, other, live;
-            used.configure(cfg);
-            warmOn(used, x, 0, 0, W);
-            streamOut(used, x, 0, 0, 4096);
-            mid.configure(cfg);
-            mid.beginWarm();
-            other.configure(c64);
-            warmOn(other, x, 0, 0, W);
-            live.configure(cfg);
-            const Channel * bad[3] = { &used, &mid, &other };
-            const char * what[3] = { "adoptWarm() refuses a channel that has streamed since",
-                                     "... one still in its warm pass",
-                                     "... one of another shape" };
-            const std::vector<double> cold = warmReferenceAt(cfg, x, 0, 0, 0, 0, S);
-            for (int k = 0; k < 3; ++k) {
-                streamOut(live, x, 1, (size_t)R * 2, (size_t)R);
-                const bool took = live.adoptWarm(*bad[k]);
-                const std::vector<double> got = streamOut(live, x, 0, 0, S);
-                const bool ok = !took && got == cold;
-                printf("  %-50s %-4s %s\n", what[k], ok ? "ok" : "FAIL",
-                       took ? "took it" : (got == cold ? "and starts cold" : "but does not start cold"));
-                if (!ok) ++g_failures;
-            }
-        }
-
-        // --- ... and from a saved state: Channel::saveWarm(), WarmState ---
+        // --- the warm start on another channel: saveWarm(), adoptWarm() --
         //
         // VirtualDJ's wrapper goes on streaming the channel it warmed - it
         // catches it up with the play head and swaps it in - so the restarts

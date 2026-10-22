@@ -720,6 +720,28 @@ template <class T> struct CacheAlignedAlloc {
 
 class Channel;
 
+//! The carpet key's state; see Config::carpet. Runs at carpetPeak sigma in
+//! the second being counted, with the samples they have spanned so far, and
+//! since the start, for carpetFirst; the last carpetWin seconds' rates, as a
+//! ring; the key. Then the Poisson key's (see Config::carpetFano): the bin
+//! being counted and its blocks so far; the sums of the finished bins'
+//! counts and their squares, over the second being counted and since the
+//! start; each second's Fano factor, beside `ring`. Fixed arrays: twenty
+//! numbers a second need no allocation. All of it is what a warm pass keeps
+//! of the key, so a warm start copies it whole.
+struct Carpet {
+    double runs = 0.0, samp = 0.0;
+    double totRuns = 0.0, totSamp = 0.0;
+    double ring[kCarpetMax] = {};
+    int    pos = 0, have = 0;
+    double key = 0.0;
+    double bin = 0.0;
+    int    binBlk = 0;
+    double s1 = 0.0, s2 = 0.0, binN = 0.0;
+    double totS1 = 0.0, totS2 = 0.0, totBinN = 0.0;
+    double fRing[kCarpetMax] = {};
+};
+
 //! What a warm pass keeps (see Channel::beginWarm()), held apart from the
 //! channel that ran it: Channel::saveWarm() fills it, Channel::adoptWarm()
 //! starts a channel from it as from the warmed channel itself. For a host
@@ -739,16 +761,7 @@ private:
     friend class Channel;
     bool   m_valid = false;
     Config m_cfg;
-    double m_cRuns = 0.0, m_cSamp = 0.0;
-    double m_cTotRuns = 0.0, m_cTotSamp = 0.0;
-    double m_cRing[kCarpetMax] = {};
-    int    m_cPos = 0, m_cHave = 0;
-    double m_cKey = 0.0;
-    double m_cBin = 0.0;
-    int    m_cBinBlk = 0;
-    double m_cS1 = 0.0, m_cS2 = 0.0, m_cBinN = 0.0;
-    double m_cTotS1 = 0.0, m_cTotS2 = 0.0, m_cTotBinN = 0.0;
-    double m_cFRing[kCarpetMax] = {};
+    Carpet m_c;
     uint64_t m_warmBlocks = 0;
     uint64_t m_nWarmT = 0;
     std::vector<double> m_nWarm;
@@ -887,33 +900,25 @@ public:
     void beginWarm();
     void endWarm();
 
-    //! The warm start, run on another channel: reset(), then what `warmed`'s
-    //! warm pass kept - the carpet key and the crackle floor ceiling - copied
-    //! in. For a host whose audio thread cannot afford the warm pass
-    //! (VirtualDJ's): it warms a channel of its own on a worker thread, and
-    //! starts the stream on this one at each restart. From where the warm
-    //! pass started, the stream then comes out as `warmed`'s own would, to
-    //! the bit; from anywhere else, it starts there with the key and the
-    //! ceiling of those seconds, standing still for as long as they did.
-    //!
-    //! `warmed` must have ended its warm pass and taken nothing since, with
-    //! a config that structurallyEquals() this one's; otherwise this is
-    //! reset() and returns false. `warmed` is not changed, and can be adopted
-    //! from again. Does not allocate.
-    bool adoptWarm(const Channel & warmed);
-
-    //! What adoptWarm() would take from this channel, into `s`, so that this
-    //! one can go on streaming and others still start warm from the pass
-    //! afterwards. Same conditions as adoptWarm()'s `warmed`; otherwise `s`
-    //! is cleared and this returns false. Allocates only when `s` has not held
-    //! a state of this config's shape before: a host that must not saves once
-    //! at configure(), from the freshly configured channel, and clears it.
+    //! The warm start, run on another channel: what this channel's warm pass
+    //! kept - the carpet key and the crackle floor ceiling - into `s`, for
+    //! adoptWarm() to start other channels from. For a host whose audio
+    //! thread cannot afford the warm pass (VirtualDJ's): it warms a channel
+    //! of its own on a worker thread, saves the pass, and starts the stream
+    //! from it at each restart, while the warmed channel streams on. This
+    //! channel must have ended its warm pass and taken nothing since;
+    //! otherwise `s` is cleared and this returns false. Allocates only when
+    //! `s` has not held a state of this config's shape before: a host that
+    //! must not saves once at configure(), from the freshly configured
+    //! channel, and clears it.
     bool saveWarm(WarmState & s) const;
 
-    //! adoptWarm() from a saved state: from where the pass started, to the
-    //! bit what the warmed channel itself would have streamed. A state that
-    //! is not valid() or of another shape is reset() and false. Does not
-    //! allocate.
+    //! reset(), then what `s` holds copied in. From where the warm pass
+    //! started, the stream then comes out as the warmed channel's own would,
+    //! to the bit; from anywhere else, it starts there with the key and the
+    //! ceiling of those seconds, standing still for as long as they did. A
+    //! state that is not valid(), or whose config does not structurallyEquals()
+    //! this one's, is reset() and false. Does not allocate.
     bool adoptWarm(const WarmState & s);
 
     const Config & config() const { return m_cfg; }
@@ -941,7 +946,7 @@ public:
     //! Diagnostics for the carpet key: repair blocks it was open in, and its
     //! value now, 0..1. See Config::carpet.
     uint64_t carpetOpenBlocks() const { return m_cOpen; }
-    double carpetKey() const { return m_cKey; }
+    double carpetKey() const { return m_c.key; }
 
     //! Diagnostics for the micro stage: frames it took something from. See
     //! Config::micro.
@@ -1269,25 +1274,10 @@ private:
     double m_bBeta = 0.0;
 
     //! The carpet key; see Config::carpet. Runs at carpetPeak sigma in this
-    //! repair block, and in the second being counted with the samples it has
-    //! spanned so far; the last carpetWin seconds' rates, as a ring; the key.
-    //! A fixed array: twenty numbers a second need no allocation.
+    //! repair block; the key's state; repair blocks it was open in.
     int    m_cBlk = 0;
-    double m_cRuns = 0.0, m_cSamp = 0.0;
-    double m_cTotRuns = 0.0, m_cTotSamp = 0.0;   //!< since the start, for carpetFirst
-    double m_cRing[kCarpetMax];
-    int    m_cPos = 0, m_cHave = 0;
-    double m_cKey = 0.0;
+    Carpet m_c;
     uint64_t m_cOpen = 0;
-    //! The Poisson key; see Config::carpetFano. The bin being counted and its
-    //! blocks so far; the sums of the finished bins' counts and their squares,
-    //! over the second being counted and since the start; each second's Fano
-    //! factor, beside m_cRing.
-    double m_cBin = 0.0;
-    int    m_cBinBlk = 0;
-    double m_cS1 = 0.0, m_cS2 = 0.0, m_cBinN = 0.0;
-    double m_cTotS1 = 0.0, m_cTotS2 = 0.0, m_cTotBinN = 0.0;
-    double m_cFRing[kCarpetMax];
 
     //! The crackle floor stage; see Config::crackleFloor. Rings of the finished
     //! audio (m_nY), its dry counterpart (m_nD) and what the stage removes
