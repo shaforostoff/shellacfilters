@@ -66,7 +66,7 @@ below, and a `.dll` for a DAW is not a foobar2000 component):
 | File | What it is |
 | --- | --- |
 | `foo_dsp_decrackle-1.0.0.fb2k-component` | Installable component, both architectures in one file |
-| `foo_dsp_declick-1.1.0.fb2k-component` | Same, for the declicker |
+| `foo_dsp_declick-1.1.1.fb2k-component` | Same, for the declicker |
 | `foo_dsp_dehum-1.1.0.fb2k-component` | Same, for the dehummer |
 | `*-symbols.zip` | PDBs — keep these, they are what makes a foobar2000 crash report readable |
 
@@ -139,7 +139,7 @@ define.
 #### Checking a binary on its own
 
 ```powershell
-.\scripts\check_win7.ps1 ..\dist\foo_dsp_declick-1.1.0.fb2k-component
+.\scripts\check_win7.ps1 ..\dist\foo_dsp_declick-1.1.1.fb2k-component
 ```
 
 Takes DLLs, directories or `.fb2k-component` archives, and reports anything
