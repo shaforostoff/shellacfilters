@@ -467,8 +467,8 @@ void Channel::configure(const Config & cfg) {
     m_taper.assign((size_t)N, 0.0);
     m_fftRe.assign((size_t)M, 0.0);
     m_fftIm.assign((size_t)M, 0.0);
-    m_twRe.assign((size_t)(M / 2 > 0 ? M / 2 : 1), 0.0);
-    m_twIm.assign((size_t)(M / 2 > 0 ? M / 2 : 1), 0.0);
+    m_twRe.assign((size_t)(M > 1 ? M - 1 : 1), 0.0);
+    m_twIm.assign((size_t)(M > 1 ? M - 1 : 1), 0.0);
     m_rev.assign((size_t)M, 0);
     m_mag.assign((size_t)m_cfg.bufBins, 0.0);
     m_hist.assign((size_t)m_cfg.bufHistory * (size_t)m_cfg.bufBins, 0.0);
@@ -493,11 +493,17 @@ void Channel::configure(const Config & cfg) {
             * (a0 - a1 * cos(t) + a2 * cos(2.0 * t) - a3 * cos(3.0 * t));
     }
 
-    // FFT twiddles: tw[t] = exp(-2*pi*i*t/M), t < M/2.
-    for (int t = 0; t < M / 2; ++t) {
-        const double a = 2.0 * kPi * (double)t / (double)M;
-        m_twRe[(size_t)t] = cos(a);
-        m_twIm[(size_t)t] = -sin(a);
+    // FFT twiddles, a run per stage: the stage that combines halves of h
+    // points reads exp(-2*pi*i*t/M) for t = j*M/(2h), j < h, and finds them at
+    // [h - 1, 2h - 1) in that order. One table indexed by t would hold the same
+    // values, but a stage would read it with a stride.
+    for (int h = 1; h < M; h <<= 1) {
+        const int step = M / (2 * h);
+        for (int j = 0; j < h; ++j) {
+            const double a = 2.0 * kPi * (double)(j * step) / (double)M;
+            m_twRe[(size_t)(h - 1 + j)] = cos(a);
+            m_twIm[(size_t)(h - 1 + j)] = -sin(a);
+        }
     }
 
     // Bit reversal for M points.
@@ -931,6 +937,20 @@ void Channel::runLines(double * y, size_t n) {
         if (k == kProbeGroup) {
             if (g_wide) runProbesWide(group, y, n);
             else        runProbes<kProbeGroup>(group, y, n);
+        } else if (k == 3 && (g_wide || !DEHUM_SSE2)) {
+            // Three as four instead, the fourth lane a copy of the first whose
+            // results are thrown away. Where four lanes are one AVX register,
+            // or the core has the pipes for them - an M1 - a group of four
+            // costs about what a group of two does, and two then one cost a
+            // group each. Measured over the whole channel, 1-4% on an M1 and
+            // about 3% on a Haswell. Not on plain SSE2, where four lanes are
+            // twice the instructions of two.
+            Line pad;
+            pad.detected = group[0]->detected;
+            pad.osc[0]   = group[0]->osc[0];
+            group[3] = &pad;
+            if (g_wide) runProbesWide(group, y, n);
+            else        runProbes<kProbeGroup>(group, y, n);
         } else if (k >= 2) {
             runProbes<2>(group, y, n);
             k = 2;
@@ -1099,6 +1119,9 @@ inline double rumbleStep(const double * b, const double * a, double * z, double 
 //! scalar step's multiplies and adds in its order, so the result is bit-
 //! identical; on AArch64 the scalar step's are fused, which separate lanes
 //! would not reproduce, so there it stays scalar.
+//!
+//! A stereo stream does better than either through runRumblePair(), which a
+//! channel on its own cannot use.
 void Channel::runRumble(double * io, size_t n) {
     double z[2][2];
     memcpy(z, m_hpZ, sizeof(z));
@@ -1141,6 +1164,83 @@ void Channel::runRumble(double * io, size_t n) {
 #endif
 
     memcpy(m_hpZ, z, sizeof(z));
+}
+
+
+//! Both channels' filters over `n` samples each, in place, a channel to a lane.
+//! Each lane then waits only on its own channel's recursions, which is the same
+//! thing the skewed single channel loop arranges for its two sections - except
+//! that here both sections of both channels are in flight, and nothing in it is
+//! specific to x86. Measured as processPair() against two process() calls at
+//! the defaults, whole channels: 12% faster on an M1, about 9% on a Haswell.
+//!
+//! Every lane does rumbleStep()'s arithmetic in its order - on x86 in an SSE2
+//! register, elsewhere as the very expression rumbleStep() is, written once
+//! per lane, so that a compiler which fuses multiply-adds fuses each lane as it
+//! fuses that - and the result is what each channel's runRumble() gives.
+void Channel::runRumblePair(Channel & a, double * ya, Channel & b, double * yb, size_t n) {
+    const double (*const B)[3] = a.m_hpB;
+    const double (*const A)[2] = a.m_hpA;
+
+#if DEHUM_SSE2
+    __m128d z[2][2];
+    for (int s = 0; s < 2; ++s) {
+        z[s][0] = _mm_set_pd(b.m_hpZ[s][0], a.m_hpZ[s][0]);
+        z[s][1] = _mm_set_pd(b.m_hpZ[s][1], a.m_hpZ[s][1]);
+    }
+    const __m128d b0[2] = { _mm_set1_pd(B[0][0]), _mm_set1_pd(B[1][0]) };
+    const __m128d b1[2] = { _mm_set1_pd(B[0][1]), _mm_set1_pd(B[1][1]) };
+    const __m128d b2[2] = { _mm_set1_pd(B[0][2]), _mm_set1_pd(B[1][2]) };
+    const __m128d a1[2] = { _mm_set1_pd(A[0][0]), _mm_set1_pd(A[1][0]) };
+    const __m128d a2[2] = { _mm_set1_pd(A[0][1]), _mm_set1_pd(A[1][1]) };
+
+    for (size_t i = 0; i < n; ++i) {
+        __m128d x = _mm_set_pd(yb[i], ya[i]);
+        for (int s = 0; s < 2; ++s) {
+            const __m128d y = _mm_add_pd(_mm_mul_pd(b0[s], x), z[s][0]);
+            z[s][0] = _mm_add_pd(_mm_sub_pd(_mm_mul_pd(b1[s], x), _mm_mul_pd(a1[s], y)),
+                                 z[s][1]);
+            z[s][1] = _mm_sub_pd(_mm_mul_pd(b2[s], x), _mm_mul_pd(a2[s], y));
+            x = y;
+        }
+        _mm_storel_pd(ya + i, x);
+        _mm_storeh_pd(yb + i, x);
+    }
+
+    for (int s = 0; s < 2; ++s) {
+        _mm_storel_pd(&a.m_hpZ[s][0], z[s][0]); _mm_storeh_pd(&b.m_hpZ[s][0], z[s][0]);
+        _mm_storel_pd(&a.m_hpZ[s][1], z[s][1]); _mm_storeh_pd(&b.m_hpZ[s][1], z[s][1]);
+    }
+#else
+    double z[2][2][2];   // [section][word][channel]
+    for (int s = 0; s < 2; ++s) {
+        for (int w = 0; w < 2; ++w) {
+            z[s][w][0] = a.m_hpZ[s][w];
+            z[s][w][1] = b.m_hpZ[s][w];
+        }
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        double x[2] = { ya[i], yb[i] };
+        for (int s = 0; s < 2; ++s) {
+            for (int c = 0; c < 2; ++c) {
+                const double y = B[s][0] * x[c] + z[s][0][c];
+                z[s][0][c] = B[s][1] * x[c] - A[s][0] * y + z[s][1][c];
+                z[s][1][c] = B[s][2] * x[c] - A[s][1] * y;
+                x[c] = y;
+            }
+        }
+        ya[i] = x[0];
+        yb[i] = x[1];
+    }
+
+    for (int s = 0; s < 2; ++s) {
+        for (int w = 0; w < 2; ++w) {
+            a.m_hpZ[s][w] = z[s][w][0];
+            b.m_hpZ[s][w] = z[s][w][1];
+        }
+    }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1260,6 +1360,8 @@ void Channel::decimate(const double * x, size_t n) {
     const int N = m_cfg.winSize;
 
     double work[kDecimMaxTaps - 1 + kSegment];
+    double ev[(kDecimMaxTaps + kSegment) / 2];
+    double od[(kDecimMaxTaps + kSegment) / 2];
     double out[kSegment];
     const double * in = x;
     size_t count = n;
@@ -1278,28 +1380,50 @@ void Channel::decimate(const double * x, size_t n) {
         // reads tap[t] samples before that. Half the inputs only fill the line
         // - the phase says which - and not computing an output for them is the
         // whole point of decimating in stages.
-        const double * const at = work + H;
-        size_t i = (m_hbPhase[st] != 0) ? 0 : 1;
-        size_t made = 0;
-        for (; i + 6 < count; i += 8) {
-            double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+        //
+        // Outputs are two inputs apart, so a tap reads every other sample, and
+        // which half of the samples depends on the tap's parity. Split the run
+        // into its even and odd samples and each tap reads consecutive outputs'
+        // inputs from one contiguous span, which a compiler can put several to
+        // a register.
+        const size_t first = (m_hbPhase[st] != 0) ? 0 : 1;
+        const size_t total = (size_t)H + count;
+        for (size_t k = 0; k + 1 < total; k += 2) {
+            ev[k >> 1] = work[k];
+            od[k >> 1] = work[k + 1];
+        }
+        if (total & 1) ev[total >> 1] = work[total - 1];
+        const double * src[kDecimMaxTaps];
+        for (int t = 0; t < taps; ++t) {
+            const size_t b = (size_t)H + first - (size_t)tap[t];
+            src[t] = ((b & 1) ? od : ev) + (b >> 1);
+        }
+
+        const size_t made = (count > first) ? (count - first + 1) / 2 : 0;
+        size_t q = 0;
+        for (; q + 16 <= made; q += 16) {
+            double acc[16] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
             for (int t = 0; t < taps; ++t) {
                 const double c = coef[t];
-                const double * const z = at + i - tap[t];
-                a0 += c * z[0];
-                a1 += c * z[2];
-                a2 += c * z[4];
-                a3 += c * z[6];
+                const double * const z = src[t] + q;
+                for (int k = 0; k < 16; ++k) acc[k] += c * z[k];
             }
-            out[made++] = a0;
-            out[made++] = a1;
-            out[made++] = a2;
-            out[made++] = a3;
+            for (int k = 0; k < 16; ++k) out[q + (size_t)k] = acc[k];
         }
-        for (; i < count; i += 2) {
+        for (; q + 8 <= made; q += 8) {
+            double acc[8] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+            for (int t = 0; t < taps; ++t) {
+                const double c = coef[t];
+                const double * const z = src[t] + q;
+                for (int k = 0; k < 8; ++k) acc[k] += c * z[k];
+            }
+            for (int k = 0; k < 8; ++k) out[q + (size_t)k] = acc[k];
+        }
+        for (; q < made; ++q) {
             double acc = 0.0;
-            for (int t = 0; t < taps; ++t) acc += coef[t] * at[(ptrdiff_t)i - tap[t]];
-            out[made++] = acc;
+            for (int t = 0; t < taps; ++t) acc += coef[t] * src[t][q];
+            out[q] = acc;
         }
 
         m_hbPhase[st] ^= (int)(count & 1);
@@ -1332,38 +1456,56 @@ void Channel::realFftMagnitudes() {
     const int M = N / 2;
     const int mask = N - 1;
 
-    // Pack the windowed signal, reading the ring oldest-first.
+    double * const re = &m_fftRe[0];
+    double * const im = &m_fftIm[0];
+
+    // Pack the windowed signal, reading the ring oldest-first, straight into
+    // bit-reversed order.
     for (int k = 0; k < M; ++k) {
         const int n0 = 2 * k, n1 = n0 + 1;
-        m_fftRe[(size_t)k] = m_win[(size_t)((m_winPos + n0) & mask)]
-                           * m_taper[(size_t)n0];
-        m_fftIm[(size_t)k] = m_win[(size_t)((m_winPos + n1) & mask)]
-                           * m_taper[(size_t)n1];
+        const size_t r = (size_t)m_rev[(size_t)k];
+        re[r] = m_win[(size_t)((m_winPos + n0) & mask)] * m_taper[(size_t)n0];
+        im[r] = m_win[(size_t)((m_winPos + n1) & mask)] * m_taper[(size_t)n1];
     }
 
-    for (int i = 0; i < M; ++i) {
-        const int r = m_rev[(size_t)i];
-        if (r > i) {
-            double t = m_fftRe[(size_t)i]; m_fftRe[(size_t)i] = m_fftRe[(size_t)r]; m_fftRe[(size_t)r] = t;
-            t = m_fftIm[(size_t)i]; m_fftIm[(size_t)i] = m_fftIm[(size_t)r]; m_fftIm[(size_t)r] = t;
-        }
-    }
-
-    for (int len = 2; len <= M; len <<= 1) {
-        const int h = len >> 1;
-        const int step = M / len;
-        for (int i = 0; i < M; i += len) {
+    for (int h = 1; h < M; h <<= 1) {
+        const int len = h << 1;
+        const double * const twr = &m_twRe[(size_t)(h - 1)];
+        const double * const twi = &m_twIm[(size_t)(h - 1)];
+        // Every butterfly in a stage is independent of the others, so the order
+        // they are taken in changes nothing. Few twiddles and many groups: one
+        // twiddle at a time down the groups. Otherwise a group at a time along
+        // its twiddles, which are contiguous.
+        if (h < 4) {
             for (int j = 0; j < h; ++j) {
-                const int t = j * step;
-                const double wr = m_twRe[(size_t)t], wi = m_twIm[(size_t)t];
-                const int a = i + j, b = a + h;
-                const double br = m_fftRe[(size_t)b], bi = m_fftIm[(size_t)b];
+                const double wr = twr[j], wi = twi[j];
+                for (int a = j; a < M; a += len) {
+                    const int b = a + h;
+                    const double br = re[b], bi = im[b];
+                    const double xr = br * wr - bi * wi;
+                    const double xi = br * wi + bi * wr;
+                    re[b] = re[a] - xr;
+                    im[b] = im[a] - xi;
+                    re[a] += xr;
+                    im[a] += xi;
+                }
+            }
+            continue;
+        }
+        for (int i = 0; i < M; i += len) {
+            double * __restrict const ar = re + i;
+            double * __restrict const ai = im + i;
+            double * __restrict const br_ = re + i + h;
+            double * __restrict const bi_ = im + i + h;
+            for (int j = 0; j < h; ++j) {
+                const double wr = twr[j], wi = twi[j];
+                const double br = br_[j], bi = bi_[j];
                 const double xr = br * wr - bi * wi;
                 const double xi = br * wi + bi * wr;
-                m_fftRe[(size_t)b] = m_fftRe[(size_t)a] - xr;
-                m_fftIm[(size_t)b] = m_fftIm[(size_t)a] - xi;
-                m_fftRe[(size_t)a] += xr;
-                m_fftIm[(size_t)a] += xi;
+                br_[j] = ar[j] - xr;
+                bi_[j] = ai[j] - xi;
+                ar[j] += xr;
+                ai[j] += xi;
             }
         }
     }
@@ -1717,77 +1859,137 @@ void Channel::detectPeaks(int bins) {
 //! run instead of going through memory every sample.
 template<typename Sample>
 void Channel::process(Sample * io, size_t frames, size_t stride) {
-    const int N = m_cfg.winSize;
-    const double wet = m_cfg.wet;
-
     double x[kSegment];
     double y[kSegment];
 
     size_t done = 0;
     while (done < frames) {
-        size_t n = frames - done;
-        if (n > (size_t)kSegment) n = (size_t)kSegment;
-
-        // Still counted at full rate: hop is a multiple of decim, so a hop
-        // boundary is always a decimated sample boundary too, and cohSmooth was
-        // derived from hop in full rate samples. The hop falls on the last
-        // sample of the run if it falls in it at all.
-        const int toHop = m_cfg.hop - m_hopAcc;
-        const size_t untilHop = toHop > 1 ? (size_t)toHop : 1;
-        const bool hop = (untilHop <= n);
-        if (hop) n = untilHop;
-
+        const size_t n = segment(frames - done);
         Sample * const p = io + done * stride;
-        for (size_t i = 0; i < n; ++i) {
-            double v = (double)p[i * stride];
-            if (!sane(v)) v = 0.0;
-            x[i] = v;
-            y[i] = v;
-        }
 
-        // The detector reads the input, never the output. Feeding it the cleaned
-        // signal would be a loop: the line would vanish, its prominence would
-        // fall below threshold, the notch would be dropped and the hum would
-        // come back.
-        decimate(x, n);
-
-        // On a hop, the detector runs after the hop sample has reached the
-        // window and before the lines see that sample.
-        const size_t before = hop ? n - 1 : n;
-
-        // Every line runs, active or not: an inactive one is a probe being
-        // measured, and it must see the same signal a confirmed line would.
-        runLines(y, before);
-
-        if (hop) {
-            m_hopAcc = 0;
-            updateCoherence();                 // probes are read every hop
-            if (m_filled >= N) runDetector();  // nomination needs a full window
-            runLines(y + before, 1);
-        } else {
-            m_hopAcc += (int)n;
-        }
-
-        if (m_cfg.delta) {
-            // What the notches took out, before the rumble filter sees it. The
-            // filter still runs, on a result nobody hears, so that its state is
-            // current when delta is switched off again.
-            for (size_t i = 0; i < n; ++i) {
-                p[i * stride] = (Sample)(wet * (x[i] - y[i]));
-            }
-            if (m_hpOn) runRumble(y, n);
-        } else {
-            if (m_hpOn) runRumble(y, n);
-
-            // wet == 0 returns x untouched, bit for bit.
-            for (size_t i = 0; i < n; ++i) {
-                p[i * stride] = (Sample)(x[i] + wet * (y[i] - x[i]));
-            }
-        }
+        runFront(p, n, stride, x, y);
+        if (m_hpOn) runRumble(y, n);
+        emit(p, n, stride, x, y);
 
         done += n;
     }
     m_seen += frames;
+}
+
+//! The next run: at most `left` samples, at most kSegment, and ending on the
+//! hop sample if one falls in it. Still counted at full rate: hop is a multiple
+//! of decim, so a hop boundary is always a decimated sample boundary too, and
+//! cohSmooth was derived from hop in full rate samples.
+size_t Channel::segment(size_t left) const {
+    size_t n = left;
+    if (n > (size_t)kSegment) n = (size_t)kSegment;
+    const int toHop = m_cfg.hop - m_hopAcc;
+    const size_t untilHop = toHop > 1 ? (size_t)toHop : 1;
+    return untilHop < n ? untilHop : n;
+}
+
+//! Everything up to the rumble filter over a run segment() allowed: the input
+//! into `x` and the detector, the notches into `y`. In delta mode the output
+//! is written here too, since it is taken before the rumble filter.
+template<typename Sample>
+void Channel::runFront(Sample * p, size_t n, size_t stride, double * x, double * y) {
+    const int toHop = m_cfg.hop - m_hopAcc;
+    const bool hop = (size_t)(toHop > 1 ? toHop : 1) <= n;
+
+    for (size_t i = 0; i < n; ++i) {
+        double v = (double)p[i * stride];
+        if (!sane(v)) v = 0.0;
+        x[i] = v;
+        y[i] = v;
+    }
+
+    // The detector reads the input, never the output. Feeding it the cleaned
+    // signal would be a loop: the line would vanish, its prominence would
+    // fall below threshold, the notch would be dropped and the hum would
+    // come back.
+    decimate(x, n);
+
+    // On a hop, the detector runs after the hop sample has reached the
+    // window and before the lines see that sample.
+    const size_t before = hop ? n - 1 : n;
+
+    // Every line runs, active or not: an inactive one is a probe being
+    // measured, and it must see the same signal a confirmed line would.
+    runLines(y, before);
+
+    if (hop) {
+        m_hopAcc = 0;
+        updateCoherence();                 // probes are read every hop
+        if (m_filled >= m_cfg.winSize) runDetector();  // nomination needs a full window
+        runLines(y + before, 1);
+    } else {
+        m_hopAcc += (int)n;
+    }
+
+    if (m_cfg.delta) {
+        // What the notches took out, before the rumble filter sees it. The
+        // filter still runs, on a result nobody hears, so that its state is
+        // current when delta is switched off again.
+        const double wet = m_cfg.wet;
+        for (size_t i = 0; i < n; ++i) {
+            p[i * stride] = (Sample)(wet * (x[i] - y[i]));
+        }
+    }
+}
+
+//! The output, once the rumble filter has run over `y`. Delta mode wrote its
+//! output in runFront().
+template<typename Sample>
+void Channel::emit(Sample * p, size_t n, size_t stride, const double * x, const double * y) {
+    if (m_cfg.delta) return;
+
+    // wet == 0 returns x untouched, bit for bit.
+    const double wet = m_cfg.wet;
+    for (size_t i = 0; i < n; ++i) {
+        p[i * stride] = (Sample)(x[i] + wet * (y[i] - x[i]));
+    }
+}
+
+//! process() for two channels, with their rumble filters run side by side.
+//!
+//! The filter is two biquads, and each is a recursion whose latency rather than
+//! its arithmetic sets its pace, so a channel on its own leaves the core mostly
+//! waiting. Two channels' filters are independent and run together for little
+//! more than one. Everything else is each channel's own, run exactly as
+//! process() runs it: the runs are cut where either channel's hop falls, and a
+//! run boundary changes nothing.
+template<typename Sample>
+void Channel::processPair(Channel & a, Sample * ioA, Channel & b, Sample * ioB,
+                          size_t frames, size_t stride) {
+    // Pairing needs the same filter in both. It is designed from the rate and
+    // the rumble control alone, so two channels of one stream always have it.
+    if (&a == &b || !a.m_hpOn || !b.m_hpOn
+        || memcmp(a.m_hpB, b.m_hpB, sizeof(a.m_hpB)) != 0
+        || memcmp(a.m_hpA, b.m_hpA, sizeof(a.m_hpA)) != 0) {
+        a.process(ioA, frames, stride);
+        b.process(ioB, frames, stride);
+        return;
+    }
+
+    double xa[kSegment], ya[kSegment];
+    double xb[kSegment], yb[kSegment];
+
+    size_t done = 0;
+    while (done < frames) {
+        const size_t n = b.segment(a.segment(frames - done));
+        Sample * const pa = ioA + done * stride;
+        Sample * const pb = ioB + done * stride;
+
+        a.runFront(pa, n, stride, xa, ya);
+        b.runFront(pb, n, stride, xb, yb);
+        runRumblePair(a, ya, b, yb, n);
+        a.emit(pa, n, stride, xa, ya);
+        b.emit(pb, n, stride, xb, yb);
+
+        done += n;
+    }
+    a.m_seen += frames;
+    b.m_seen += frames;
 }
 
 // ---------------------------------------------------------------------------
@@ -1842,5 +2044,7 @@ size_t Channel::heapBytes() const {
 
 template void Channel::process<float>(float *, size_t, size_t);
 template void Channel::process<double>(double *, size_t, size_t);
+template void Channel::processPair<float>(Channel &, float *, Channel &, float *, size_t, size_t);
+template void Channel::processPair<double>(Channel &, double *, Channel &, double *, size_t, size_t);
 
 } // namespace dehum

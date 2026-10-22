@@ -194,12 +194,14 @@ public:
         memcpy(m_work.data(), in, frames * kChannels * sizeof(double));
         {
             dehum::scoped_flush_denormals ftz;
-            // In place, interleaved, one call per side. Splitting a buffer
-            // across several of these is invisible to the core - process() is a
-            // per-sample loop with its own hop counter - which is what
-            // dehum_verify's block size invariance check establishes.
-            m_chan[0].process(m_work.data() + 0, frames, kChannels);
-            m_chan[1].process(m_work.data() + 1, frames, kChannels);
+            // In place, interleaved, both sides in one call - which runs their
+            // rumble filters side by side and gives what one call per side
+            // would. Splitting a buffer across several of these is invisible to
+            // the core - process() is a per-sample loop with its own hop
+            // counter - which is what dehum_verify's block size invariance
+            // check establishes.
+            dehum::Channel::processPair(m_chan[0], m_work.data() + 0,
+                                        m_chan[1], m_work.data() + 1, frames, kChannels);
         }
         m_fifo.push(m_work.data(), frames);
     }

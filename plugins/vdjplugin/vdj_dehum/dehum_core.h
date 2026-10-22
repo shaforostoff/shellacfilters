@@ -496,6 +496,16 @@ public:
     template<typename Sample>
     void process(Sample * io, size_t frames, size_t stride);
 
+    //! Two channels at once: `a` over `ioA` and `b` over `ioB`, both interleaved
+    //! by `stride` - the two halves of a stereo buffer, or two planar ones. Bit
+    //! for bit what a.process(ioA, ...) and then b.process(ioB, ...) would give,
+    //! and faster wherever the rumble filter is on: see the definition. Two
+    //! channels configured from one Config always pair; any that do not are
+    //! simply processed one after the other.
+    template<typename Sample>
+    static void processPair(Channel & a, Sample * ioA, Channel & b, Sample * ioB,
+                            size_t frames, size_t stride);
+
     const Config & config() const { return m_cfg; }
 
     //! Diagnostics.
@@ -574,6 +584,15 @@ private:
     void   syncHarmonics(Line & line);
     void   designRumble();
     void   runRumble(double * y, size_t n);
+    static void runRumblePair(Channel & a, double * ya, Channel & b, double * yb, size_t n);
+
+    //! process() in three parts, so that processPair() can run the rumble
+    //! filters of two channels between them.
+    size_t segment(size_t left) const;
+    template<typename Sample>
+    void   runFront(Sample * p, size_t n, size_t stride, double * x, double * y);
+    template<typename Sample>
+    void   emit(Sample * p, size_t n, size_t stride, const double * x, const double * y);
     void   realFftMagnitudes();
     void   designDecimator();
     void   clearDecimator();

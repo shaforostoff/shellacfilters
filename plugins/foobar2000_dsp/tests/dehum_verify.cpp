@@ -714,6 +714,83 @@ void testWideKernelsMatch() {
     check(differ == 0, msg);
 }
 
+//! processPair() promises what one process() per channel gives, bit for bit,
+//! whatever the two channels are doing. Each case runs one stereo stream both
+//! ways in blocks of uneven length and compares every sample. The channels carry
+//! different material, so their detectors find different lines and hop on their
+//! own schedules; `retune` moves one or both mid-stream, which is how a pair
+//! falls out of step - a rumble setting in one channel only - and back into it.
+template<typename Sample>
+bool pairMatches(const dehum::Params & left, const dehum::Params & right,
+                 const dehum::Params & to, int retune, double sr, bool hostile) {
+    const size_t frames = (size_t)(sr * 20.0);
+    std::vector<Sample> sig(frames * 2);
+    Rng rng;
+    double rumble[2] = { 0.0, 0.0 };
+    for (size_t i = 0; i < frames; ++i) {
+        const double t = (double)i / sr;
+        for (int c = 0; c < 2; ++c) {
+            rumble[c] = 0.9995 * rumble[c] + 0.002 * rng.next();
+            const double hum = c ? 0.008 * sin(2.0 * kPi * 50.0 * t + 0.4)
+                                 : 0.01 * sin(2.0 * kPi * 41.3 * t);
+            sig[i * 2 + c] = (Sample)(hum + rumble[c] + 0.003 * rng.next()
+                + 0.05 * sin(2.0 * kPi * (110.0 + 30.0 * c + 30.0 * floor(t / 0.35)) * t));
+        }
+    }
+    if (hostile) {
+        sig[1000 * 2 + 0] = (Sample)NAN;
+        sig[3000 * 2 + 1] = (Sample)INFINITY;
+        sig[3001 * 2 + 0] = -(Sample)INFINITY;
+        sig[3001 * 2 + 1] = (Sample)NAN;
+    }
+
+    const dehum::Config cl = makeConfig(left, sr), cr = makeConfig(right, sr);
+    const dehum::Config ct = makeConfig(to, sr);
+    std::vector<Sample> one = sig, two = sig;
+    dehum::Channel l1, r1, l2, r2;
+    l1.configure(cl); l2.configure(cl);
+    r1.configure(cr); r2.configure(cr);
+
+    static const size_t kBlocks[8] = { 1, 7, 333, 4096, 31, 64, 1000, 2 };
+    dehum::scoped_flush_denormals ftz;
+    size_t pos = 0;
+    for (int k = 0; pos < frames; ++k) {
+        size_t n = kBlocks[k % 8];
+        if (n > frames - pos) n = frames - pos;
+        if (k == 40 || k == 120) {
+            const dehum::Config & c = (k == 40) ? ct : cl;
+            if (retune & 1) { l1.retune(c); l2.retune(c); }
+            if (retune & 2) { r1.retune(c); r2.retune(c); }
+        }
+        l1.process(&one[pos * 2 + 0], n, 2);
+        r1.process(&one[pos * 2 + 1], n, 2);
+        dehum::Channel::processPair(l2, &two[pos * 2 + 0], r2, &two[pos * 2 + 1], n, 2);
+        pos += n;
+    }
+    return memcmp(one.data(), two.data(), one.size() * sizeof(Sample)) == 0
+        && l1.lineCount() == l2.lineCount() && r1.lineCount() == r2.lineCount();
+}
+
+void testPairMatchesSingle() {
+    printf("\ntwo channels at once\n");
+    const dehum::Params d = dehum::Params::defaults();
+    dehum::Params noRumble = d;  noRumble.rumbleHz = 0.0f;
+    dehum::Params other = d;     other.rumbleHz = 40.0f;
+    dehum::Params delta = d;     delta.delta = true;
+    dehum::Params wide = d;      wide.harmonics = 4; wide.searchTo = 200.0f; wide.dryWet = 0.7f;
+
+    check(pairMatches<float>(d, d, d, 0, 44100.0, false),
+          "defaults, float: matches one channel at a time");
+    check(pairMatches<double>(d, d, wide, 3, 48000.0, false),
+          "both retuned mid-stream, double: matches");
+    check(pairMatches<float>(d, d, other, 1, 44100.0, false),
+          "left's rumble moved and back: matches");
+    check(pairMatches<double>(d, noRumble, d, 2, 96000.0, false),
+          "rumble off on one side, then on: matches");
+    check(pairMatches<float>(delta, delta, d, 3, 44100.0, true),
+          "delta, then not, with non-finite input: matches");
+}
+
 void testFootprint() {
     printf("\nfootprint\n");
     const double rates[3] = { 44100.0, 96000.0, 192000.0 };
@@ -748,6 +825,7 @@ int main() {
     testRetuneKeepsState();
     testDelta();
     testWideKernelsMatch();
+    testPairMatchesSingle();
     testFootprint();
 
     printf("\n%s (%d failure%s)\n", g_failures ? "FAILED" : "passed",

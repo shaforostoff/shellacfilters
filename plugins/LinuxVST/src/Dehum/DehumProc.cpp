@@ -54,8 +54,7 @@ void Dehum::processReplacing(float **inputs, float **outputs, VstInt32 sampleFra
 			scratchR[i] = in2[i];
 		}
 
-		chanL.process(scratchL, (size_t)n, 1);
-		chanR.process(scratchR, (size_t)n, 1);
+		dehum::Channel::processPair(chanL, scratchL, chanR, scratchR, (size_t)n, 1);
 		//non-finite input is silenced inside the core, so nothing can lodge
 		//itself in a notch integrator and stay there for the rest of the stream
 
@@ -102,8 +101,7 @@ void Dehum::processDoubleReplacing(double **inputs, double **outputs, VstInt32 s
 			scratchR[i] = in2[i];
 		}
 
-		chanL.process(scratchL, (size_t)n, 1);
-		chanR.process(scratchR, (size_t)n, 1);
+		dehum::Channel::processPair(chanL, scratchL, chanR, scratchR, (size_t)n, 1);
 
 		for (VstInt32 i = 0; i < n; ++i) {
 			//begin 64 bit stereo floating point dither

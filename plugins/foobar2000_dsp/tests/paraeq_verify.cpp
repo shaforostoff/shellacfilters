@@ -20,7 +20,9 @@
 #include "paraeq_core.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 using namespace paraeq;
@@ -73,6 +75,68 @@ static double measuredDb(Params p, double hz)
     }
 
     return 10.0 * std::log10(sumOut / sumIn);
+}
+
+// processPair() promises what one process() per channel gives, bit for bit,
+// whatever the two channels are doing. Runs one stereo stream both ways in blocks
+// of uneven length and compares every sample. `retune` (1 left, 2 right, 3 both)
+// moves the channels to `to` early on and back to `left`'s settings later, which
+// is how a pair falls out of step - one gliding, or settled somewhere else - and,
+// once both have settled on the same curve, back into it.
+template<typename Sample>
+static bool pairMatches(const Params & left, const Params & right, const Params & to,
+                        int retune, bool hostile)
+{
+    const size_t frames = 60000;
+    std::vector<Sample> sig(frames * 2);
+    uint32_t rng = 12345u;
+    for (size_t i = 0; i < frames; i++) {
+        for (int c = 0; c < 2; c++) {
+            rng = rng * 1664525u + 1013904223u;
+            const double noise = (double)(int32_t)rng / 2147483648.0;
+            sig[i * 2 + c] = (Sample)(0.3 * std::sin(2.0 * kPi * (220.0 + 110.0 * c) * (double)i / kFs)
+                                      + 0.05 * noise);
+        }
+    }
+    // Signed and unsigned zeros, and a stretch of -0.0 in one channel only, for
+    // the stages that pass through.
+    for (size_t i = 0; i < sig.size(); i += 97) sig[i] = (i / 97) & 1 ? (Sample)-0.0 : (Sample)0.0;
+    for (size_t i = 20000; i < 24000; i++) sig[i * 2 + 1] = (Sample)-0.0;
+    if (hostile) {
+        sig[1000 * 2 + 0] = (Sample)NAN;
+        sig[3000 * 2 + 1] = (Sample)INFINITY;
+        sig[3001 * 2 + 0] = -(Sample)INFINITY;
+        sig[3001 * 2 + 1] = (Sample)NAN;
+    }
+
+    Config cl, cr, ct;
+    cl.compute(left, kFs);
+    cr.compute(right, kFs);
+    ct.compute(to, kFs);
+
+    std::vector<Sample> one = sig, two = sig;
+    Channel l1, r1, l2, r2;
+    l1.configure(cl); l2.configure(cl);
+    r1.configure(cr); r2.configure(cr);
+
+    static const size_t kBlocks[8] = { 1, 7, 33, 500, 31, 64, 1000, 2 };
+    scoped_flush_denormals ftz;
+    size_t pos = 0;
+    for (int k = 0; pos < frames; k++) {
+        size_t n = kBlocks[k % 8];
+        if (n > frames - pos) n = frames - pos;
+        if (k == 5 || k == 40) {
+            const Config & c = (k == 5) ? ct : cl;
+            if (retune & 1) { l1.retune(c); l2.retune(c); }
+            if (retune & 2) { r1.retune(c); r2.retune(c); }
+        }
+        l1.process(&one[pos * 2 + 0], n, 2);
+        r1.process(&one[pos * 2 + 1], n, 2);
+        Channel::processPair(l2, &two[pos * 2 + 0], r2, &two[pos * 2 + 1], n, 2);
+        pos += n;
+    }
+    return std::memcmp(one.data(), two.data(), one.size() * sizeof(Sample)) == 0
+        && l1.settled() == l2.settled() && r1.settled() == r2.settled();
 }
 
 int main()
@@ -320,6 +384,28 @@ int main()
 
         ckTrue("silent channel stays silent", energyR == 0.0);
         ckTrue("signal channel carries signal", energyL > 1.0);
+    }
+
+    std::printf("\n== two channels at once match one at a time\n");
+    {
+        Params six = Params::defaults();
+        six.hpSlope = 2; six.hpFrequency = 40; six.lfGain = 4; six.lmfGain = -3;
+        six.hmfGain = 2.5f; six.hfGain = -8; six.outputGain = -1;
+        Params two = Params::defaults();
+        two.lfGain = 4; two.hfGain = -8;
+        const Params flat = Params::defaults();
+
+        ckTrue("six stages, settled, float",         pairMatches<float>(six, six, six, 0, false));
+        ckTrue("two stages, settled, double",        pairMatches<double>(two, two, two, 0, false));
+        ckTrue("both gliding there and back",        pairMatches<float>(two, two, six, 3, false));
+        ckTrue("left gliding alone, then rejoining", pairMatches<double>(six, six, two, 1, false));
+        ckTrue("non-finite input in one channel, settled",
+               pairMatches<float>(six, six, six, 0, true));
+        ckTrue("non-finite input in one channel, gliding",
+               pairMatches<double>(two, two, six, 3, true));
+        ckTrue("right moved to flat, non-finite input",
+               pairMatches<float>(two, two, flat, 2, true));
+        ckTrue("different curves from the start",    pairMatches<double>(six, two, flat, 3, true));
     }
 
     // -----------------------------------------------------------------------

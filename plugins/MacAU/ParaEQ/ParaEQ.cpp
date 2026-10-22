@@ -444,6 +444,7 @@ OSStatus		ParaEQ::ProcessBufferLists(AudioUnitRenderActionFlags & ioActionFlags,
 	if (outBuffer.mNumberBuffers < channels) channels = outBuffer.mNumberBuffers;
 	if (channels > 2) channels = 2;
 
+	Float32 * ready[2] = { NULL, NULL };
 	for (UInt32 c = 0; c < channels; ++c) {
 		Float32 * input = (Float32*)(inBuffer.mBuffers[c].mData);
 		Float32 * output = (Float32*)(outBuffer.mBuffers[c].mData);
@@ -454,7 +455,18 @@ OSStatus		ParaEQ::ProcessBufferLists(AudioUnitRenderActionFlags & ioActionFlags,
 		if (output != input) {
 			memcpy(output, input, sizeof(Float32) * (size_t)inFramesToProcess);
 		}
-		chan[c].process(output, (size_t)inFramesToProcess, 1);
+		ready[c] = output;
+	}
+
+	//Both sides in one call where there are two, which runs their biquads side
+	//by side and gives what one call per side would.
+	if (ready[0] != NULL && ready[1] != NULL) {
+		paraeq::Channel::processPair(chan[0], ready[0], chan[1], ready[1],
+		                             (size_t)inFramesToProcess, 1);
+	} else {
+		for (UInt32 c = 0; c < 2; ++c) {
+			if (ready[c] != NULL) chan[c].process(ready[c], (size_t)inFramesToProcess, 1);
+		}
 	}
 	return noErr;
 }

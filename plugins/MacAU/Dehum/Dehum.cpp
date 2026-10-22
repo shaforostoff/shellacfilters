@@ -386,8 +386,7 @@ OSStatus		Dehum::ProcessBufferLists(AudioUnitRenderActionFlags & ioActionFlags,
 			scratchR[i] = inputR[i];
 		}
 
-		chanL.process(scratchL, (size_t)n, 1);
-		chanR.process(scratchR, (size_t)n, 1);
+		dehum::Channel::processPair(chanL, scratchL, chanR, scratchR, (size_t)n, 1);
 		//non-finite input is silenced inside the core, so nothing can lodge
 		//itself in a notch integrator and stay there for the rest of the stream
 

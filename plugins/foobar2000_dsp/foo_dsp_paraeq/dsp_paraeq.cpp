@@ -112,9 +112,14 @@ public:
 
         {
             scoped_flush_denormals ftz;
-            for (unsigned c = 0; c < channels; ++c) {
-                m_chan[c]->process(data + c, frames, channels);
+            // Two at a time, which runs their biquads side by side: see
+            // processPair(). Same output as one at a time.
+            unsigned c = 0;
+            for (; c + 1 < channels; c += 2) {
+                Channel::processPair(*m_chan[c], data + c, *m_chan[c + 1], data + c + 1,
+                                     frames, channels);
             }
+            if (c < channels) m_chan[c]->process(data + c, frames, channels);
         }
         return true;
     }

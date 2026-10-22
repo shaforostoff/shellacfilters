@@ -129,9 +129,13 @@ int main(int argc, char ** argv) {
         dehum::scoped_flush_denormals ftz;
         for (size_t pos = 0; pos < frames; pos += CHUNK) {
             const size_t n = (frames - pos < CHUNK) ? (frames - pos) : CHUNK;
-            for (unsigned c = 0; c < channels; ++c) {
-                chans[c]->process(&out.samples[pos * channels + c], n, channels);
+            unsigned c = 0;
+            for (; c + 1 < channels; c += 2) {
+                dehum::Channel::processPair(*chans[c], &out.samples[pos * channels + c],
+                                            *chans[c + 1], &out.samples[pos * channels + c + 1],
+                                            n, channels);
             }
+            if (c < channels) chans[c]->process(&out.samples[pos * channels + c], n, channels);
         }
     }
 
