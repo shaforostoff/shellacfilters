@@ -72,6 +72,29 @@ void operator delete[](void * p) noexcept { free(p); }
 void operator delete(void * p, size_t) noexcept { free(p); }
 void operator delete[](void * p, size_t) noexcept { free(p); }
 
+// The over-aligned forms go round the ones above, so a type that asks for
+// more than 16 bytes of alignment would otherwise allocate unseen.
+void * operator new(size_t n, std::align_val_t a) {
+    if (g_armed.load(std::memory_order_relaxed)) g_allocs.fetch_add(1, std::memory_order_relaxed);
+#ifdef _MSC_VER
+    void * p = _aligned_malloc(n ? n : 1, (size_t)a);
+#else
+    void * p = NULL;
+    if (posix_memalign(&p, (size_t)a, n ? n : 1) != 0) p = NULL;
+#endif
+    if (p == NULL) throw std::bad_alloc();
+    return p;
+}
+void * operator new[](size_t n, std::align_val_t a) { return operator new(n, a); }
+#ifdef _MSC_VER
+void operator delete(void * p, std::align_val_t) noexcept { _aligned_free(p); }
+#else
+void operator delete(void * p, std::align_val_t) noexcept { free(p); }
+#endif
+void operator delete[](void * p, std::align_val_t a) noexcept { operator delete(p, a); }
+void operator delete(void * p, size_t, std::align_val_t a) noexcept { operator delete(p, a); }
+void operator delete[](void * p, size_t, std::align_val_t a) noexcept { operator delete(p, a); }
+
 namespace {
 
 const double kRate = 44100.0;
