@@ -166,9 +166,8 @@ struct Config {
     double softMin      = 0.5;
     double softSpan     = 3.5;
 
-    //! The shape fit. Off: research only, not yet tuned for every record.
-    //! Not user-facing; declick_cli sweeps it as --shape, --shape-chi,
-    //! --shape-gate, --shape-ms and --shape-fitq.
+    //! The shape fit. Not user-facing; declick_cli sweeps it as --shape,
+    //! --shape-chi, --shape-gate, --shape-ms, --shape-fitq and --shape-peak.
     //! A shellac click is a doublet a fraction of a millisecond long, and over
     //! a run of 13-20 samples the AR interpolation gets its second lobe wrong
     //! and leaves a quarter to three quarters of it. So before the first pass
@@ -178,16 +177,26 @@ struct Config {
     //! subtracted, and the music under them stays. A click is a peak of the
     //! matched filter on the model's residual, shapeChi sigma or more (as a
     //! two-shape test; the three-shape threshold has the same false alarm
-    //! rate), where the input's 2-8 kHz power over 1 ms stands shapeGate times
+    //! rate), where the input's 3-8 kHz power over 1 ms stands shapeGate times
     //! over its median across +-15 ms, and the shapes explain shapeFitq or
-    //! more of the residual's energy over their own span. Without that guard
-    //! it shaves loud transients on clean records; with it, it does little.
-    //! See the README, "Clicks the interpolation gets wrong: the shape fit".
-    int    shape        = 0;
+    //! more of the residual's energy over their own span (0: no such test).
+    //! And a fit is taken only where it stands out of the music around it,
+    //! over +-5 ms: its peak is shapePeak or more of the input's peak, or
+    //! shapeHigh or more of the input's 3-8 kHz RMS (the click's own span left
+    //! out). A loud attack the shapes half fit does neither; a click under
+    //! loud, dark music does the second. Without that guard it shaves loud
+    //! transients on clean records. See the README, "Clicks the interpolation
+    //! gets wrong".
+    int    shape        = 1;
     double shapeChi     = 3.0;
     double shapeGate    = 3.5;
     double shapeMs      = 0.75;
-    double shapeFitq    = 0.3;
+    double shapeFitq    = 0.0;
+    double shapePeak    = 0.4;
+    double shapeHigh    = 4.0;
+    //! How far either side of an open gate the matched filter is worked out:
+    //! the gate's band filter is causal and opens a little after the click.
+    double shapeSlackMs = 0.25;
 
     //! The body stage. Not user-facing; declick_cli sweeps it as --body,
     //! --body-floor, --body-peak, --body-rate0 and --body-rate1.
@@ -962,7 +971,7 @@ private:
     //! their clicks from. m_dry itself stays the input, for the mix and the
     //! delta. Equal to m_dry when the shape fit is off.
     AlignedBuf m_in;
-    //! The shape fit. Parallel to m_win: the input's 2-8 kHz power, from four
+    //! The shape fit. Parallel to m_win: the input's 3-8 kHz power, from four
     //! biquads (m_shB coefficients, m_shZ state) as it is pushed. m_shQ: the
     //! three shapes, 2 shapeK + 1 each; m_shG: them through the model, with
     //! `order` more each; m_shMi: the inverse of their Gram matrix. The rest

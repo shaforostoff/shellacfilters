@@ -340,11 +340,14 @@ void testStreaming() {
 
         // The default replaces the damaged samples outright, so on a tone the
         // only thing left of a click is the interpolation error - which is
-        // small. It measures 29 dB; a floor well short of that still catches
-        // a repair that has gone partial or stopped being applied.
+        // small. It measures 20.2 dB without the shape fit and 19.7 with it:
+        // these bursts alternate at the Nyquist rate, nothing like a shellac
+        // click, and the fit's 1-8 kHz shapes take a part of them. A floor of
+        // 19 still catches a repair that has gone partial or stopped being
+        // applied (at depth 0 it is 5 dB).
         const double full = reduction(runChannel(dirty, p, sr));
         printf("  injected click energy reduced by %.1f dB at the defaults\n", full);
-        if (!(full > 20.0)) {
+        if (!(full > 19.0)) {
             printf("  FAIL  the default repair leaves too much of each click\n");
             ++g_failures;
         }

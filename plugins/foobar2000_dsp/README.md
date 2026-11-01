@@ -2066,10 +2066,9 @@ did after the body stage.
 The second was chosen. *El rodeo* keeps its shut stretches, 40–90 s and from
 120 s on: no key built on this band told it from clean records.
 
-### Clicks the interpolation gets wrong: the shape fit (off)
+### Clicks the interpolation gets wrong: the shape fit
 
-`Config::shape`, research only: off by default, where the output is the build
-before it to the bit. `declick_cli --shape 1` turns it on.
+`Config::shape`, on. `declick_cli --shape 0` turns it off.
 
 **What was left.** Biagi's *Sentimiento gaucho* (TangoTunes shellac `.m4a`)
 was aligned with a much cleaner vinyl copy. Its clicks are one shape: a
@@ -2085,42 +2084,65 @@ clicks are fitted as a sum of three fixed shapes, ±0.75 ms:
 * a 1–8 kHz band-limited impulse, its derivative, and a doublet 0.15 ms apart;
 * found as peaks of the matched filter on the model's residual, 3σ for two
   shapes (the three-shape threshold holds the same false-alarm rate);
-* only where the input's 2–8 kHz power over 1 ms is 3.5 times its median over
-  ±15 ms, and the shapes explain `shapeFitq` of the residual over their span.
+* only where the input's 3–8 kHz power over 1 ms is 3.5 times its median over
+  ±15 ms, the matched filter worked out within 0.25 ms of where that holds
+  (`shapeSlackMs`), and its peaks taken only where it was worked out either
+  side;
+* and only where the fit stands out of the music over ±5 ms: its peak is 0.4
+  (`shapePeak`) or more of the input's peak, or 4 (`shapeHigh`) or more of the
+  input's 3–8 kHz RMS, the click's own span left out.
 
 Only the fitted shapes are subtracted, from the window and from `m_in`, the
 input the repairs take their clicks from. The music under a click stays,
 where a repair replaces it. `m_dry` stays the input, for the mix and the delta.
 The model is refitted on what is left, and the passes run as before.
 
-**What it did.** On *Sentimiento gaucho*, unguarded (`--shape-fitq 0`), against
-the vinyl copy:
+**Why each guard.**
 
-| | quiet left 2–3 / 3–4.5 / 4.5–7 kHz | music taken 1–2 / 2–3 / 3–4.5 / 4.5–7 kHz |
-|---|---|---|
-| before | 50 / 47 / 52 % | 0.8 / 2.0 / 2.3 / 3.3 % |
-| shape fit | 51 / 47 / 51 % | 0.5 / 1.6 / 1.9 / 2.8 % |
+* **The peak.** Unguarded, the fit shaved loud transients on the clean *Olga*
+  (−45.7 → −40.1 dB): fits that peak at 0.2–0.33 of a full-scale input. A
+  click stands out of the music around it; a loud attack the shapes half fit
+  does not. `shapeFitq` (the share of the residual the shapes explain) stopped
+  that only at 0.3, where it stopped most of the fits on *Sentimiento gaucho*
+  too; it is 0, off.
+* **The high band.** On its own the peak guard turned away nine fits in ten at
+  2:24–2:34 of *Sentimiento gaucho*: the music is twice as loud there and the
+  clicks are not. Against the music's own 3–8 kHz, the same clicks stand out
+  as much as anywhere in the song, and *Olga*'s attacks do not.
+* **The gate's band.** It was 2–8 kHz, a fourth-order high-pass at 2 kHz.
+  Where the orchestra is loud, its 1–2 kHz leaked into the gate's median and
+  held the gate shut on a third of the clicks a prototype fitted (64 % passed
+  against the prototype's 93 %); from 3 kHz, 92 % pass, at the same cost.
+* **The slack.** The gate's band filter is causal, so its power comes a few
+  samples after the click. Gated start by start, a click's true peak could
+  fall just outside, and the edge of the open stretch passed for a peak, fitted
+  off the click at half its size.
 
-A prototype of it, run before the core with Biagi's own measured click shape,
-was heard as "much better", most of all at 2:24–2:34.
+**What it did.** On *Sentimiento gaucho*, against the vinyl copy, whole song
+and 2:24–2:34 (where it was heard to leave lots of crackle with only the peak
+guard):
 
-**Why it is off.**
+| | quiet left 2–3 / 3–4.5 / 4.5–7 kHz | taken 1–2 / 2–3 / 3–4.5 / 4.5–7 kHz | 2:24–2:34 left 2–3 / 3–4.5 / 4.5–7, events |
+|---|---|---|---|
+| before | 50 / 47 / 52 % | 0.8 / 2.0 / 2.3 / 3.3 % | 86 / 77 / 71 %, 2651 |
+| peak guard only | 52 / 48 / 54 % | 0.5 / 1.6 / 1.9 / 2.7 % | 86 / 76 / 71 %, 2631 |
+| now | 52 / 47 / 52 % | 0.5 / 1.6 / 1.9 / 2.7 % | 86 / 75 / 69 %, 2411 |
+| prototype, heard as better | | | 85 / 73 / 68 %, 2383 |
 
-* **Unguarded, it shaves loud transients on clean records.** *Olga*'s removal
-  goes −45.7 → −40.1 dB, from a few dozen loud peaks; Malvon's −35.1 → −34.5.
-* **The guard that stops that stops most of the rest too.** At `shapeFitq`
-  0.3, the default, *Olga* and Malvon are within 0.3 dB of the build before.
-  But on *Sentimiento gaucho* it fits 15 clicks a second instead of 53. Music
-  taken stays lower (0.5 / 1.6 / 1.8 / 2.6 %), and about 2 points more crackle
-  is left at 2–7 kHz. On the Demare and Calo songs with vinyl references it is
-  within half a point of the build before, music taken a little lower on four.
-* **It costs a third more CPU** when on: 80× realtime against 107× on 60 s of
-  *Sentimiento gaucho*. Off, nothing measurable.
+It fits 51 clicks a second there. On the Demare and Calo songs with vinyl
+references it is within two points of crackle left, and takes less music on
+most (1–2 kHz on *Tristezas de la calle Corrientes* 2.6 → 1.3 %).
 
-What would let it on is a guard that tells a click from a loud transient by
-more than how well the shapes fit, or the record's own click shape learned
-without a reference. Fixed shapes do as well as Biagi's measured one when
-unguarded. Learned per song, shapes so far took music.
+**What it does not touch.** *Olga* −45.74 → −45.77 dB and Malvon −35.07 dB
+unchanged, whole song; a handful of fits on each. On the Troilo .flac controls
+removal moves by 0.02 dB at most; on the Cachirulo .m4a it takes 0.6 dB more.
+
+**Cost.** 11 % more CPU on *Olga*, 17 % on *Sentimiento gaucho* (60 s, x64,
+interleaved best of 11). The gate is worked out first, and a block where it
+never opens stops there. A median of the gate is only sorted where a start
+could clear it. The shapes go through the model and the matched filter through
+the SIMD kernels. What is left is mostly the band filter, every sample, and on
+a crackly record the fits.
 
 ### The first seconds: an early carpet key
 

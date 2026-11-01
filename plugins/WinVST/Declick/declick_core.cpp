@@ -3171,7 +3171,7 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
 //! The three shapes for Config::shapeK and the rate, Gram-Schmidt'ed: a 1-8 kHz
 //! band-limited impulse (windowed sinc), its derivative, and the impulse less
 //! itself 0.15 ms later, a doublet - each under a Tukey taper of a half. And
-//! the gate's 2-8 kHz band-pass: fourth-order Butterworth high- and low-pass
+//! the gate's 3-8 kHz band-pass: fourth-order Butterworth high- and low-pass
 //! sections, the upper edge at most 0.45 of the rate.
 void Channel::shapeBuild() {
     const int k = m_cfg.shapeK;
@@ -3217,7 +3217,7 @@ void Channel::shapeBuild() {
     const double qs[2] = {0.5411961001461970, 1.3065629648763766};
     for (int sct = 0; sct < 4; ++sct) {
         const bool high = sct < 2;
-        const double w0 = 2.0 * pi * (high ? 2000.0 : dmin(8000.0, 0.45 * fs)) / fs;
+        const double w0 = 2.0 * pi * (high ? 3000.0 : dmin(8000.0, 0.45 * fs)) / fs;
         const double c = cos(w0), al = sin(w0) / (2.0 * qs[sct & 1]);
         const double a0 = 1.0 + al;
         double * B = &m_shB[5 * sct];
@@ -3230,7 +3230,7 @@ void Channel::shapeBuild() {
     for (int i = 0; i < 8; ++i) m_shZ[i] = 0.0;
 }
 
-//! The input's 2-8 kHz power, for the gate, as each sample is pushed.
+//! The input's 3-8 kHz power, for the gate, as each sample is pushed.
 void Channel::shapeBand(double v) {
     double y = v;
     for (int sct = 0; sct < 4; ++sct) {
@@ -3253,8 +3253,10 @@ void Channel::shapeBand(double v) {
 //! robust sigma is the matched filter, chi with three degrees of freedom.
 //! Where the gate is open, the fit's energy is shapeFitq or more of the
 //! residual's over the shapes' span, and chi peaks at shapeThr or more, at least a
-//! shape's length from a higher peak, co.Q is subtracted from the signal and
-//! co.G from e; then once more on what is left. The gate: the input's 2-8 kHz
+//! shape's length from a higher peak, and co.Q peaks at shapePeak or more of
+//! the input's peak over +-5 ms or at shapeHigh or more of the input's 3-8 kHz
+//! RMS there (the click's own span left out), co.Q is subtracted from the signal and
+//! co.G from e; then once more on what is left. The gate: the input's 3-8 kHz
 //! power averaged over 1 ms at the shape's centre, against shapeGate times the
 //! median of that average every 0.73 ms across +-15 ms (less where the window
 //! holds less), taken at the nearest 0.73 ms.
@@ -3274,19 +3276,14 @@ int Channel::shapeFit(int to) {
     const int n = t1 - t0;
     const int e1 = t1 - 1 + Lg;
 
-    // The residual, and its robust sigma over what the block reads.
-    g_kernels->filter(&m_arev[0], &m_win[(size_t)(t0 - order)], &m_fwd[(size_t)t0],
-                      e1 - t0, order + 1);
+    // The gate's 1 ms averages and their medians. It comes first: most blocks
+    // of most records never open it, and they cost no more than that.
     double * tmp = &m_shAvg[0];
-    for (int i = t0; i < e1; ++i) tmp[i - t0] = fabs(m_fwd[(size_t)i]);
-    std::nth_element(tmp, tmp + (e1 - t0) / 2, tmp + (e1 - t0));
-    const double sigma = 1.4826 * tmp[(e1 - t0) / 2];
-    if (!(sigma > 1e-12)) return 0;
-
-    // The gate's 1 ms averages and their medians.
     const double fs = m_cfg.rate;
     int h1 = (int)floor(0.5e-3 * fs + 0.5);
     if (h1 < 1) h1 = 1;
+    const int h5 = (int)floor(0.005 * fs + 0.5);
+    const int hx = (int)floor(0.23e-3 * fs + 0.5);
     int H = (int)floor(fs / 1378.125 + 0.5);
     if (H < 1) H = 1;
     const int cmin = t0 + k, cmax = t1 - 1 + k;
@@ -3302,31 +3299,56 @@ int Channel::shapeFit(int to) {
     const double inv1 = 1.0 / (double)(2 * h1 + 1);
     const int J = W / H;
     const int nq = (cmax - cmin) / H + 1;
+    // The averages on the grid every H, which the medians share, and each grid
+    // point's highest average among the starts nearest it. A median is only
+    // worked out where that could clear it: where more than half the averages
+    // across +-15 ms lie under it over shapeGate; elsewhere the gate is shut.
+    const int cnt = 2 * J + 1;
+    double * gv = &m_shChi[0];
+    for (int p = 0; p < nq + 2 * J; ++p) {
+        const int c = cmin + (p - J) * H;
+        gv[p] = (S[c + h1 + 1 - a] - S[c - h1 - a]) * inv1;
+    }
     double * med = &m_shMed[0];
+    for (int q = 0; q < nq; ++q) med[q] = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const int c = t0 + i + k;
+        int q = (c - cmin + H / 2) / H;
+        if (q >= nq) q = nq - 1;
+        const double avg = (S[c + h1 + 1 - a] - S[c - h1 - a]) * inv1;
+        if (avg > med[q]) med[q] = avg;
+    }
+    bool open = false;
     for (int q = 0; q < nq; ++q) {
-        const int m = cmin + q * H;
-        int cnt = 0;
-        for (int j = -J; j <= J; ++j) {
-            const int c = m + j * H;
-            tmp[cnt++] = (S[c + h1 + 1 - a] - S[c - h1 - a]) * inv1;
-        }
+        const double hi = med[q];
+        int under = 0;
+        for (int j = 0; j < cnt; ++j) under += (gv[q + j] * m_cfg.shapeGate < hi);
+        if (under <= cnt / 2) { med[q] = HUGE_VAL; continue; }
+        for (int j = 0; j < cnt; ++j) tmp[j] = gv[q + j];
         std::nth_element(tmp, tmp + cnt / 2, tmp + cnt);
         med[q] = tmp[cnt / 2] * m_cfg.shapeGate;
+        open = true;
     }
+    if (!open) return 0;
 
-    // The shapes through the model, and the inverse of their Gram matrix.
+    // The residual, and its robust sigma over what the block reads.
+    g_kernels->filter(&m_arev[0], &m_win[(size_t)(t0 - order)], &m_fwd[(size_t)t0],
+                      e1 - t0, order + 1);
+    for (int i = t0; i < e1; ++i) tmp[i - t0] = fabs(m_fwd[(size_t)i]);
+    std::nth_element(tmp, tmp + (e1 - t0) / 2, tmp + (e1 - t0));
+    const double sigma = 1.4826 * tmp[(e1 - t0) / 2];
+    if (!(sigma > 1e-12)) return 0;
+
+    // The shapes through the model, and the inverse of their Gram matrix:
+    // each shape, zero-padded by the order either side, through the residual
+    // filter.
     const double * Q = &m_shQ[0];
     double * G = &m_shG[0];
     for (int s3 = 0; s3 < 3; ++s3) {
         const double * q = Q + (size_t)s3 * L;
-        double * g = G + (size_t)s3 * Lg;
-        for (int i = 0; i < Lg; ++i) {
-            double v = 0.0;
-            const int m0 = (i - (L - 1) > 0) ? i - (L - 1) : 0;
-            const int m1 = (i < order) ? i : order;
-            for (int m = m0; m <= m1; ++m) v += m_a[(size_t)m] * q[i - m];
-            g[i] = v;
-        }
+        for (int i = 0; i < order; ++i) tmp[i] = tmp[order + L + i] = 0.0;
+        for (int i = 0; i < L; ++i) tmp[order + i] = q[i];
+        g_kernels->filter(&m_arev[0], tmp, G + (size_t)s3 * Lg, Lg, order + 1);
     }
     double M[9];
     for (int r = 0; r < 3; ++r)
@@ -3351,6 +3373,34 @@ int Channel::shapeFit(int to) {
         for (int i = 0; i < 9; ++i) Mi[i] /= det;
     }
 
+    // Where the matched filter is worked out: within shapeSlackMs of a start
+    // the gate is open at. The gate's band filter is causal, and its power
+    // comes a few samples after the click: gated start by start, the true
+    // peak of a click can fall just outside, and the edge of the open stretch
+    // then passes for a peak, fitted off the click at a fraction of it.
+    const int D = (int)floor(m_cfg.shapeSlackMs * 1e-3 * fs + 0.5);
+    double * near = tmp;                            // free once G is built
+    {
+        double * open = tmp + n + 1;
+        for (int i = 0; i < n; ++i) {
+            const int c = t0 + i + k;
+            int q = (c - cmin + H / 2) / H;
+            if (q >= nq) q = nq - 1;
+            open[i] = ((S[c + h1 + 1 - a] - S[c - h1 - a]) * inv1 > med[q]) ? 1.0 : 0.0;
+        }
+        // Open within D: the nearest open start before, then after.
+        int last = -(1 << 30);
+        for (int i = 0; i < n; ++i) {
+            if (open[i] > 0.0) last = i;
+            near[i] = (i - last <= D) ? 1.0 : 0.0;
+        }
+        last = 1 << 30;
+        for (int i = n - 1; i >= 0; --i) {
+            if (open[i] > 0.0) last = i;
+            if (last - i <= D) near[i] = 1.0;
+        }
+    }
+
     const double thr = m_cfg.shapeThr;
     const double invS = 1.0 / sigma;
     double * chi = &m_shChi[0];
@@ -3359,36 +3409,29 @@ int Channel::shapeFit(int to) {
     int fits = 0;
     for (int round = 0; round < 2; ++round) {
         for (int i = 0; i < n; ++i) {
-            const int c = t0 + i + k;
-            const double avg = (S[c + h1 + 1 - a] - S[c - h1 - a]) * inv1;
-            int q = (c - cmin + H / 2) / H;
-            if (q >= nq) q = nq - 1;
-            chi[i] = 0.0;
-            if (!(avg > med[q])) continue;
+            chi[i] = -1.0;                          // not worked out
+            if (!(near[i] > 0.0)) continue;
             const double * e = &m_fwd[(size_t)(t0 + i)];
-            double C[3] = {0.0, 0.0, 0.0};
-            for (int j = 0; j < Lg; ++j) {
-                C[0] += G[j] * e[j];
-                C[1] += G[(size_t)Lg + j] * e[j];
-                C[2] += G[2 * (size_t)Lg + j] * e[j];
-            }
+            double C[3], ee;
+            g_kernels->dot2(G, e, Lg, G + (size_t)Lg, e, Lg, &C[0], &C[1]);
+            g_kernels->dot2(G + 2 * (size_t)Lg, e, Lg, e, e, L, &C[2], &ee);
+            ee += 1e-300;
             const double * Mi = m_shMi;
             double * w = &co[3 * (size_t)i];
             w[0] = Mi[0] * C[0] + Mi[1] * C[1] + Mi[2] * C[2];
             w[1] = Mi[3] * C[0] + Mi[4] * C[1] + Mi[5] * C[2];
             w[2] = Mi[6] * C[0] + Mi[7] * C[1] + Mi[8] * C[2];
             const double en = C[0] * w[0] + C[1] * w[1] + C[2] * w[2];
-            double ee = 1e-300;
-            for (int j = 0; j < L; ++j) ee += e[j] * e[j];
             chi[i] = (en > 0.0 && en >= m_cfg.shapeFitq * ee) ? sqrt(en) * invS : 0.0;
         }
-        // Peaks at the threshold, highest first, a shape's length apart.
+        // Peaks at the threshold, highest first, a shape's length apart; not
+        // at the edge of where the filter was worked out, which is no peak.
         int np = 0;
         for (int i = 0; i < n; ++i) {
             const double x = chi[i];
             if (x < thr) continue;
-            if (i > 0 && !(x > chi[i - 1])) continue;
-            if (i + 1 < n && x < chi[i + 1]) continue;
+            if (i > 0 && !(x > chi[i - 1] && chi[i - 1] >= 0.0)) continue;
+            if (i + 1 < n && !(x >= chi[i + 1] && chi[i + 1] >= 0.0)) continue;
             pk[np++] = i;
         }
         if (np == 0) break;
@@ -3400,10 +3443,37 @@ int Channel::shapeFit(int to) {
                 if (pk[p] - pk[r] < L && pk[r] - pk[p] < L) { near = true; break; }
             if (!near) pk[na++] = pk[p];
         }
+        int taken = 0;
         for (int r = 0; r < na; ++r) {
             const int i = pk[r];
             const int t = t0 + i;
             const double * w = &co[3 * (size_t)i];
+            if (m_cfg.shapePeak > 0.0 || m_cfg.shapeHigh > 0.0) {
+                double fp = 0.0, xp = 0.0;
+                for (int u = 0; u < L; ++u) {
+                    const double v = w[0] * Q[u] + w[1] * Q[(size_t)L + u] + w[2] * Q[2 * (size_t)L + u];
+                    if (fabs(v) > fp) fp = fabs(v);
+                }
+                const int c = t + k;
+                const int x0 = (c - h5 > 0) ? c - h5 : 0;
+                const int x1 = (c + h5 < m_fill) ? c + h5 : m_fill - 1;
+                for (int u = x0; u <= x1; ++u)
+                    if (fabs(m_win[(size_t)u]) > xp) xp = fabs(m_win[(size_t)u]);
+                bool keep = m_cfg.shapePeak > 0.0 && fp >= m_cfg.shapePeak * xp;
+                if (!keep && m_cfg.shapeHigh > 0.0) {
+                    // The input's 3-8 kHz power over +-5 ms, less the click's
+                    // own span and the band filter's ring either side of it.
+                    const int lo0 = (c - h5 > a) ? c - h5 : a, lo1 = c - k - hx;
+                    const int hi0 = c + k + hx + 1, hi1 = (c + h5 + 1 < b) ? c + h5 + 1 : b;
+                    double pw = 0.0;
+                    int np = 0;
+                    if (lo1 > lo0) { pw += S[lo1 - a] - S[lo0 - a]; np += lo1 - lo0; }
+                    if (hi1 > hi0) { pw += S[hi1 - a] - S[hi0 - a]; np += hi1 - hi0; }
+                    keep = np > 0 && fp * fp * (double)np >= m_cfg.shapeHigh * m_cfg.shapeHigh * pw;
+                }
+                if (!keep) continue;
+            }
+            ++taken;
             double * e = &m_fwd[(size_t)t];
             for (int j = 0; j < Lg; ++j)
                 e[j] -= w[0] * G[j] + w[1] * G[(size_t)Lg + j] + w[2] * G[2 * (size_t)Lg + j];
@@ -3414,7 +3484,8 @@ int Channel::shapeFit(int to) {
                 m_in[(size_t)(t + u)] -= v;
             }
         }
-        fits += na;
+        fits += taken;
+        if (taken == 0) break;
     }
     m_shFits += (uint64_t)fits;
     return fits;

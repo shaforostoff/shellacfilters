@@ -49,12 +49,15 @@ void usage() {
         "  --soft-min <0..1>  Share of a run at the trigger that is repaired (default 0.5)\n"
         "  --soft-span <x>    Sigma above the trigger where repair is full (default 3.5, 0 off)\n"
         "  --shape <0|1>      The shape fit: clicks fitted as three fixed shapes and\n"
-        "                     subtracted before the first pass (default 0: research)\n"
+        "                     subtracted before the first pass (default 1)\n"
         "  --shape-chi <x>    Its matched filter's threshold, sigma as for two shapes (default 3)\n"
-        "  --shape-gate <x>   2-8 kHz power over 1 ms against its median over +-15 ms (default 3.5)\n"
+        "  --shape-gate <x>   3-8 kHz power over 1 ms against its median over +-15 ms (default 3.5)\n"
         "  --shape-ms <ms>    Half length of the shapes (default 0.75)\n"
-        "  --shape-fitq <x>   Share of the residual the shapes must explain (default 0.3)\n"
-        "  --body <0|1>       The crackle-body stage (default 1)\n"
+        "  --shape-fitq <x>   Share of the residual the shapes must explain (default 0: off)\n"
+        "  --shape-peak <x>   The fit's peak against the input's over +-5 ms (default 0.4, 0 off)\n"
+        "  --shape-high <x>   Or its peak against the input's 3-8 kHz RMS there (default 4, 0 off)\n"
+        "  --shape-slack <ms> Matched filter worked out this far either side of an open gate (default 0.25)\n"
+        "  --body <0|1>      The crackle-body stage (default 1)\n"
         "  --body-floor <0..1>  Deepest cut of a bin, as a gain (default 0.25)\n"
         "  --body-peak <x>    Sigma a run must peak at to count towards its key (default 6)\n"
         "  --body-rate0 <x>   Strong runs per second where the key starts to open (default 20)\n"
@@ -180,6 +183,9 @@ const ConfigFlag kConfigFlags[] = {
     DBL("--shape-gate",            shapeGate),
     DBL("--shape-ms",              shapeMs),
     DBL("--shape-fitq",            shapeFitq),
+    DBL("--shape-peak",            shapePeak),
+    DBL("--shape-high",            shapeHigh),
+    DBL("--shape-slack",           shapeSlackMs),
     INT("--mid",                   mid),
     DBL("--mid-lo",                midLo),
     DBL("--mid-peak",              midPeak),
