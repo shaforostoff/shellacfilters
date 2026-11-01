@@ -173,7 +173,8 @@ struct Config {
     //! and leaves a quarter to three quarters of it. So before the first pass
     //! looks for runs, each block's strongest clicks are fitted as a sum of
     //! three fixed shapes, +-shapeMs: a 1-8 kHz band-limited impulse, its
-    //! derivative and a doublet 0.15 ms apart. Only the fitted shapes are
+    //! derivative, and a shellac click measured against a vinyl copy (down,
+    //! up, and a slow tail that carries its 0.5-2 kHz). Only the fitted shapes are
     //! subtracted, and the music under them stays. A click is a peak of the
     //! matched filter on the model's residual, shapeChi sigma or more (as a
     //! two-shape test; the three-shape threshold has the same false alarm

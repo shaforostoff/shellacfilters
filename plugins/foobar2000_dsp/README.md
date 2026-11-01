@@ -2081,7 +2081,9 @@ run's gain changes nothing; the estimate is the problem, not the gain.
 **The stage.** Before the first pass looks for runs, each block's strongest
 clicks are fitted as a sum of three fixed shapes, ±0.75 ms:
 
-* a 1–8 kHz band-limited impulse, its derivative, and a doublet 0.15 ms apart;
+* a 1–8 kHz band-limited impulse, its derivative, and a measured click: the
+  mean of *Sentimiento gaucho*'s strong clicks less the vinyl copy, at
+  44.1 kHz (`kShClick`), taken to the rate by windowed-sinc interpolation;
 * found as peaks of the matched filter on the model's residual, 3σ for two
   shapes (the three-shape threshold holds the same false-alarm rate);
 * only where the input's 3–8 kHz power over 1 ms is 3.5 times its median over
@@ -2132,6 +2134,21 @@ guard):
 It fits 51 clicks a second there. On the Demare and Calo songs with vinyl
 references it is within two points of crackle left, and takes less music on
 most (1–2 kHz on *Tristezas de la calle Corrientes* 2.6 → 1.3 %).
+
+**The measured click.** The third shape was a doublet 0.15 ms apart, and the
+prototype heard as better still led in quiet passages: by 6 / 5 points of
+crackle left at 0.5–1 / 1–2 kHz, 2–4 points at 2–7 kHz. Its shape was the
+measured click, whose slow tail after the second lobe carries most of a
+click's 0.5–2 kHz; a band-limited impulse cannot follow it, and taking the
+shapes' low edge from 1 kHz to 500 or 300 Hz changed nothing. With the
+measured click in the doublet's place, quiet left at 0.5–1 / 1–2 / 2–3 /
+3–4.5 / 4.5–7 kHz goes 98 / 78 / 37 / 36 / 46 → 91 / 72 / 35 / 35 / 46 %
+(prototype 92 / 73 / 34 / 33 / 44), music taken equal or lower, 58 fits a
+second instead of 51. On the Demare and Calo check set, whose clicks were not
+measured, crackle left is equal or lower (1–2 kHz on the three Calo songs
+3–5 points) and music taken equal or lower: the shape carries over. The rest
+of the gap is the high-band guard: at 3 it is within half a point of the
+prototype, but takes 0.15 dB more on Malvon, so it stays at 4.
 
 **What it does not touch.** *Olga* −45.74 → −45.77 dB and Malvon −35.07 dB
 unchanged, whole song; a handful of fits on each. On the Troilo .flac controls

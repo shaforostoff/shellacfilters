@@ -3168,11 +3168,30 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
     return true;
 }
 
+//! A shellac click as it comes out of a transfer: the mean of Sentimiento
+//! gaucho's strong clicks (Biagi, 1942, TangoTunes .m4a) less an aligned vinyl
+//! copy, high-passed at 300 Hz, at 44.1 kHz, +-1.2 ms, peak -1 at the centre.
+//! Down, up 0.1 ms later, then a slow tail half a millisecond long that a
+//! band-limited impulse cannot follow: most of a click's 0.5-2 kHz.
+static const double kShClick[107] = {
+    0.0114, 0.0130, 0.0163, 0.0174, 0.0153, 0.0128, 0.0101, 0.0085, 0.0100, 0.0134, 0.0153, 0.0148,
+    0.0126, 0.0130, 0.0147, 0.0151, 0.0138, 0.0130, 0.0129, 0.0128, 0.0112, 0.0103, 0.0098, 0.0077,
+    0.0047, 0.0035, 0.0026, 0.0018, 0.0027, 0.0056, 0.0077, 0.0091, 0.0106, 0.0118, 0.0096, 0.0058,
+    0.0030, 0.0011, -0.0027, -0.0081, -0.0129, -0.0172, -0.0211, -0.0232, -0.0268, -0.0363, -0.0533,
+    -0.0751, -0.1079, -0.1681, -0.2838, -0.4869, -0.7681, -1.0000, -0.9672, -0.5656, 0.0514, 0.5694,
+    0.7758, 0.7051, 0.5235, 0.3615, 0.2563, 0.1912, 0.1441, 0.1091, 0.0879, 0.0775, 0.0710, 0.0665,
+    0.0639, 0.0615, 0.0570, 0.0513, 0.0455, 0.0400, 0.0343, 0.0296, 0.0259, 0.0227, 0.0178, 0.0131,
+    0.0102, 0.0095, 0.0082, 0.0059, 0.0031, 0.0023, 0.0017, -0.0025, -0.0084, -0.0093, -0.0060, -0.0031,
+    -0.0033, -0.0064, -0.0098, -0.0091, -0.0067, -0.0045, -0.0037, -0.0032, -0.0040, -0.0063, -0.0100,
+    -0.0130, -0.0154
+};
+
 //! The three shapes for Config::shapeK and the rate, Gram-Schmidt'ed: a 1-8 kHz
-//! band-limited impulse (windowed sinc), its derivative, and the impulse less
-//! itself 0.15 ms later, a doublet - each under a Tukey taper of a half. And
-//! the gate's 3-8 kHz band-pass: fourth-order Butterworth high- and low-pass
-//! sections, the upper edge at most 0.45 of the rate.
+//! band-limited impulse (windowed sinc), its derivative, and the measured click
+//! kShClick, taken to the rate by windowed-sinc interpolation - each under a
+//! Tukey taper of a half. And the gate's 3-8 kHz band-pass: fourth-order
+//! Butterworth high- and low-pass sections, the upper edge at most 0.45 of the
+//! rate.
 void Channel::shapeBuild() {
     const int k = m_cfg.shapeK;
     const int L = 2 * k + 1;
@@ -3180,7 +3199,6 @@ void Channel::shapeBuild() {
     const double pi = 3.141592653589793;
     const double f1 = 1000.0 / fs;
     const double f2 = dmin(8000.0, 0.45 * fs) / fs;
-    const int dd = (int)floor(0.15e-3 * fs + 0.5);
     struct Bl {
         double f1, f2, pi;
         double sinc(double x) const { return (x == 0.0) ? 1.0 : sin(pi * x) / (pi * x); }
@@ -3196,7 +3214,19 @@ void Channel::shapeBuild() {
         else if (x > 0.75) w = 0.5 * (1.0 + cos(4.0 * pi * (x - 0.75)));
         const double n = (double)(i - k);
         q0[i] = bl.at(n) * w;
-        q2[i] = (bl.at(n) - bl.at(n - (double)dd)) * w;
+        // The click at n samples of the rate is at u of the table's: a sinc
+        // cut at the lower of the two Nyquists, under a Hann window 12 table
+        // samples either side. At 44.1 kHz it is the table itself.
+        const double u = 53.0 + n * 44100.0 / fs;
+        const double fc = dmin(1.0, fs / 44100.0);
+        double v = 0.0;
+        for (int j = (int)floor(u) - 11; j <= (int)floor(u) + 12; ++j) {
+            if (j < 0 || j > 106) continue;
+            const double d = u - (double)j;
+            if (fabs(d) >= 12.0) continue;
+            v += kShClick[j] * fc * bl.sinc(fc * d) * 0.5 * (1.0 + cos(pi * d / 12.0));
+        }
+        q2[i] = v * w;
     }
     q1[0] = q0[1] - q0[0];
     q1[L - 1] = q0[L - 1] - q0[L - 2];
