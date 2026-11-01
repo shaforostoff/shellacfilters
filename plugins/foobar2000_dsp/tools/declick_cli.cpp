@@ -48,6 +48,12 @@ void usage() {
         "  --dip-peak <x>    Only runs that peak this many sigma or more may (default 6)\n"
         "  --soft-min <0..1>  Share of a run at the trigger that is repaired (default 0.5)\n"
         "  --soft-span <x>    Sigma above the trigger where repair is full (default 3.5, 0 off)\n"
+        "  --shape <0|1>      The shape fit: clicks fitted as three fixed shapes and\n"
+        "                     subtracted before the first pass (default 0: research)\n"
+        "  --shape-chi <x>    Its matched filter's threshold, sigma as for two shapes (default 3)\n"
+        "  --shape-gate <x>   2-8 kHz power over 1 ms against its median over +-15 ms (default 3.5)\n"
+        "  --shape-ms <ms>    Half length of the shapes (default 0.75)\n"
+        "  --shape-fitq <x>   Share of the residual the shapes must explain (default 0.3)\n"
         "  --body <0|1>       The crackle-body stage (default 1)\n"
         "  --body-floor <0..1>  Deepest cut of a bin, as a gain (default 0.25)\n"
         "  --body-peak <x>    Sigma a run must peak at to count towards its key (default 6)\n"
@@ -169,6 +175,11 @@ const ConfigFlag kConfigFlags[] = {
     DBL("--micro-ms",              microMs),
     DBL("--micro-alpha",           microAlpha),
     DBL("--micro-q",               microQ),
+    INT("--shape",                 shape),
+    DBL("--shape-chi",             shapeChi),
+    DBL("--shape-gate",            shapeGate),
+    DBL("--shape-ms",              shapeMs),
+    DBL("--shape-fitq",            shapeFitq),
     INT("--mid",                   mid),
     DBL("--mid-lo",                midLo),
     DBL("--mid-peak",              midPeak),
@@ -354,7 +365,7 @@ int main(int argc, char ** argv) {
     }
 
     uint64_t repaired = 0, seen = 0, clamped = 0, reclamped = 0, flSpans = 0, flSkipped = 0;
-    uint64_t carpetOpen = 0, midCuts = 0, crackleFloorCuts = 0;
+    uint64_t carpetOpen = 0, midCuts = 0, crackleFloorCuts = 0, shapeFits = 0;
     for (unsigned c = 0; c < channels; ++c) {
         repaired += chans[c]->repairedSamples();
         seen += chans[c]->seenSamples();
@@ -365,6 +376,7 @@ int main(int argc, char ** argv) {
         carpetOpen += chans[c]->carpetOpenBlocks();
         midCuts += chans[c]->midFrames();
         crackleFloorCuts += chans[c]->crackleFloorFrames();
+        shapeFits += chans[c]->shapeFits();
     }
 
     if (delta) {
@@ -400,6 +412,11 @@ int main(int argc, char ** argv) {
                (unsigned long long)repaired, (unsigned long long)seen,
                seen ? 100.0 * (double)repaired / (double)seen : 0.0,
                (unsigned long long)clamped, (unsigned long long)reclamped);
+        // The shape fit: the clicks it fitted and took, per second per channel.
+        if (cfg.shape) {
+            printf("  shape fit: %llu clicks (%.1f/s)\n", (unsigned long long)shapeFits,
+                   frames ? (double)shapeFits * (double)audio.sampleRate / (double)frames / (double)channels : 0.0);
+        }
         // The flank repair: the transfer's -40 dB edge as it stood at the
         // end, the pad that gave, and the spans repaired again.
         if (cfg.flankStage > 0) {

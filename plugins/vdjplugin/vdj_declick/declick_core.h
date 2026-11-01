@@ -42,7 +42,8 @@ enum {
     //! the top of the range - see the README for the throughput figures.
     kMaxOrder = 256,
     kBlock    = 512,     //!< analysis hop; also sets most of the latency
-    kCarpetMax = 64      //!< seconds the carpet key can look back; see Config::carpet
+    kCarpetMax = 64,     //!< seconds the carpet key can look back; see Config::carpet
+    kShapeMax = 128      //!< the shape fit's longest half length; see Config::shape
 };
 
 //! User-facing controls, all normalised 0..1 except where noted.
@@ -164,6 +165,29 @@ struct Config {
     //! where every run is in full; see there for why.
     double softMin      = 0.5;
     double softSpan     = 3.5;
+
+    //! The shape fit. Off: research only, not yet tuned for every record.
+    //! Not user-facing; declick_cli sweeps it as --shape, --shape-chi,
+    //! --shape-gate, --shape-ms and --shape-fitq.
+    //! A shellac click is a doublet a fraction of a millisecond long, and over
+    //! a run of 13-20 samples the AR interpolation gets its second lobe wrong
+    //! and leaves a quarter to three quarters of it. So before the first pass
+    //! looks for runs, each block's strongest clicks are fitted as a sum of
+    //! three fixed shapes, +-shapeMs: a 1-8 kHz band-limited impulse, its
+    //! derivative and a doublet 0.15 ms apart. Only the fitted shapes are
+    //! subtracted, and the music under them stays. A click is a peak of the
+    //! matched filter on the model's residual, shapeChi sigma or more (as a
+    //! two-shape test; the three-shape threshold has the same false alarm
+    //! rate), where the input's 2-8 kHz power over 1 ms stands shapeGate times
+    //! over its median across +-15 ms, and the shapes explain shapeFitq or
+    //! more of the residual's energy over their own span. Without that guard
+    //! it shaves loud transients on clean records; with it, it does little.
+    //! See the README, "Clicks the interpolation gets wrong: the shape fit".
+    int    shape        = 0;
+    double shapeChi     = 3.0;
+    double shapeGate    = 3.5;
+    double shapeMs      = 0.75;
+    double shapeFitq    = 0.3;
 
     //! The body stage. Not user-facing; declick_cli sweeps it as --body,
     //! --body-floor, --body-peak, --body-rate0 and --body-rate1.
@@ -332,6 +356,10 @@ struct Config {
     //! Samples the repaired audio waits before the body stage, for the flank
     //! repair: a block, or 0 when it is off. Part of the latency.
     int    flankStage   = 0;
+    //! The shape fit's half length in samples, from shapeMs and the rate
+    //! (at most kShapeMax), and its threshold for three shapes.
+    int    shapeK       = 33;
+    double shapeThr     = 3.4;
 
     //! The carpet key. Not user-facing; declick_cli sweeps it as --carpet,
     //! --carpet-peak, --carpet-win, --carpet-q, --carpet-rate0, --carpet-rate1,
@@ -505,7 +533,8 @@ struct Config {
     //! Only `order`, `maxRun`, `madWindow`, `body`, `bodyN`, `fineN`, `fineM`,
     //! `microN`, `microM`, `mid`, `midLo`, `flankStage`, `flankHalf` and the
     //! crackle floor stage's `crackleFloor`, `crackleFloorN`, `crackleFloorLo`,
-    //! `crackleFloorHi` and `crackleFloorHist` size
+    //! `crackleFloorHi` and `crackleFloorHist`, and the shape fit's `shape` and
+    //! `shapeK` (its shapes are built by configure()) size
     //! anything or set the latency (`pad` and `latency` are derived from them);
     //! thresholds, depth, wet, delta, passes and whether the fine and micro
     //! stages run are read per block and can change under a live stream.
@@ -518,7 +547,8 @@ struct Config {
             && flankHalf == o.flankHalf && flankHz == o.flankHz
             && crackleFloor == o.crackleFloor && crackleFloorN == o.crackleFloorN
             && crackleFloorLo == o.crackleFloorLo && crackleFloorHi == o.crackleFloorHi
-            && crackleFloorHist == o.crackleFloorHist && rate == o.rate;
+            && crackleFloorHist == o.crackleFloorHist && rate == o.rate
+            && shape == o.shape && shapeK == o.shapeK;
     }
 };
 
@@ -795,6 +825,9 @@ public:
     uint64_t clampedSamples() const { return m_clamped; }
     uint64_t reclampedSamples() const { return m_reclamped; }
 
+    //! Clicks the shape fit took. See Config::shape.
+    uint64_t shapeFits() const { return m_shFits; }
+
     //! Diagnostics for the flank repair: spans interpolated again, spans
     //! passed over (longer than maxRun, or too near the window's edge), and
     //! the -40 dB edge of the long-term spectrum in Hz with the pad it gives
@@ -877,6 +910,12 @@ private:
     void growOut();               //!< only reachable by overrunning maxBlock
     void processBlock();          //!< repairs m_win[m_pad .. m_pad+kBlock)
     void detect(int from, int to, int pass);
+    //! The shape fit (Config::shape): builds its shapes for the rate, and fits
+    //! and subtracts the clicks centred in this block, from m_win, m_full and
+    //! m_in, before the first pass. Returns how many it took.
+    void shapeBuild();
+    int  shapeFit(int to);
+    void shapeBand(double v);
     //! The median of the noise ring's first `have` entries; see the .cpp.
     double ringMedian(size_t have);
     //! Repairs bursts that start in [from, to); a burst may run on to `reach`.
@@ -919,6 +958,21 @@ private:
     //! Parallel to m_win: in a run repaired at Config::midPeak sigma or more.
     std::vector<uint8_t> m_strong;
     AlignedBuf m_dry;             //!< untouched copy, for the dry/wet mix
+    //! m_dry less the clicks the shape fit took: the input the repairs take
+    //! their clicks from. m_dry itself stays the input, for the mix and the
+    //! delta. Equal to m_dry when the shape fit is off.
+    AlignedBuf m_in;
+    //! The shape fit. Parallel to m_win: the input's 2-8 kHz power, from four
+    //! biquads (m_shB coefficients, m_shZ state) as it is pushed. m_shQ: the
+    //! three shapes, 2 shapeK + 1 each; m_shG: them through the model, with
+    //! `order` more each; m_shMi: the inverse of their Gram matrix. The rest
+    //! is per-block scratch.
+    std::vector<double> m_shBand, m_shQ, m_shG, m_shSum, m_shAvg, m_shMed, m_shChi, m_shCo;
+    std::vector<int> m_shPk;
+    double m_shB[20] = {};
+    double m_shZ[8] = {};
+    double m_shMi[9] = {};
+    uint64_t m_shFits = 0;
     //! m_win with every repair in full, whatever its Config::softMin gain:
     //! what repairRun() solves against. Solved against m_win, a run's context
     //! held its neighbours' half clicks. After the first pass the refit has

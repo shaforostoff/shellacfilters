@@ -1881,6 +1881,25 @@ void Config::compute(const Params & pIn, double sampleRate) {
         if (microLag() + microM * (microN / 2) + microN - 1 > bodyDelay(bodyN)) micro = 0;
     }
 
+    // The shape fit's half length, and its threshold for three shapes at the
+    // false alarm rate shapeChi gives two: a chi-square tail with three degrees
+    // of freedom held to exp(-shapeChi^2 / 2), the tail with two.
+    shapeK = (int)floor(shapeMs * 1e-3 * sampleRate + 0.5);
+    if (shapeK < 2) shapeK = 2;
+    if (shapeK > (int)kShapeMax) shapeK = (int)kShapeMax;
+    {
+        const double p = exp(-0.5 * shapeChi * shapeChi);
+        double lo = 0.0, hi = 40.0;
+        for (int it = 0; it < 60; ++it) {
+            const double x = 0.5 * (lo + hi);
+            const double q = erfc(x * 0.7071067811865476)
+                           + 0.7978845608028654 * x * exp(-0.5 * x * x);
+            if (q > p) lo = x;
+            else hi = x;
+        }
+        shapeThr = 0.5 * (lo + hi);
+    }
+
     // The envelope the buffers are sized from. Same clamps as maxRun above, but
     // at Params::sanitize()'s 20 ms ceiling and kMaxOrder, so no parameter
     // setting at this sample rate can outgrow them.
@@ -2084,6 +2103,7 @@ void Channel::configure(const Config & cfg) {
 
     m_win.assign(need, 0.0);
     m_dry.assign(need, 0.0);
+    m_in.assign(need, 0.0);
     m_full.assign(need, 0.0);
     m_flag.assign(need, 0);
     m_strong.assign(need, 0);
@@ -2111,6 +2131,22 @@ void Channel::configure(const Config & cfg) {
     // same every block. Build it once here - sized to the envelope like
     // everything else, so a later reconfigure does not allocate.
     m_hann.assign(need, 0.0);
+
+    // The shape fit: three shapes of at most kShapeMax either side, the same
+    // through the model, and per-block scratch, all at the envelope.
+    {
+        const size_t L = 2 * (size_t)kShapeMax + 1;
+        m_shBand.assign(need, 0.0);
+        m_shQ.assign(3 * L, 0.0);
+        m_shG.assign(3 * (L + bo), 0.0);
+        m_shSum.assign(need + 1, 0.0);
+        m_shAvg.assign(need, 0.0);
+        m_shMed.assign(need, 0.0);
+        m_shChi.assign(need, 0.0);
+        m_shCo.assign(3 * need, 0.0);
+        m_shPk.assign(need, 0);
+        shapeBuild();
+    }
     m_hannLen = 2 * cfg.pad + (int)kBlock;
     if (m_hannLen > 1 && (size_t)m_hannLen <= need) {
         const double twoPi = 6.283185307179586;
@@ -2471,7 +2507,10 @@ void Channel::configure(const Config & cfg) {
 }
 
 size_t Channel::heapBytes() const {
-    return (m_win.capacity() + m_dry.capacity() + m_full.capacity() + m_fwd.capacity()
+    return (m_win.capacity() + m_dry.capacity() + m_in.capacity() + m_full.capacity() + m_fwd.capacity()
+            + m_shBand.capacity() + m_shQ.capacity() + m_shG.capacity() + m_shSum.capacity()
+            + m_shAvg.capacity() + m_shMed.capacity() + m_shChi.capacity() + m_shCo.capacity()
+            + m_shPk.capacity() * sizeof(int) / sizeof(double)
             + m_bwd.capacity() + m_det.capacity() + m_a.capacity()
             + m_ra.capacity() + m_aa.capacity() + m_arev.capacity() + m_hann.capacity()
             + m_madRing.capacity() + m_scratch.capacity()
@@ -2584,6 +2623,9 @@ bool Channel::adoptWarm(const WarmState & s) {
 void Channel::resetPath() {
     std::fill(m_win.begin(), m_win.end(), 0.0);
     std::fill(m_dry.begin(), m_dry.end(), 0.0);
+    std::fill(m_in.begin(), m_in.end(), 0.0);
+    std::fill(m_shBand.begin(), m_shBand.end(), 0.0);
+    for (int i = 0; i < 8; ++i) m_shZ[i] = 0.0;
     std::fill(m_full.begin(), m_full.end(), 0.0);
     std::fill(m_flag.begin(), m_flag.end(), (uint8_t)0);
     std::fill(m_strong.begin(), m_strong.end(), (uint8_t)0);
@@ -3077,8 +3119,8 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
     // from m_win it compounded: on dense runs each repair read the last one
     // as context, could reach 1.5x it, and an ill-conditioned model (an MP3's
     // empty top octave) walked a side channel from 0.17 to 728 inside 4 ms.
-    const double localMax = dmax(absMax(&m_dry[(size_t)lo0], s - lo0),
-                                 absMax(&m_dry[(size_t)(e + 1)], hi0 - e));
+    const double localMax = dmax(absMax(&m_in[(size_t)lo0], s - lo0),
+                                 absMax(&m_in[(size_t)(e + 1)], hi0 - e));
     const double limit = 1.5 * dmax(localMax, 1e-9);
 
     // Subtractive repair. A click ADDS to the music, so the damaged
@@ -3103,8 +3145,8 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
 
         // A re-repair subtracts from what was actually there, not from the
         // earlier repair - which stays put if this one cannot be done.
-        const double x = again ? m_dry[s + j] : m_win[s + j];
-        const double xf = again ? m_dry[s + j] : m_full[s + j];
+        const double x = again ? m_in[s + j] : m_win[s + j];
+        const double xf = again ? m_in[s + j] : m_full[s + j];
         const double dj = x - v;
 
         double w = wcap;
@@ -3124,6 +3166,258 @@ bool Channel::repairRun(int s, int e, bool again, double gain) {
     if (again) m_reclamped += (uint64_t)clamped;
     else m_clamped += (uint64_t)clamped;
     return true;
+}
+
+//! The three shapes for Config::shapeK and the rate, Gram-Schmidt'ed: a 1-8 kHz
+//! band-limited impulse (windowed sinc), its derivative, and the impulse less
+//! itself 0.15 ms later, a doublet - each under a Tukey taper of a half. And
+//! the gate's 2-8 kHz band-pass: fourth-order Butterworth high- and low-pass
+//! sections, the upper edge at most 0.45 of the rate.
+void Channel::shapeBuild() {
+    const int k = m_cfg.shapeK;
+    const int L = 2 * k + 1;
+    const double fs = m_cfg.rate;
+    const double pi = 3.141592653589793;
+    const double f1 = 1000.0 / fs;
+    const double f2 = dmin(8000.0, 0.45 * fs) / fs;
+    const int dd = (int)floor(0.15e-3 * fs + 0.5);
+    struct Bl {
+        double f1, f2, pi;
+        double sinc(double x) const { return (x == 0.0) ? 1.0 : sin(pi * x) / (pi * x); }
+        double at(double n) const { return 2.0 * f2 * sinc(2.0 * f2 * n) - 2.0 * f1 * sinc(2.0 * f1 * n); }
+    } bl = {f1, f2, pi};
+    double * q0 = &m_shQ[0];
+    double * q1 = q0 + L;
+    double * q2 = q1 + L;
+    for (int i = 0; i < L; ++i) {
+        const double x = (double)i / (double)(L - 1);
+        double w = 1.0;
+        if (x < 0.25) w = 0.5 * (1.0 + cos(4.0 * pi * (x - 0.25)));
+        else if (x > 0.75) w = 0.5 * (1.0 + cos(4.0 * pi * (x - 0.75)));
+        const double n = (double)(i - k);
+        q0[i] = bl.at(n) * w;
+        q2[i] = (bl.at(n) - bl.at(n - (double)dd)) * w;
+    }
+    q1[0] = q0[1] - q0[0];
+    q1[L - 1] = q0[L - 1] - q0[L - 2];
+    for (int i = 1; i < L - 1; ++i) q1[i] = 0.5 * (q0[i + 1] - q0[i - 1]);
+    double * Q[3] = {q0, q1, q2};
+    for (int a = 0; a < 3; ++a) {
+        for (int b = 0; b < a; ++b) {
+            double d = 0.0;
+            for (int i = 0; i < L; ++i) d += Q[a][i] * Q[b][i];
+            for (int i = 0; i < L; ++i) Q[a][i] -= d * Q[b][i];
+        }
+        double nn = 0.0;
+        for (int i = 0; i < L; ++i) nn += Q[a][i] * Q[a][i];
+        nn = (nn > 0.0) ? 1.0 / sqrt(nn) : 0.0;
+        for (int i = 0; i < L; ++i) Q[a][i] *= nn;
+    }
+    // RBJ sections, Q of a fourth-order Butterworth: b0 b1 b2 a1 a2 each.
+    const double qs[2] = {0.5411961001461970, 1.3065629648763766};
+    for (int sct = 0; sct < 4; ++sct) {
+        const bool high = sct < 2;
+        const double w0 = 2.0 * pi * (high ? 2000.0 : dmin(8000.0, 0.45 * fs)) / fs;
+        const double c = cos(w0), al = sin(w0) / (2.0 * qs[sct & 1]);
+        const double a0 = 1.0 + al;
+        double * B = &m_shB[5 * sct];
+        B[0] = (high ? 0.5 * (1.0 + c) : 0.5 * (1.0 - c)) / a0;
+        B[1] = (high ? -(1.0 + c) : (1.0 - c)) / a0;
+        B[2] = B[0];
+        B[3] = -2.0 * c / a0;
+        B[4] = (1.0 - al) / a0;
+    }
+    for (int i = 0; i < 8; ++i) m_shZ[i] = 0.0;
+}
+
+//! The input's 2-8 kHz power, for the gate, as each sample is pushed.
+void Channel::shapeBand(double v) {
+    double y = v;
+    for (int sct = 0; sct < 4; ++sct) {
+        const double * B = &m_shB[5 * sct];
+        double * z = &m_shZ[2 * sct];
+        const double o = B[0] * y + z[0];
+        z[0] = B[1] * y - B[3] * o + z[1];
+        z[1] = B[2] * y - B[4] * o;
+        y = o;
+    }
+    if (fabs(y) < 1e-30) y = 0.0;                  // no denormals in the state's wake
+    m_shBand[(size_t)m_fill] = y * y;
+}
+
+//! The shape fit on the clicks centred in this block; see Config::shape.
+//!
+//! On the model's forward residual e, the three shapes through the model are
+//! G; at a start t, C = G e[t..], and the least-squares weights are
+//! co = (G G')^-1 C, the fit's energy C.co. Its root over the residual's
+//! robust sigma is the matched filter, chi with three degrees of freedom.
+//! Where the gate is open, the fit's energy is shapeFitq or more of the
+//! residual's over the shapes' span, and chi peaks at shapeThr or more, at least a
+//! shape's length from a higher peak, co.Q is subtracted from the signal and
+//! co.G from e; then once more on what is left. The gate: the input's 2-8 kHz
+//! power averaged over 1 ms at the shape's centre, against shapeGate times the
+//! median of that average every 0.73 ms across +-15 ms (less where the window
+//! holds less), taken at the nearest 0.73 ms.
+int Channel::shapeFit(int to) {
+    const int order = m_cfg.order;
+    const int k = m_cfg.shapeK;
+    const int L = 2 * k + 1;
+    const int Lg = L + order;
+    const int c0 = m_pad, c1 = m_pad + (int)kBlock;
+    const int live0 = m_silentUntil + order;
+    const int live1 = (m_tailFrom < (1 << 30)) ? m_tailFrom - order : to;
+    int t0 = c0 - k;
+    if (t0 < live0) t0 = live0;
+    int t1 = c1 - k;
+    if (t1 + Lg > live1) t1 = live1 - Lg;
+    if (t1 <= t0) return 0;
+    const int n = t1 - t0;
+    const int e1 = t1 - 1 + Lg;
+
+    // The residual, and its robust sigma over what the block reads.
+    g_kernels->filter(&m_arev[0], &m_win[(size_t)(t0 - order)], &m_fwd[(size_t)t0],
+                      e1 - t0, order + 1);
+    double * tmp = &m_shAvg[0];
+    for (int i = t0; i < e1; ++i) tmp[i - t0] = fabs(m_fwd[(size_t)i]);
+    std::nth_element(tmp, tmp + (e1 - t0) / 2, tmp + (e1 - t0));
+    const double sigma = 1.4826 * tmp[(e1 - t0) / 2];
+    if (!(sigma > 1e-12)) return 0;
+
+    // The gate's 1 ms averages and their medians.
+    const double fs = m_cfg.rate;
+    int h1 = (int)floor(0.5e-3 * fs + 0.5);
+    if (h1 < 1) h1 = 1;
+    int H = (int)floor(fs / 1378.125 + 0.5);
+    if (H < 1) H = 1;
+    const int cmin = t0 + k, cmax = t1 - 1 + k;
+    int W = (int)floor(0.015 * fs + 0.5);
+    if (W > cmin - h1 - 1) W = cmin - h1 - 1;
+    if (W > m_fill - 2 - h1 - cmax) W = m_fill - 2 - h1 - cmax;
+    if (W < H) return 0;
+    const int a = cmin - W - h1;
+    const int b = cmax + W + h1 + 1;
+    double * S = &m_shSum[0];
+    S[0] = 0.0;
+    for (int i = a; i < b; ++i) S[i - a + 1] = S[i - a] + m_shBand[(size_t)i];
+    const double inv1 = 1.0 / (double)(2 * h1 + 1);
+    const int J = W / H;
+    const int nq = (cmax - cmin) / H + 1;
+    double * med = &m_shMed[0];
+    for (int q = 0; q < nq; ++q) {
+        const int m = cmin + q * H;
+        int cnt = 0;
+        for (int j = -J; j <= J; ++j) {
+            const int c = m + j * H;
+            tmp[cnt++] = (S[c + h1 + 1 - a] - S[c - h1 - a]) * inv1;
+        }
+        std::nth_element(tmp, tmp + cnt / 2, tmp + cnt);
+        med[q] = tmp[cnt / 2] * m_cfg.shapeGate;
+    }
+
+    // The shapes through the model, and the inverse of their Gram matrix.
+    const double * Q = &m_shQ[0];
+    double * G = &m_shG[0];
+    for (int s3 = 0; s3 < 3; ++s3) {
+        const double * q = Q + (size_t)s3 * L;
+        double * g = G + (size_t)s3 * Lg;
+        for (int i = 0; i < Lg; ++i) {
+            double v = 0.0;
+            const int m0 = (i - (L - 1) > 0) ? i - (L - 1) : 0;
+            const int m1 = (i < order) ? i : order;
+            for (int m = m0; m <= m1; ++m) v += m_a[(size_t)m] * q[i - m];
+            g[i] = v;
+        }
+    }
+    double M[9];
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c) {
+            double v = 0.0;
+            for (int i = 0; i < Lg; ++i) v += G[(size_t)r * Lg + i] * G[(size_t)c * Lg + i];
+            M[3 * r + c] = v;
+        }
+    {
+        double * Mi = m_shMi;
+        Mi[0] = M[4] * M[8] - M[5] * M[7];
+        Mi[1] = M[2] * M[7] - M[1] * M[8];
+        Mi[2] = M[1] * M[5] - M[2] * M[4];
+        Mi[3] = M[5] * M[6] - M[3] * M[8];
+        Mi[4] = M[0] * M[8] - M[2] * M[6];
+        Mi[5] = M[2] * M[3] - M[0] * M[5];
+        Mi[6] = M[3] * M[7] - M[4] * M[6];
+        Mi[7] = M[1] * M[6] - M[0] * M[7];
+        Mi[8] = M[0] * M[4] - M[1] * M[3];
+        const double det = M[0] * Mi[0] + M[1] * Mi[3] + M[2] * Mi[6];
+        if (!(det > 0.0) || !finite(det)) return 0;
+        for (int i = 0; i < 9; ++i) Mi[i] /= det;
+    }
+
+    const double thr = m_cfg.shapeThr;
+    const double invS = 1.0 / sigma;
+    double * chi = &m_shChi[0];
+    double * co = &m_shCo[0];
+    int * pk = &m_shPk[0];
+    int fits = 0;
+    for (int round = 0; round < 2; ++round) {
+        for (int i = 0; i < n; ++i) {
+            const int c = t0 + i + k;
+            const double avg = (S[c + h1 + 1 - a] - S[c - h1 - a]) * inv1;
+            int q = (c - cmin + H / 2) / H;
+            if (q >= nq) q = nq - 1;
+            chi[i] = 0.0;
+            if (!(avg > med[q])) continue;
+            const double * e = &m_fwd[(size_t)(t0 + i)];
+            double C[3] = {0.0, 0.0, 0.0};
+            for (int j = 0; j < Lg; ++j) {
+                C[0] += G[j] * e[j];
+                C[1] += G[(size_t)Lg + j] * e[j];
+                C[2] += G[2 * (size_t)Lg + j] * e[j];
+            }
+            const double * Mi = m_shMi;
+            double * w = &co[3 * (size_t)i];
+            w[0] = Mi[0] * C[0] + Mi[1] * C[1] + Mi[2] * C[2];
+            w[1] = Mi[3] * C[0] + Mi[4] * C[1] + Mi[5] * C[2];
+            w[2] = Mi[6] * C[0] + Mi[7] * C[1] + Mi[8] * C[2];
+            const double en = C[0] * w[0] + C[1] * w[1] + C[2] * w[2];
+            double ee = 1e-300;
+            for (int j = 0; j < L; ++j) ee += e[j] * e[j];
+            chi[i] = (en > 0.0 && en >= m_cfg.shapeFitq * ee) ? sqrt(en) * invS : 0.0;
+        }
+        // Peaks at the threshold, highest first, a shape's length apart.
+        int np = 0;
+        for (int i = 0; i < n; ++i) {
+            const double x = chi[i];
+            if (x < thr) continue;
+            if (i > 0 && !(x > chi[i - 1])) continue;
+            if (i + 1 < n && x < chi[i + 1]) continue;
+            pk[np++] = i;
+        }
+        if (np == 0) break;
+        std::sort(pk, pk + np, [chi](int x, int y) { return chi[x] > chi[y]; });
+        int na = 0;
+        for (int p = 0; p < np; ++p) {
+            bool near = false;
+            for (int r = 0; r < na; ++r)
+                if (pk[p] - pk[r] < L && pk[r] - pk[p] < L) { near = true; break; }
+            if (!near) pk[na++] = pk[p];
+        }
+        for (int r = 0; r < na; ++r) {
+            const int i = pk[r];
+            const int t = t0 + i;
+            const double * w = &co[3 * (size_t)i];
+            double * e = &m_fwd[(size_t)t];
+            for (int j = 0; j < Lg; ++j)
+                e[j] -= w[0] * G[j] + w[1] * G[(size_t)Lg + j] + w[2] * G[2 * (size_t)Lg + j];
+            for (int u = 0; u < L; ++u) {
+                const double v = w[0] * Q[u] + w[1] * Q[(size_t)L + u] + w[2] * Q[2 * (size_t)L + u];
+                m_win[(size_t)(t + u)] -= v;
+                m_full[(size_t)(t + u)] -= v;
+                m_in[(size_t)(t + u)] -= v;
+            }
+        }
+        fits += na;
+    }
+    m_shFits += (uint64_t)fits;
+    return fits;
 }
 
 void Channel::rerepairRuns() {
@@ -3196,8 +3490,8 @@ void Channel::flankSpan(int s, int e, double gain, double strength) {
         return;
     }
     // The same limit as repairRun()'s, from the input either side.
-    const double localMax = dmax(absMax(&m_dry[(size_t)(s - ctx)], ctx),
-                                 absMax(&m_dry[(size_t)(e + 1)], ctx));
+    const double localMax = dmax(absMax(&m_in[(size_t)(s - ctx)], ctx),
+                                 absMax(&m_in[(size_t)(e + 1)], ctx));
     const double limit = 1.5 * dmax(localMax, 1e-9);
     // Each estimate becomes the correction to its sample, in place.
     double * d = &m_rhs[0];
@@ -3206,7 +3500,7 @@ void Channel::flankSpan(int s, int e, double gain, double strength) {
         if (v > limit) v = limit;
         else if (v < -limit) v = -limit;
         const int t = s + j;
-        const double x = m_dry[(size_t)t];
+        const double x = m_in[(size_t)t];
         d[j] = strength * ((x - gain * (x - v)) - m_win[(size_t)t]);
     }
     // High-passed into acc[i], window index i from -kBlock: never below it,
@@ -3289,6 +3583,9 @@ void Channel::processBlock() {
         // music better, which is the whole point of running more than one.
         fitModel(0, fitTo);
         if (pass > 0 && m_cfg.rerepair > 0) rerepairRuns();
+        // The shape fit takes the clicks it can fit first, and the model is
+        // refitted on what it leaves. See Config::shape.
+        if (pass == 0 && m_cfg.shape && shapeFit(fitTo) > 0) fitModel(0, fitTo);
         // The margin below the block only feeds the noise estimate, which
         // pass 0 alone refreshes; interpolate() never reads below m_pad.
         detect(pass == 0 ? dFrom : from, dTo, pass);
@@ -3310,6 +3607,8 @@ void Channel::pushOne(double v) {
     if (!finite(v)) v = 0.0;
     m_win[(size_t)m_fill] = v;
     m_dry[(size_t)m_fill] = v;
+    m_in[(size_t)m_fill] = v;
+    if (m_cfg.shape) shapeBand(v);
     m_full[(size_t)m_fill] = v;
     m_flag[(size_t)m_fill] = 0;
     m_strong[(size_t)m_fill] = 0;
@@ -3384,6 +3683,8 @@ void Channel::pushOne(double v) {
     const size_t keep = (size_t)(m_fill - blk);
     memmove(&m_win[0], &m_win[(size_t)blk], sizeof(double) * keep);
     memmove(&m_dry[0], &m_dry[(size_t)blk], sizeof(double) * keep);
+    memmove(&m_in[0], &m_in[(size_t)blk], sizeof(double) * keep);
+    if (m_cfg.shape) memmove(&m_shBand[0], &m_shBand[(size_t)blk], sizeof(double) * keep);
     memmove(&m_full[0], &m_full[(size_t)blk], sizeof(double) * keep);
     memmove(&m_flag[0], &m_flag[(size_t)blk], sizeof(uint8_t) * keep);
     memmove(&m_strong[0], &m_strong[(size_t)blk], sizeof(uint8_t) * keep);

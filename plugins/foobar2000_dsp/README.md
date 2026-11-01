@@ -2066,6 +2066,62 @@ did after the body stage.
 The second was chosen. *El rodeo* keeps its shut stretches, 40–90 s and from
 120 s on: no key built on this band told it from clean records.
 
+### Clicks the interpolation gets wrong: the shape fit (off)
+
+`Config::shape`, research only: off by default, where the output is the build
+before it to the bit. `declick_cli --shape 1` turns it on.
+
+**What was left.** Biagi's *Sentimiento gaucho* (TangoTunes shellac `.m4a`)
+was aligned with a much cleaner vinyl copy. Its clicks are one shape: a
+doublet, down then up 0.15 ms later, about 0.3 ms in all. On the long runs
+(13–20 samples) that the big clicks make, the AR interpolation gets the second
+lobe wrong, and 25–75 % of it is left. At 1.686 s the interpolation puts +0.033
+where the clean copy has −0.012. Handing a click's split-off tail the strong
+run's gain changes nothing; the estimate is the problem, not the gain.
+
+**The stage.** Before the first pass looks for runs, each block's strongest
+clicks are fitted as a sum of three fixed shapes, ±0.75 ms:
+
+* a 1–8 kHz band-limited impulse, its derivative, and a doublet 0.15 ms apart;
+* found as peaks of the matched filter on the model's residual, 3σ for two
+  shapes (the three-shape threshold holds the same false-alarm rate);
+* only where the input's 2–8 kHz power over 1 ms is 3.5 times its median over
+  ±15 ms, and the shapes explain `shapeFitq` of the residual over their span.
+
+Only the fitted shapes are subtracted, from the window and from `m_in`, the
+input the repairs take their clicks from. The music under a click stays,
+where a repair replaces it. `m_dry` stays the input, for the mix and the delta.
+The model is refitted on what is left, and the passes run as before.
+
+**What it did.** On *Sentimiento gaucho*, unguarded (`--shape-fitq 0`), against
+the vinyl copy:
+
+| | quiet left 2–3 / 3–4.5 / 4.5–7 kHz | music taken 1–2 / 2–3 / 3–4.5 / 4.5–7 kHz |
+|---|---|---|
+| before | 50 / 47 / 52 % | 0.8 / 2.0 / 2.3 / 3.3 % |
+| shape fit | 51 / 47 / 51 % | 0.5 / 1.6 / 1.9 / 2.8 % |
+
+A prototype of it, run before the core with Biagi's own measured click shape,
+was heard as "much better", most of all at 2:24–2:34.
+
+**Why it is off.**
+
+* **Unguarded, it shaves loud transients on clean records.** *Olga*'s removal
+  goes −45.7 → −40.1 dB, from a few dozen loud peaks; Malvon's −35.1 → −34.5.
+* **The guard that stops that stops most of the rest too.** At `shapeFitq`
+  0.3, the default, *Olga* and Malvon are within 0.3 dB of the build before.
+  But on *Sentimiento gaucho* it fits 15 clicks a second instead of 53. Music
+  taken stays lower (0.5 / 1.6 / 1.8 / 2.6 %), and about 2 points more crackle
+  is left at 2–7 kHz. On the Demare and Calo songs with vinyl references it is
+  within half a point of the build before, music taken a little lower on four.
+* **It costs a third more CPU** when on: 80× realtime against 107× on 60 s of
+  *Sentimiento gaucho*. Off, nothing measurable.
+
+What would let it on is a guard that tells a click from a loud transient by
+more than how well the shapes fit, or the record's own click shape learned
+without a reference. Fixed shapes do as well as Biagi's measured one when
+unguarded. Learned per song, shapes so far took music.
+
 ### The first seconds: an early carpet key
 
 **What was heard.** The first three seconds of *La vida me engaño* were
