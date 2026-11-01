@@ -183,12 +183,14 @@ struct Config {
     //! fire come and go. The cut ramps in from bodyRate0 to bodyRate1, and
     //! once open it is held for bodyRelease seconds. Where the key never opens
     //! the stage subtracts nothing, and the output is the repaired audio to
-    //! the bit. For the measurements and how the floor and the release were
-    //! chosen, see the README, "The body of dense crackle: the body stage".
+    //! the bit. It starts at 1 kHz: from 500 Hz, on records with a clean copy,
+    //! what it took at 0.5-1 kHz was music. For the measurements and how the
+    //! band, the floor and the release were chosen, see the README, "The body
+    //! of dense crackle: the body stage".
     //! It costs bodyLatency samples of latency, ~70 ms at 44.1 kHz. A host
     //! that reads ahead does not hear that as delay.
     int    body         = 1;
-    double bodyLo       = 500.0;
+    double bodyLo       = 1000.0;
     double bodyHi       = 3000.0;
     double bodyFloor    = 0.25;
     double bodyPeak     = 6.0;

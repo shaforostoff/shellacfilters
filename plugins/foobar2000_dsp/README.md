@@ -1223,8 +1223,9 @@ only 0.15 with the rate of strong runs. Overall it takes 3–5 dB more than we
 do at every level.
 
 **The stage** (`Config::body`). An STFT runs on the repaired signal: N
-2048, about 46 ms at any rate, with hop N/4. In 0.5–3 kHz it cuts each bin
-by its non-tonal share, P²/(H²+P²), and never by more than 12 dB.
+2048, about 46 ms at any rate, with hop N/4. In 1–3 kHz it cuts each bin
+by its non-tonal share, P²/(H²+P²), and never by more than 12 dB. The band
+started at 500 Hz; why it moved is under [The band starts at 1 kHz](#the-band-starts-at-1-khz).
 
 * **P** is the median over ~370 Hz of the same frame.
 * **H** is the louder of the medians over the frames before and the frames
@@ -1341,6 +1342,34 @@ The 2 s release keeps the key open on more of *Cuatro*, and the stage costs
 more there for it. On the Zen 4, alternating the two in two runs of seven and
 nine rounds, the stage cost +18–19 % over the core with AVX2 without the
 release and +20–22 % with it, and +10 % and +12 % with SSE2.
+
+#### The band starts at 1 kHz
+
+The stage was chosen on records with no clean copy. Three Demare shellacs
+(*Torrente*, *Telón*, *Pa' mí es igual*), aligned to vinyl transfers of the
+same takes, gave it one. On every song where the body key opens, what the
+stage took at 0.5–1 kHz was music, and no measure of crackle depended on it:
+
+| | 0.5–1 kHz, dB re the vinyl: from 500 Hz → from 1 kHz (the shellac) | music taken at 0.5–1 kHz |
+|---|---|---|
+| *Torrente* | −16.0 → −17.4 (−17.5) | 4.8 → 0.3 % |
+| *A las siete en el café* (Calo) | −17.8 → −20.7 (−20.9) | 4.4 → 0.2 % |
+| *Tristezas* (Calo) | −17.3 → −18.1 (−18.2) | 2.4 → 0.1 % |
+
+* From 1 kHz, the band returns to the untouched shellac's distance from the
+  vinyl. Every other band, the quiet passages and the click counts are the
+  same to within 0.1 dB on all seven songs with a reference.
+* On *Torrente*, which has a second, independent vinyl transfer, three copies
+  measure each one's noise without trusting any as clean. The stage's
+  0.5–1 kHz cut lost 2.9 dB of signal-to-noise there; from 1 kHz, 0.4 dB.
+* Why it opened there: *Torrente*'s clean first half has 55–84 strong runs a
+  second, so the key is open over it, and the cut's law then takes from the
+  music below 1 kHz.
+* 750 Hz gave back only half of it.
+* The squirt is heard in 1–2 kHz, and the records it was chosen on lose
+  their 0.5–1 kHz removal too.
+* The band is 93 bins at 44.1 kHz instead of 116, so the open stage is a
+  little cheaper.
 
 ### The top band of dense crackle: the fine stage
 
