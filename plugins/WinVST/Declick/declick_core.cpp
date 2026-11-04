@@ -232,6 +232,11 @@ typedef void (*SortedRowFn)(double * rows, int n, int stride, int count,
 typedef void (*Dot2Fn)(const double * x0, const double * y0, int n0,
                        const double * x1, const double * y1, int n1,
                        double * r0, double * r1);
+//! The shape fit's matched filter at `count` starts in a row, each to the bit:
+//! at start p, out[4p + s] = dot(G + s Lg, e + p, Lg) for the three shapes s
+//! and out[4p + 3] = dot(e + p, e + p, L), with L <= Lg. See shapeFit().
+typedef void (*ShapeCorrFn)(const double * G, int Lg, int L, const double * e,
+                            int count, double * out);
 //! The flank repair's high-passed correction: acc[t0 + j + u] += hp[u] * d[j]
 //! for j < m and u in -Hh .. Hh, j by j, skipping a d[j] of zero, and never
 //! past acc[xEnd]. hpP and hpN point at tap 0 of the taps with kFlankPad
@@ -265,6 +270,7 @@ struct Kernels {
     FftOneFn    fftOne;
     SortedRowFn sortedRow;
     Dot2Fn      dot2;
+    ShapeCorrFn shapeCorr;
     FlankAddFn  flankAdd;
     FrameQuantileFn frameQuantile;
     BinUnpackFn binUnpack;
@@ -296,6 +302,17 @@ void dot2Base(const double * x0, const double * y0, int n0,
               double * r0, double * r1) {
     *r0 = dot(x0, y0, n0);
     *r1 = dot(x1, y1, n1);
+}
+
+void shapeCorrBase(const double * G, int Lg, int L, const double * e,
+                   int count, double * out) {
+    for (int p = 0; p < count; ++p) {
+        const double * x = e + p;
+        out[4 * p]     = dot(G, x, Lg);
+        out[4 * p + 1] = dot(G + Lg, x, Lg);
+        out[4 * p + 2] = dot(G + 2 * Lg, x, Lg);
+        out[4 * p + 3] = dot(x, x, L);
+    }
 }
 
 void flankAddBase(double * acc, const double * hpP, const double *, int Hh,
@@ -637,7 +654,8 @@ void floorGainBase(const FloorGain & p, int b0, int b1, double * G) {
 }
 
 const Kernels kBaseKernels = {
-    filterBase, autocorrBase, fftPairBase, fftOneBase, sortedRowBase, dot2Base, flankAddBase,
+    filterBase, autocorrBase, fftPairBase, fftOneBase, sortedRowBase, dot2Base,
+    shapeCorrBase, flankAddBase,
     nullptr,                    // frameQuantile: the baseline keeps sorted windows
     binUnpackBase, smooth7Base, floorGainBase,
     DECLICK_SSE2 ? "sse2" : "scalar"
@@ -1127,6 +1145,72 @@ DECLICK_AVX2_FN void dot2Avx2(const double * x0, const double * y0, int n0,
                                           x1, y1, e1, n1) : _mm_setzero_pd());
 }
 
+//! shapeCorrBase()'s four dot()s at a start, together: dot2Avx2()'s partial
+//! sums, eight of them, with each load of e serving all four. The same
+//! products in the same order as dot(), so the same bits; the MSVC workarounds
+//! are dot2Avx2()'s.
+DECLICK_AVX2_FN void shapeCorrAvx2(const double * G, int Lg, int L, const double * e,
+                                   int count, double * out) {
+    const double * g0 = G;
+    const double * g1 = G + Lg;
+    const double * g2 = G + 2 * Lg;
+    const int eg = (Lg > 0) ? (Lg & ~7) : 0;
+    const int el = (L > 0) ? (L & ~7) : 0;
+    const int ec = (el < eg) ? el : eg;
+    for (int p = 0; p < count; ++p) {
+        const double * x = e + p;
+        __m256d a0 = _mm256_setzero_pd(), b0 = _mm256_setzero_pd();
+        __m256d a1 = _mm256_setzero_pd(), b1 = _mm256_setzero_pd();
+        __m256d a2 = _mm256_setzero_pd(), b2 = _mm256_setzero_pd();
+        __m256d a3 = _mm256_setzero_pd(), b3 = _mm256_setzero_pd();
+        for (int i = 0; i < ec; i += 8) {
+            const __m256d xa = _mm256_loadu_pd(x + i), xb = _mm256_loadu_pd(x + i + 4);
+            a0 = _mm256_add_pd(a0, _mm256_mul_pd(_mm256_loadu_pd(g0 + i), xa));
+            a1 = _mm256_add_pd(a1, _mm256_mul_pd(_mm256_loadu_pd(g1 + i), xa));
+            a2 = _mm256_add_pd(a2, _mm256_mul_pd(_mm256_loadu_pd(g2 + i), xa));
+            a3 = _mm256_add_pd(a3, _mm256_mul_pd(xa, xa));
+            b0 = _mm256_add_pd(b0, _mm256_mul_pd(_mm256_loadu_pd(g0 + i + 4), xb));
+            b1 = _mm256_add_pd(b1, _mm256_mul_pd(_mm256_loadu_pd(g1 + i + 4), xb));
+            b2 = _mm256_add_pd(b2, _mm256_mul_pd(_mm256_loadu_pd(g2 + i + 4), xb));
+            b3 = _mm256_add_pd(b3, _mm256_mul_pd(xb, xb));
+        }
+        for (int i = ec; i < eg; i += 8) {
+            const __m256d xa = _mm256_loadu_pd(x + i), xb = _mm256_loadu_pd(x + i + 4);
+            a0 = _mm256_add_pd(a0, _mm256_mul_pd(_mm256_loadu_pd(g0 + i), xa));
+            a1 = _mm256_add_pd(a1, _mm256_mul_pd(_mm256_loadu_pd(g1 + i), xa));
+            a2 = _mm256_add_pd(a2, _mm256_mul_pd(_mm256_loadu_pd(g2 + i), xa));
+            b0 = _mm256_add_pd(b0, _mm256_mul_pd(_mm256_loadu_pd(g0 + i + 4), xb));
+            b1 = _mm256_add_pd(b1, _mm256_mul_pd(_mm256_loadu_pd(g1 + i + 4), xb));
+            b2 = _mm256_add_pd(b2, _mm256_mul_pd(_mm256_loadu_pd(g2 + i + 4), xb));
+        }
+        for (int i = ec; i < el; i += 8) {
+            const __m256d xa = _mm256_loadu_pd(x + i), xb = _mm256_loadu_pd(x + i + 4);
+            a3 = _mm256_add_pd(a3, _mm256_mul_pd(xa, xa));
+            b3 = _mm256_add_pd(b3, _mm256_mul_pd(xb, xb));
+        }
+        double sums[32];
+        _mm256_storeu_pd(sums,      a0);
+        _mm256_storeu_pd(sums + 4,  b0);
+        _mm256_storeu_pd(sums + 8,  a1);
+        _mm256_storeu_pd(sums + 12, b1);
+        _mm256_storeu_pd(sums + 16, a2);
+        _mm256_storeu_pd(sums + 20, b2);
+        _mm256_storeu_pd(sums + 24, a3);
+        _mm256_storeu_pd(sums + 28, b3);
+        _mm256_zeroupper();
+        const double * gs[4] = {g0, g1, g2, x};
+        for (int s = 0; s < 4; ++s) {
+            const double * c = sums + 8 * s;
+            const int n = (s < 3) ? Lg : L;
+            _mm_store_sd(out + 4 * p + s,
+                         (n > 0) ? dotFinish(_mm_loadu_pd(c), _mm_loadu_pd(c + 2),
+                                             _mm_loadu_pd(c + 4), _mm_loadu_pd(c + 6),
+                                             gs[s], x, (s < 3) ? eg : el, n)
+                                 : _mm_setzero_pd());
+        }
+    }
+}
+
 //! flankAddBase() turned round: sixteen outputs at a time held in registers,
 //! every sample whose band reaches them added in, then stored. The base loop
 //! comes out scalar from MSVC 19.16, which cannot tell acc from the taps, and
@@ -1427,7 +1511,7 @@ DECLICK_AVX2_FN void floorGainAvx2(const FloorGain & p, int b0, int b1, double *
 }
 
 const Kernels kAvx2Kernels = { filterAvx2, autocorrAvx2, fftPairAvx2, fftOneAvx2,
-                               sortedRowAvx2, dot2Avx2, flankAddAvx2, frameQuantileAvx2,
+                               sortedRowAvx2, dot2Avx2, shapeCorrAvx2, flankAddAvx2, frameQuantileAvx2,
                                binUnpackAvx2, smooth7Avx2, floorGainAvx2, "avx2" };
 
 //! AVX2 and FMA in the CPU, and YMM state saved by the OS.
@@ -1612,9 +1696,70 @@ void autocorrNeon(const double * x, int n, double * r, int maxLag) {
     filterNeon(x, x, r, maxLag + 1, n);
 }
 
+//! shapeCorrBase() with dotNeon() in place of dot(): its four partial sums
+//! for each of the four, sixteen chains for the four FMA pipes, with each
+//! load of e serving all four. Each is dotNeon() to the bit.
+void shapeCorrNeon(const double * G, int Lg, int L, const double * e,
+                   int count, double * out) {
+    const double * g0 = G;
+    const double * g1 = G + Lg;
+    const double * g2 = G + 2 * Lg;
+    const int eg = (Lg > 0) ? (Lg & ~7) : 0;
+    const int el = (L > 0) ? (L & ~7) : 0;
+    const int ec = (el < eg) ? el : eg;
+    // dotNeon()'s pairs left over, its close and its odd sample.
+    auto close = [](float64x2_t s0, float64x2_t s1, float64x2_t s2, float64x2_t s3,
+                    const double * a, const double * b, int i, int n) {
+        for (; i + 2 <= n; i += 2) s0 = vfmaq_f64(s0, vld1q_f64(a + i), vld1q_f64(b + i));
+        double acc = vaddvq_f64(vaddq_f64(vaddq_f64(s0, s1), vaddq_f64(s2, s3)));
+        if (i < n) acc += a[i] * b[i];
+        return acc;
+    };
+#define DECLICK_SHAPE_ACC(a, b, c, d, gp, x)          \
+        a = vfmaq_f64(a, vld1q_f64((gp) + i),     x##0); \
+        b = vfmaq_f64(b, vld1q_f64((gp) + i + 2), x##1); \
+        c = vfmaq_f64(c, vld1q_f64((gp) + i + 4), x##2); \
+        d = vfmaq_f64(d, vld1q_f64((gp) + i + 6), x##3)
+    for (int p = 0; p < count; ++p) {
+        const double * x = e + p;
+        const float64x2_t z = vdupq_n_f64(0.0);
+        float64x2_t a0 = z, a1 = z, a2 = z, a3 = z;
+        float64x2_t b0 = z, b1 = z, b2 = z, b3 = z;
+        float64x2_t c0 = z, c1 = z, c2 = z, c3 = z;
+        float64x2_t d0 = z, d1 = z, d2 = z, d3 = z;
+        int i = 0;
+        for (; i < ec; i += 8) {
+            const float64x2_t xv0 = vld1q_f64(x + i), xv1 = vld1q_f64(x + i + 2);
+            const float64x2_t xv2 = vld1q_f64(x + i + 4), xv3 = vld1q_f64(x + i + 6);
+            DECLICK_SHAPE_ACC(a0, a1, a2, a3, g0, xv);
+            DECLICK_SHAPE_ACC(b0, b1, b2, b3, g1, xv);
+            DECLICK_SHAPE_ACC(c0, c1, c2, c3, g2, xv);
+            DECLICK_SHAPE_ACC(d0, d1, d2, d3, x, xv);
+        }
+        for (; i < eg; i += 8) {
+            const float64x2_t xv0 = vld1q_f64(x + i), xv1 = vld1q_f64(x + i + 2);
+            const float64x2_t xv2 = vld1q_f64(x + i + 4), xv3 = vld1q_f64(x + i + 6);
+            DECLICK_SHAPE_ACC(a0, a1, a2, a3, g0, xv);
+            DECLICK_SHAPE_ACC(b0, b1, b2, b3, g1, xv);
+            DECLICK_SHAPE_ACC(c0, c1, c2, c3, g2, xv);
+        }
+        for (i = ec; i < el; i += 8) {
+            const float64x2_t xv0 = vld1q_f64(x + i), xv1 = vld1q_f64(x + i + 2);
+            const float64x2_t xv2 = vld1q_f64(x + i + 4), xv3 = vld1q_f64(x + i + 6);
+            DECLICK_SHAPE_ACC(d0, d1, d2, d3, x, xv);
+        }
+        double * o = out + 4 * p;
+        o[0] = (Lg > 0) ? close(a0, a1, a2, a3, g0, x, eg, Lg) : 0.0;
+        o[1] = (Lg > 0) ? close(b0, b1, b2, b3, g1, x, eg, Lg) : 0.0;
+        o[2] = (Lg > 0) ? close(c0, c1, c2, c3, g2, x, eg, Lg) : 0.0;
+        o[3] = (L > 0) ? close(d0, d1, d2, d3, x, x, el, L) : 0.0;
+    }
+#undef DECLICK_SHAPE_ACC
+}
+
 // The scalar FFT pass vectorises as it stands, two doubles to a register.
 const Kernels kNeonKernels = { filterNeon, autocorrNeon, fftPairBase, fftOneBase,
-                               sortedRowBase, dot2Base, flankAddBase, nullptr,
+                               sortedRowBase, dot2Base, shapeCorrNeon, flankAddBase, nullptr,
                                binUnpackBase, smooth7Base, floorGainBase, "neon" };
 
 #endif // DECLICK_NEON
@@ -2626,6 +2771,7 @@ void Channel::resetPath() {
     std::fill(m_in.begin(), m_in.end(), 0.0);
     std::fill(m_shBand.begin(), m_shBand.end(), 0.0);
     for (int i = 0; i < 8; ++i) m_shZ[i] = 0.0;
+    m_shSigHint = 0.0;
     std::fill(m_full.begin(), m_full.end(), 0.0);
     std::fill(m_flag.begin(), m_flag.end(), (uint8_t)0);
     std::fill(m_strong.begin(), m_strong.end(), (uint8_t)0);
@@ -2855,25 +3001,23 @@ bool Channel::updateAutocorr(int n, int order) {
     return true;
 }
 
-//! The median of the first `have` entries of the noise ring: the value
-//! nth_element over a copy of all of them would pick, and the same one bit for
-//! bit - an order statistic does not depend on how it is found.
+//! The value nth_element over a copy of v[0 .. have) would put at `mid`, the
+//! same one bit for bit - an order statistic does not depend on how it is
+//! found - with `keep` room for `have` of them. `hint` is where it was last
+//! time, 0 for nowhere, and is set to where it is now.
 //!
-//! nth_element over the whole ring was a seventh of the run time. But from one
-//! block to the next the median moves little, so one branch-free pass keeps only
-//! the entries within a band either side of the last one and counts those below
-//! it, and nth_element then has a tenth as many to look at. Where the median has
-//! left the band, a second pass keeps the side it went to instead.
-double Channel::ringMedian(size_t have) {
-    const size_t mid = have / 2;
-    const double * v = &m_madRing[0];
-    m_scratch.resize(have);
-    double * keep = &m_scratch[0];
+//! nth_element over the whole of the noise ring was a seventh of the run time.
+//! But from one block to the next the median moves little, so one branch-free
+//! pass keeps only the entries within a band either side of the last one and
+//! counts those below it, and nth_element then has a tenth as many to look at.
+//! Where the median has left the band, a second pass keeps the side it went to
+//! instead.
+static double bandSelect(const double * v, size_t have, size_t mid, double & hint, double * keep) {
     size_t n = 0, k = mid;
 
-    if (m_medHint > 0.0) {
-        const double lo = m_medHint * (1.0 - kMedianBand);
-        const double hi = m_medHint * (1.0 + kMedianBand);
+    if (hint > 0.0) {
+        const double lo = hint * (1.0 - kMedianBand);
+        const double hi = hint * (1.0 + kMedianBand);
         size_t below = 0;
         for (size_t i = 0; i < have; ++i) {
             const double x = v[i];
@@ -2903,8 +3047,14 @@ double Channel::ringMedian(size_t have) {
     }
 
     std::nth_element(keep, keep + k, keep + n);
-    m_medHint = keep[k];
+    hint = keep[k];
     return keep[k];
+}
+
+//! The median of the first `have` entries of the noise ring; see bandSelect().
+double Channel::ringMedian(size_t have) {
+    m_scratch.resize(have);
+    return bandSelect(&m_madRing[0], have, have / 2, m_medHint, &m_scratch[0]);
 }
 
 void Channel::detect(int from, int to, int pass) {
@@ -3364,9 +3514,10 @@ int Channel::shapeFit(int to) {
     // The residual, and its robust sigma over what the block reads.
     g_kernels->filter(&m_arev[0], &m_win[(size_t)(t0 - order)], &m_fwd[(size_t)t0],
                       e1 - t0, order + 1);
+    // The median moves little from one open block to the next; see bandSelect().
     for (int i = t0; i < e1; ++i) tmp[i - t0] = fabs(m_fwd[(size_t)i]);
-    std::nth_element(tmp, tmp + (e1 - t0) / 2, tmp + (e1 - t0));
-    const double sigma = 1.4826 * tmp[(e1 - t0) / 2];
+    const double sigma = 1.4826 * bandSelect(tmp, (size_t)(e1 - t0), (size_t)(e1 - t0) / 2,
+                                             m_shSigHint, &m_shChi[0]);
     if (!(sigma > 1e-12)) return 0;
 
     // The shapes through the model, and the inverse of their Gram matrix:
@@ -3380,13 +3531,25 @@ int Channel::shapeFit(int to) {
         for (int i = 0; i < L; ++i) tmp[order + i] = q[i];
         g_kernels->filter(&m_arev[0], tmp, G + (size_t)s3 * Lg, Lg, order + 1);
     }
+    // Symmetric: six sums, side by side, each in the order it always was.
     double M[9];
-    for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 3; ++c) {
-            double v = 0.0;
-            for (int i = 0; i < Lg; ++i) v += G[(size_t)r * Lg + i] * G[(size_t)c * Lg + i];
-            M[3 * r + c] = v;
+    {
+        const double * g0 = G;
+        const double * g1 = G + (size_t)Lg;
+        const double * g2 = G + 2 * (size_t)Lg;
+        double m00 = 0.0, m01 = 0.0, m02 = 0.0, m11 = 0.0, m12 = 0.0, m22 = 0.0;
+        for (int i = 0; i < Lg; ++i) {
+            m00 += g0[i] * g0[i];
+            m01 += g0[i] * g1[i];
+            m02 += g0[i] * g2[i];
+            m11 += g1[i] * g1[i];
+            m12 += g1[i] * g2[i];
+            m22 += g2[i] * g2[i];
         }
+        M[0] = m00; M[1] = m01; M[2] = m02;
+        M[3] = m01; M[4] = m11; M[5] = m12;
+        M[6] = m02; M[7] = m12; M[8] = m22;
+    }
     {
         double * Mi = m_shMi;
         Mi[0] = M[4] * M[8] - M[5] * M[7];
@@ -3438,21 +3601,25 @@ int Channel::shapeFit(int to) {
     int * pk = &m_shPk[0];
     int fits = 0;
     for (int round = 0; round < 2; ++round) {
-        for (int i = 0; i < n; ++i) {
-            chi[i] = -1.0;                          // not worked out
-            if (!(near[i] > 0.0)) continue;
-            const double * e = &m_fwd[(size_t)(t0 + i)];
-            double C[3], ee;
-            g_kernels->dot2(G, e, Lg, G + (size_t)Lg, e, Lg, &C[0], &C[1]);
-            g_kernels->dot2(G + 2 * (size_t)Lg, e, Lg, e, e, L, &C[2], &ee);
-            ee += 1e-300;
-            const double * Mi = m_shMi;
-            double * w = &co[3 * (size_t)i];
-            w[0] = Mi[0] * C[0] + Mi[1] * C[1] + Mi[2] * C[2];
-            w[1] = Mi[3] * C[0] + Mi[4] * C[1] + Mi[5] * C[2];
-            w[2] = Mi[6] * C[0] + Mi[7] * C[1] + Mi[8] * C[2];
-            const double en = C[0] * w[0] + C[1] * w[1] + C[2] * w[2];
-            chi[i] = (en > 0.0 && en >= m_cfg.shapeFitq * ee) ? sqrt(en) * invS : 0.0;
+        // Over each stretch of starts near an open gate, kShapeRun at a time.
+        enum { kShapeRun = 32 };
+        double corr[4 * kShapeRun];
+        for (int i = 0; i < n;) {
+            if (!(near[i] > 0.0)) { chi[i++] = -1.0; continue; }   // not worked out
+            int m = 1;
+            while (m < kShapeRun && i + m < n && near[i + m] > 0.0) ++m;
+            g_kernels->shapeCorr(G, Lg, L, &m_fwd[(size_t)(t0 + i)], m, corr);
+            for (int j = 0; j < m; ++j, ++i) {
+                const double * C = corr + 4 * j;
+                const double ee = C[3] + 1e-300;
+                const double * Mi = m_shMi;
+                double * w = &co[3 * (size_t)i];
+                w[0] = Mi[0] * C[0] + Mi[1] * C[1] + Mi[2] * C[2];
+                w[1] = Mi[3] * C[0] + Mi[4] * C[1] + Mi[5] * C[2];
+                w[2] = Mi[6] * C[0] + Mi[7] * C[1] + Mi[8] * C[2];
+                const double en = C[0] * w[0] + C[1] * w[1] + C[2] * w[2];
+                chi[i] = (en > 0.0 && en >= m_cfg.shapeFitq * ee) ? sqrt(en) * invS : 0.0;
+            }
         }
         // Peaks at the threshold, highest first, a shape's length apart; not
         // at the edge of where the filter was worked out, which is no peak.

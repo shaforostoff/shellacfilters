@@ -982,6 +982,7 @@ private:
     double m_shB[20] = {};
     double m_shZ[8] = {};
     double m_shMi[9] = {};
+    double m_shSigHint = 0.0;     //!< the last block's residual median; see shapeFit()
     uint64_t m_shFits = 0;
     //! m_win with every repair in full, whatever its Config::softMin gain:
     //! what repairRun() solves against. Solved against m_win, a run's context
