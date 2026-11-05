@@ -1841,19 +1841,41 @@ void allowWideKernels(bool allow) { g_kernels = pickKernels(allow); }
 
 // ---------------------------------------------------------------------------
 
-Params Params::fromSliders(const float s[7]) {
-    float v[7];
-    for (int i = 0; i < 7; ++i) v[i] = (s[i] > 0.0f) ? ((s[i] < 1.0f) ? s[i] : 1.0f) : 0.0f;   // NaN to 0
+int Params::snapOrder(int order) {
+    if (order < 96) return 64;
+    if (order < 192) return 128;
+    return 256;
+}
+
+void Params::restrictToControls() {
+    const Params d = defaults();
+    extent      = d.extent;
+    maxLengthMs = d.maxLengthMs;
+    depth       = d.depth;
+    passes      = d.passes;
+    order       = snapOrder(order);
+    sanitize();
+}
+
+Params Params::fromSliders(const float s[kSliderCount]) {
+    float v[kSliderCount];
+    for (int i = 0; i < kSliderCount; ++i) v[i] = (s[i] > 0.0f) ? ((s[i] < 1.0f) ? s[i] : 1.0f) : 0.0f;   // NaN to 0
     Params p = defaults();
     p.sensitivity = v[0];
-    p.extent      = v[1];
-    p.maxLengthMs = v[2] * 20.0f;                  // clamped to 0.2 below
-    p.depth       = v[3];
-    p.passes      = 1 + (int)(v[4] * 2.999f);
-    p.order       = 16 + 8 * (int)(v[5] * 30.999f);
-    p.dryWet      = v[6];
+    p.order       = snapOrder(16 + 8 * (int)(v[1] * 30.999f));
+    p.dryWet      = v[2];
     p.sanitize();
     return p;
+}
+
+float Params::orderSlider(int order) {
+    // The middle of the old slider's bucket for each: 16 + 8 * 6 and
+    // 16 + 8 * 14, and the top.
+    switch (snapOrder(order)) {
+    case 64:  return 6.5f / 30.999f;
+    case 128: return 14.5f / 30.999f;
+    default:  return 1.0f;
+    }
 }
 
 void Params::sanitize() {

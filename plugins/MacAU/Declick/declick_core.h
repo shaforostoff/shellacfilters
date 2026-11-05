@@ -92,12 +92,31 @@ struct Params {
         p.delta       = false;
         return p;
     }
-    //! The plug-in formats' seven sliders, each 0..1 and pinned there, in the
-    //! order Sensitivity, Extent, Max repair, Repair depth, Passes, Model
-    //! order, Dry/Wet. Max repair is 0.2 .. 20 ms; the quantised ones use
-    //! equal-width buckets, so Passes at 0.5 lands on the 2 the tuning was
-    //! done at, and Model order (16 .. 256 in eights) at 0.4677 on 128.
-    static Params fromSliders(const float s[7]);
+    //! What a user can reach. Every stage added after the AR repair - body,
+    //! flank, carpet key, crackle floor, micro and mid, the shape fit - was
+    //! tuned by ear with that repair at its defaults, so moving Extent, Max
+    //! repair, Repair depth or Passes moves the ground all of them stand on,
+    //! into combinations nobody has heard. The plug-ins therefore expose only
+    //! Sensitivity, Model order (64, 128 or 256), Dry/Wet and, where there is a
+    //! place for it, delta. This puts every other field back to its default
+    //! and Model order on the nearest of the three. The CLI and the tests set
+    //! Params directly and are not held to it.
+    void restrictToControls();
+    //! 64, 128 or 256, whichever is nearest; a tie goes up.
+    static int snapOrder(int order);
+
+    enum { kSliderCount = 3 };
+    //! The plug-in formats' three sliders, each 0..1 and pinned there, in the
+    //! order Sensitivity, Model order, Dry/Wet; everything else is default.
+    //! Model order reads its slider the way the old 16 .. 256-in-eights one
+    //! did and snaps that to 64, 128 or 256, so a position saved by an older
+    //! build lands on the nearest of the three: 0 on 64, 0.4677 (the old
+    //! default) and 0.5 on 128, 1 on 256.
+    static Params fromSliders(const float s[kSliderCount]);
+    //! A Model order slider position that reads as snapOrder(order) both here
+    //! and on the old 16 .. 256 slider: 0.2097, 0.4677 or 1. For writing a
+    //! preset an older build can open as it sounds here.
+    static float orderSlider(int order);
     void sanitize();
     bool operator==(const Params & o) const;
     bool operator!=(const Params & o) const { return !(*this == o); }

@@ -182,6 +182,21 @@ public:
         return (inID < (AudioUnitParameterID)kAUShimMaxParameters) ? m_parameters[inID] : 0.0f;
     }
 
+    //! What a host enumerates. AudioUnitSDK's default lists the global
+    //! element's indexed parameters, 0..n-1, as this does; a null list asks for
+    //! the count alone.
+    virtual ComponentResult GetParameterList(AudioUnitScope inScope,
+                                             AudioUnitParameterID * outParameterList,
+                                             UInt32 & outNumParameters)
+    {
+        outNumParameters = (inScope == kAudioUnitScope_Global)
+                         ? m_globals.GetIndexedParameterCount() : 0;
+        if (outParameterList != NULL) {
+            for (UInt32 i = 0; i < outNumParameters; ++i) outParameterList[i] = i;
+        }
+        return noErr;
+    }
+
     Float64 GetSampleRate() { return m_sampleRate; }
 
     // ---- shim only, standing in for what a host does through the ABI ----

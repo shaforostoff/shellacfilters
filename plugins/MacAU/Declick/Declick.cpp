@@ -83,14 +83,17 @@ Declick::Declick(AudioUnit component)
 	: AUEffectBase(component)
 {
 	CreateElements();
-	Globals()->UseIndexedParameters(kNumberOfParameters);
+	Globals()->UseIndexedParameters(kParameterSlots);
 	SetParameter(kParam_A, kDefaultValue_ParamA );
-	SetParameter(kParam_B, kDefaultValue_ParamB );
-	SetParameter(kParam_C, kDefaultValue_ParamC );
-	SetParameter(kParam_D, kDefaultValue_ParamD );
-	SetParameter(kParam_E, kDefaultValue_ParamE );
 	SetParameter(kParam_F, kDefaultValue_ParamF );
 	SetParameter(kParam_G, kDefaultValue_ParamG );
+	//the unlisted slots hold the old builds' default positions for Extent,
+	//MaxLen, Depth and Passes, so a state saved here opens in one of those
+	//sounding as it does here. Nothing here reads them.
+	SetParameter(1, 0.5f );
+	SetParameter(2, 0.2f );
+	SetParameter(3, 1.0f );
+	SetParameter(4, 0.5f );
 
 	//the channels allocate on configure(), so get that out of the render thread
 	//by doing it here at a nominal sample rate. Initialize() redoes it at the
@@ -142,8 +145,8 @@ ComponentResult			Declick::GetParameterInfo(AudioUnitScope		inScope,
     //arrangement and also what keeps this format and the VST interchangeable:
     //paramsFromControls() below is the VST's, unchanged, so a setting means the
     //same thing in both. What it costs is the VST's getParameterDisplay(), so
-    //Max repair reads 0.2 here rather than "4.0 ms" - see the README table for
-    //what each position maps to.
+    //Order reads 0.47 here rather than "128" - see the README table for what
+    //each position maps to. IDs 1..4 are storage only: see Declick.h.
     if (inScope == kAudioUnitScope_Global) {
         switch(inParameterID)
         {
@@ -153,34 +156,6 @@ ComponentResult			Declick::GetParameterInfo(AudioUnitScope		inScope,
                 outParameterInfo.minValue = 0.0;
                 outParameterInfo.maxValue = 1.0;
                 outParameterInfo.defaultValue = kDefaultValue_ParamA;
-                break;
-            case kParam_B:
-                AUBase::FillInParameterName (outParameterInfo, kParameterBName, false);
-                outParameterInfo.unit = kAudioUnitParameterUnit_Generic;
-                outParameterInfo.minValue = 0.0;
-                outParameterInfo.maxValue = 1.0;
-                outParameterInfo.defaultValue = kDefaultValue_ParamB;
-                break;
-            case kParam_C:
-                AUBase::FillInParameterName (outParameterInfo, kParameterCName, false);
-                outParameterInfo.unit = kAudioUnitParameterUnit_Generic;
-                outParameterInfo.minValue = 0.0;
-                outParameterInfo.maxValue = 1.0;
-                outParameterInfo.defaultValue = kDefaultValue_ParamC;
-                break;
-            case kParam_D:
-                AUBase::FillInParameterName (outParameterInfo, kParameterDName, false);
-                outParameterInfo.unit = kAudioUnitParameterUnit_Generic;
-                outParameterInfo.minValue = 0.0;
-                outParameterInfo.maxValue = 1.0;
-                outParameterInfo.defaultValue = kDefaultValue_ParamD;
-                break;
-            case kParam_E:
-                AUBase::FillInParameterName (outParameterInfo, kParameterEName, false);
-                outParameterInfo.unit = kAudioUnitParameterUnit_Generic;
-                outParameterInfo.minValue = 0.0;
-                outParameterInfo.maxValue = 1.0;
-                outParameterInfo.defaultValue = kDefaultValue_ParamE;
                 break;
             case kParam_F:
                 AUBase::FillInParameterName (outParameterInfo, kParameterFName, false);
@@ -207,6 +182,27 @@ ComponentResult			Declick::GetParameterInfo(AudioUnitScope		inScope,
 
 
 	return result;
+}
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//	Declick::GetParameterList
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//The base class lists every indexed slot, 0..6. Only three of them are
+//controls; the rest are kept so that older saved states restore.
+ComponentResult			Declick::GetParameterList(AudioUnitScope		inScope,
+                                                        AudioUnitParameterID	*outParameterList,
+                                                        UInt32			&outNumParameters)
+{
+	if (inScope != kAudioUnitScope_Global) {
+		outNumParameters = 0;
+		return noErr;
+	}
+	static const AudioUnitParameterID live[kNumberOfParameters] = { kParam_A, kParam_F, kParam_G };
+	if (outParameterList != NULL) {
+		for (UInt32 i = 0; i < kNumberOfParameters; ++i) outParameterList[i] = live[i];
+	}
+	outNumParameters = kNumberOfParameters;
+	return noErr;
 }
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -269,10 +265,8 @@ ComponentResult Declick::Initialize()
 //Sliders to core units: the core's own mapping, as the VST's and VirtualDJ's.
 declick::Params Declick::paramsFromControls()
 {
-	const float s[7] = { GetParameter( kParam_A ), GetParameter( kParam_B ),
-	                     GetParameter( kParam_C ), GetParameter( kParam_D ),
-	                     GetParameter( kParam_E ), GetParameter( kParam_F ),
-	                     GetParameter( kParam_G ) };
+	const float s[declick::Params::kSliderCount] = { GetParameter( kParam_A ),
+	                     GetParameter( kParam_F ), GetParameter( kParam_G ) };
 	return declick::Params::fromSliders(s);
 }
 
@@ -290,8 +284,8 @@ void Declick::updateConfig()
 	declick::Config next;
 	next.compute(p, rate);
 
-	//Sensitivity, Extent, Depth, Passes and Dry/Wet need the same buffers, so
-	//they go in live. Max repair and Model order resize the pipeline and cannot.
+	//Sensitivity and Dry/Wet need the same buffers, so they go in live. Model
+	//order resizes the pipeline and cannot.
 	if (!needsPrime && next.structurallyEquals(cfg)
 		&& chanL.retune(next) && chanR.retune(next)) {
 		cfg = next;
@@ -316,7 +310,7 @@ void Declick::updateConfig()
 	if (next.latency != reportedLatency) {
 		reportedLatency = next.latency;
 		//the AU's ioChanged(): the host re-reads GetLatency() when it is told
-		//the property moved. Only Max repair and Model order get here.
+		//the property moved. Only Model order and the rate get here.
 		PropertyChanged(kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0);
 	}
 }

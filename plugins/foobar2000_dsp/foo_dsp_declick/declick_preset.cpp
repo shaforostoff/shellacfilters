@@ -18,7 +18,7 @@ GUID guid() {
 
 void make(const Params & params, dsp_preset & out) {
     Params p = params;
-    p.sanitize();
+    p.restrictToControls();   // the fields the dialog does not show go out as defaults
 
     dsp_preset_builder builder;
     builder << (t_uint32)version;
@@ -51,7 +51,10 @@ Params parse(const dsp_preset & in) {
             p = Params::defaults();
         }
     }
-    p.sanitize();
+    // Extent, Max repair, Repair depth and Passes are no longer settable, and a
+    // preset saved while they were must not leave them stuck at a value the
+    // dialog cannot show or undo. Model order lands on 64, 128 or 256.
+    p.restrictToControls();
     return p;
 }
 

@@ -77,6 +77,7 @@ struct Setting { int index; float value; };   //int, not VstInt32: this is above
   static const bool   kHasEditor     = false;
   static const char * const kParamNames[] =
       { "Sensitv", "Bandwid", "SrchTo", "Harmncs", "Freq", "Rumble", "Dry/Wet" };
+  static const int kChunkFloats = kNumParameters;
   static const Setting * const kArm = 0;
   static const size_t kArmCount = 0;
 #elif defined(VST_PLUGIN_DECLICK)
@@ -87,7 +88,9 @@ struct Setting { int index; float value; };   //int, not VstInt32: this is above
   static const bool   kZeroLatency   = false;
   static const bool   kHasEditor     = false;
   static const char * const kParamNames[] =
-      { "Sensitv", "Extent", "MaxLen", "Depth", "Passes", "Order", "Dry/Wet" };
+      { "Sensitv", "Order", "Dry/Wet" };
+  //the seven-slot layout of the builds that had seven sliders: see Declick.h
+  static const int kChunkFloats = kChunkSlots;
   static const Setting * const kArm = 0;
   static const size_t kArmCount = 0;
 #elif defined(VST_PLUGIN_PARAEQ)
@@ -102,6 +105,7 @@ struct Setting { int index; float value; };   //int, not VstInt32: this is above
         "Revrb", "Revrb Hz", "Revrb Q",
         "Brill", "Brill Hz", "Brill Q",
         "Hiss", "Hiss Hz", "Hiss Shp", "Output", "Bypass" };
+  static const int kChunkFloats = kNumParameters;
   //A plausible transfer curve: 24 dB/oct of rumble filter, weight back in at
   //the bottom, the boxiness out of the low mids, brilliance up, hiss down.
   static const Setting kArmSettings[] = {
@@ -650,8 +654,8 @@ void testTheChunk(AEffect * e) {
     const VstInt32 size = (VstInt32)send(e, effGetChunk, 1, 0, &blob);
     char d[96];
     snprintf(d, sizeof d, "%d bytes", (int)size);
-    check(size == (VstInt32)(kNumParameters * sizeof(float)) && blob != 0,
-          "effGetChunk returns one float per parameter", d);
+    check(size == (VstInt32)(kChunkFloats * sizeof(float)) && blob != 0,
+          "effGetChunk returns the plug-in's chunk layout", d);
     if (!blob || size <= 0) return;
 
     /*  Copy it out immediately. The blob was allocated by the module's own

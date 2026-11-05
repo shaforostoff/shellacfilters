@@ -36,14 +36,20 @@ namespace slider_panel {
 //! `lo` to `hi`. NULL if the row has no such position.
 //!
 //! `help` is the hover text, word for word the Windows tooltip.
+//!
+//! `choices`, if set, holds steps + 1 values and position k means choices[k]
+//! instead of the linear mapping - for a parameter that has only a few valid
+//! values and those not evenly spaced. Last, so rows that leave it out get
+//! NULL.
 struct row {
-    const char * label;
-    int          steps;
-    double       lo, hi;
-    int          decimals;   // for the readout
-    const char * suffix;
-    const char * offText;
-    const char * help;
+    const char *   label;
+    int            steps;
+    double         lo, hi;
+    int            decimals;   // for the readout
+    const char *   suffix;
+    const char *   offText;
+    const char *   help;
+    const double * choices;
 };
 
 //! Everything the panel knows about one component. `values` always has one

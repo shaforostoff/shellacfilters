@@ -16,55 +16,36 @@ using declick::Params;
 
 namespace {
 
+// Only the controls Params::restrictToControls() keeps: the stages after the
+// AR repair were tuned with the rest at their defaults.
+const double k_orders[] = { 64.0, 128.0, 256.0 };
+
 const slider_panel::row k_rows[] = {
     { "Sensitivity",  1000,  0.0,   1.0, 3, "",    NULL,
       "How readily a sample is called a click. The default, 0.9, puts the trigger at 2.85 "
       "sigma above the local noise estimate. Detections near the trigger are only partly "
       "repaired - they are as likely noise or music as clicks - and full repair is kept for "
       "clear ones. Past the default, music starts being flagged as damage faster than crackle "
-      "is found. On clean records 0.7-0.8 takes less still." },
+      "is found. On clean records 0.7-0.8 takes less still.", NULL },
 
-    { "Extent",       1000,  0.0,   1.0, 3, "",    NULL,
-      "How far each detection spreads outwards into the tail of the click. Higher repairs "
-      "more of the decay, but it lowers the floor for every repair, so too high starts "
-      "replacing good audio either side. A strong click whose error rings through zero is "
-      "repaired whole without it. Lower it (0.3) on clean records." },
-
-    { "Max repair",    198,  0.2,  20.0, 1, " ms", NULL,
-      "The longest single stretch that may be reconstructed. Damage longer than this is left "
-      "alone rather than guessed at." },
-
-    { "Passes",          2,  1.0,   3.0, 0, "",    NULL,
-      "How many times the detector sweeps each block. A second pass catches clicks that the "
-      "first pass's repairs uncover." },
-
-    { "Model order",   124,  8.0, 256.0, 0, "",    NULL,
-      "Taps in the autoregressive model that predicts what the waveform should have been. "
-      "Higher orders model the music better, so they change clean records least - 256 is the "
-      "gentlest - but they also miss more of the short clicks on heavily crackled transfers, "
-      "where 64-128 catches more. 128 is the balance. Any value works, not only powers of "
-      "two; CPU and latency grow with it (256 costs about 2.4x what 128 does, 64 about 0.6x)." },
-
-    { "Repair depth", 1000,  0.0,   1.0, 3, "",    NULL,
-      "How much of the estimated click is subtracted. 1, the default, replaces the damaged "
-      "samples outright. 0 subtracts 45% of each click - the least added error by whole-file "
-      "measure, but it leaves every click no more than 5 dB quieter." },
+    { "Model order",     2, 64.0, 256.0, 0, "",    NULL,
+      "Taps in the autoregressive model that predicts what the waveform should have been. 128 "
+      "is the balance. 256 models the music better and changes clean records least, but "
+      "misses more of the short clicks on heavily crackled transfers. 64 costs about 0.6x the "
+      "CPU of 128 and gives up surprisingly little - the one to pick on a slow machine; 256 "
+      "costs about 2.4x.", k_orders },
 
     { "Dry/Wet",      1000,  0.0,   1.0, 3, "",    NULL,
       "Blend of the repaired signal against the original. 0 passes the input through "
-      "untouched." },
+      "untouched.", NULL },
 };
 
 const size_t k_count = sizeof(k_rows) / sizeof(k_rows[0]);
 
 void to_values(const Params & p, double * v, bool & delta) {
     v[0] = p.sensitivity;
-    v[1] = p.extent;
-    v[2] = p.maxLengthMs;
-    v[3] = (double)p.passes;
-    v[4] = (double)p.order;
-    v[5] = p.depth;
-    v[6] = p.dryWet;
+    v[1] = (double)p.order;
+    v[2] = p.dryWet;
     delta = p.delta;
 }
 
@@ -75,12 +56,8 @@ void read(const dsp_preset & in, double * v, bool & delta) {
 void write(const double * v, bool delta, dsp_preset & out) {
     Params p = Params::defaults();
     p.sensitivity = (float)v[0];
-    p.extent      = (float)v[1];
-    p.maxLengthMs = (float)v[2];
-    p.passes      = (int)(v[3] + 0.5);
-    p.order       = (int)(v[4] + 0.5);
-    p.depth       = (float)v[5];
-    p.dryWet      = (float)v[6];
+    p.order       = (int)(v[1] + 0.5);
+    p.dryWet      = (float)v[2];
     p.delta       = delta;
     declick_preset::make(p, out);
 }
@@ -96,8 +73,7 @@ const slider_panel::spec k_spec = {
     "repaired audio. For testing: it should be crackle and clicks and nothing else, and "
     "any music heard in it is being damaged. Saved with the preset; untick it when done.",
     "Sensitivity is the one to reach for: raise it until the crackle goes, then back off as "
-    "soon as the music dulls. Repair depth 0 subtracts the fraction of each click that adds "
-    "the least error of its own; raise it to strip more, at the cost of more guesswork.",
+    "soon as the music dulls. Model order 64 is for a slow machine; 256 for clean records.",
     read, write, defaults,
 };
 

@@ -259,13 +259,22 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 | | |
 | --- | --- |
 | **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.9** (2.85σ). Runs that barely cross the trigger are only partly repaired — half of what the model says is wrong at the trigger, rising to all of it 3.5σ above — so the default reaches small clicks without taking much from clean records; on clean records 0.7–0.8 takes less still. See [Dense crackle](#dense-crackle). |
-| **Extent** | How far a detection spreads into its own tail before the repair stops. Raise it if repairs leave a residual tick behind them — but it lowers the floor for every repair, so it spreads into good audio everywhere; a strong click whose error rings through zero is already repaired whole without it (see the dip rule under [Dense crackle](#dense-crackle)). 0.3 is gentler on clean records. |
-| **Max repair** | Longest single repair. Anything longer is treated as music and left alone. 4 ms suits 78s. |
-| **Passes** | A second pass catches clicks the first one uncovers; the model is refitted in between. Small but real gain, roughly 50–60% more CPU. |
-| **Model order** | 8–256 in steps of 2, default **128**. Higher orders model the music better, so they change clean records least, and remove isolated clicks better; but they also predict some short clicks well enough to miss them on heavily crackled transfers. 128 is the balance. Any even value is as good as a power of two — CPU and latency grow smoothly with it: 256 costs about 2.1× what 128 does, 64 about 0.6×. The VST2, AU and VirtualDJ ports run 16–256 in eights, with the same default of 128. See [Choosing settings](#choosing-settings) and [Does more CPU help?](#does-more-cpu-help). |
-| **Repair depth** | How much of each click to subtract. 1, the default, replaces the damaged samples outright; 0 subtracts the 45% fraction that adds the least whole-file error, which caps every repair at −5.2 dB. See [Repair depth](#repair-depth) and [Dense crackle](#dense-crackle). |
+| **Model order** | **64**, **128** (default) or **256**. Higher orders model the music better, so they change clean records least, and remove isolated clicks better; but they also predict some short clicks well enough to miss them on heavily crackled transfers. 128 is the balance. 64 costs about 0.6× the CPU of 128 and gives up surprisingly little — the one for a slow machine; 256 costs about 2.1×. In the VST2, AU and VirtualDJ ports the slider reads as the old 16–256-in-eights one did, snapped to the nearest of the three (below 96 → 64, below 192 → 128), so positions saved by older builds keep their meaning. See [Choosing settings](#choosing-settings) and [Does more CPU help?](#does-more-cpu-help). |
 | **Dry/Wet** | 0 bypasses. |
 | **Output only what is removed** | Delta monitoring, for testing: outputs input minus output, so you hear what the repair takes out. It should be crackle and clicks and nothing else; music heard in it is collateral damage, and the cue to lower Sensitivity. Saved with the preset, so untick it when done. foobar2000 only. |
+
+That is all a user can reach. The core still has Extent (0.5), Max repair
+(4 ms), Repair depth (1) and Passes (2), and the CLI still sets them, but every
+stage added since — the body, flank and crackle-floor stages, the carpet key,
+the micro and mid stages, the shape fit — was tuned by ear with those four at
+their defaults, so moving them only reached combinations nobody had heard.
+`Params::restrictToControls()` holds them there. Presets and host states keep
+their old layout, so a chain or project saved by an older build still loads:
+its three settable values come through, Model order snapped to the nearest of
+64/128/256, and its Extent, Max repair, Repair depth and Passes are ignored.
+What is saved here opens in an older build with those four at their defaults.
+
+The sections below on those four document how the defaults were arrived at.
 
 Measured over 20 s excerpts of four 78 rpm transfers, at the repair depth of 0
 and order 32 that were the defaults then. The unprocessed originals sit at
@@ -3588,10 +3597,10 @@ has to get right that a VST does not:
 
 * `GetLatency()` and `GetTailTime()` are **seconds**, not samples, and both have
   to come back out as `cfg.latency` at the rate in force — 6192 samples at the
-  shipping default, 5904 after dropping to order 32, 11008 at 96 kHz;
+  shipping default, a different figure after dropping to order 64, 11008 at 96 kHz;
 * `PropertyChanged(kAudioUnitProperty_Latency)` is what an AU says instead of
-  `audioMasterIOChanged`, so it must fire **exactly once** for Max repair or
-  Model order and **never** for the other five, for Dehum's seven, or across a
+  `audioMasterIOChanged`, so it must fire **exactly once** for Model order
+  and **never** for Sensitivity or Dry/Wet, for Dehum's seven, or across a
   sample rate change;
 * `Reset()` is where `resume()` went, with the same split: Declick starts the
   next take from silence, Dehum keeps what the detector learned (hum still
@@ -3945,8 +3954,8 @@ overwritten.
 | | |
 | --- | --- |
 | **Pre-roll** | A VST must return n samples for every n it is given, and the core holds `config().latency` samples of lookahead. `Channel::prime()` feeds it that many zeros up front, after which `available() >= n` holds for *any* block size, so the wrapper is a plain one-in-one-out loop with no FIFO of its own and no risk of the core zero-filling mid-stream. Those zeros are the reported delay. |
-| **`setInitialDelay` / `getGetTailSize`** | foobar2000 is told the latency through `get_latency()` and flushes with `on_endofplayback()`. A VST needs the equivalent two, and `ioChanged()` when Max repair or Model order changes it. |
-| **`Channel::retune()`** | A DAW moves sliders while audio runs, and `configure()` resets. `retune()` swaps in a config that needs the same buffers — everything except Max repair and Model order — with no discontinuity. Written for the VST, but foobar2000 has the same problem for a different reason: `on_chunk` is the audio thread, so it takes the same route. |
+| **`setInitialDelay` / `getGetTailSize`** | foobar2000 is told the latency through `get_latency()` and flushes with `on_endofplayback()`. A VST needs the equivalent two, and `ioChanged()` when Model order changes it. |
+| **`Channel::retune()`** | A DAW moves sliders while audio runs, and `configure()` resets. `retune()` swaps in a config that needs the same buffers — everything except Model order — with no discontinuity. Written for the VST, but foobar2000 has the same problem for a different reason: `on_chunk` is the audio thread, so it takes the same route. |
 | **Dither** | Airwindows house style, on the 32-bit float path only. |
 
 ### The Dehum VST wrapper is shorter, and mostly by subtraction
@@ -3960,7 +3969,7 @@ its wrapper needs none of it:
 | **No pre-roll, no FIFO** | The core works in place and returns what it was given, so the wrapper is a copy, a `process()` call and a dither. |
 | **No latency to declare** | `setInitialDelay(0)` once in the constructor and nothing after it. `dehum_vst_verify` asserts `ioChanged()` is **never** called, for any parameter and across a sample rate change — the exact opposite of what it asserts for Declick. |
 | **No tail** | Nothing to keep pulling for at the end of an offline bounce, so no `getGetTailSize()`. |
-| **Every parameter retunes live** | Only the sample rate sizes anything in this core, so all seven sliders move without a rebuild, a reset or a gap. Declick can only manage five of its seven. |
+| **Every parameter retunes live** | Only the sample rate sizes anything in this core, so all seven sliders move without a rebuild, a reset or a gap. Declick can manage two of its three. |
 | **A scratch buffer** | The one thing it adds. The DSP is done in double while the float path dithers on the way out, so the doubles need somewhere to live: a fixed 1024-sample member, chunked, because the audio thread must not allocate. Splitting a buffer across chunks is undetectable to the core, which is what the block size checks establish — including a deliberate 1025, one past the scratch. |
 | **`resume()` flushes rather than resets** | The analysis window is stale across a transport jump and the integrators hold a discontinuity, but the hum on the far side is the same hum. Forgetting the lines would cost several seconds of it every time the user hit play; the test measures the hum still 34.9 dB down within 2 s of `resume()`. |
 

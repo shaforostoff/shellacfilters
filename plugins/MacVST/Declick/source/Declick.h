@@ -19,16 +19,25 @@
 
 #include "declick_core.h"
 
+//Sensitivity, Model order and Dry/Wet: the controls Params::restrictToControls()
+//keeps. The other four the stages after the AR repair were tuned against at
+//their defaults, so they are not offered.
 enum {
-	kParamA =0,
-	kParamB =1,
-	kParamC =2,
-	kParamD =3,
-	kParamE =4,
-	kParamF =5,
-	kParamG =6,
-  kNumParameters = 7
+	kParamA =0,  //Sensitv
+	kParamB =1,  //Order: 64, 128 or 256
+	kParamC =2,  //Dry/Wet
+  kNumParameters = 3
 }; //
+
+//A chunk keeps the seven-float layout of the builds that had seven sliders, so
+//presets travel both ways: these are the slots the three live in, and the
+//other four are written as the old defaults and ignored on the way in.
+enum {
+	kChunkSensitivity = 0,
+	kChunkOrder = 5,
+	kChunkDryWet = 6,
+	kChunkSlots = 7
+};
 
 const int kNumPrograms = 0;
 const int kNumInputs = 2;
@@ -70,13 +79,9 @@ private:
     float A;
     float B;
     float C;
-    float D;
-    float E;
-    float F;
-    float G;
-    float chunk[kNumParameters];   //!< what getChunk() hands the host, which never frees it
+    float chunk[kChunkSlots];   //!< what getChunk() hands the host, which never frees it
 
-	//A..G are the host's 0..1 sliders; these turn them into the core's units,
+	//A..C are the host's 0..1 sliders; these turn them into the core's units,
 	//and reconfigure or retune the two channels when anything actually moved.
 	declick::Params paramsFromControls();
 	void updateConfig();

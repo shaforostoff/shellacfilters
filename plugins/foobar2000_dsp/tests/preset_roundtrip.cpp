@@ -84,31 +84,51 @@ int main() {
         compare(roundTrip(d), d, "defaults round-trip");
     }
 
-    // 2. Every field distinct, so a shifted read cannot accidentally pass.
+    // 2. Every settable field away from its default, so a shifted read cannot
+    //    accidentally pass.
     {
-        declick::Params p;
+        declick::Params p = declick::Params::defaults();
         p.sensitivity = 0.8125f;   // exact in binary, no rounding to argue about
+        p.dryWet      = 0.75f;
+        p.order       = 256;
+        p.delta       = true;
+        compare(roundTrip(p), p, "non-default values round-trip");
+        p.order = 64;
+        compare(roundTrip(p), p, "order 64 round-trips");
+    }
+
+    // 2b. The fields the dialog does not show are written and read as their
+    //     defaults, and an order off the three choices lands on the nearest.
+    {
+        declick::Params p = declick::Params::defaults();
         p.extent      = 0.375f;
         p.maxLengthMs = 6.5f;
         p.depth       = 0.25f;
-        p.dryWet      = 0.75f;
         p.passes      = 3;
         p.order       = 48;
-        p.delta       = true;
-        compare(roundTrip(p), p, "non-default values round-trip");
+        declick::Params want = declick::Params::defaults();
+        want.order = 64;
+        compare(roundTrip(p), want, "hidden fields go out and come back as defaults");
+        p.order = 176;
+        want.order = 128;
+        compare(roundTrip(p), want, "order 176 lands on 128");
+        p.order = 192;
+        want.order = 256;
+        compare(roundTrip(p), want, "order 192 lands on 256");
     }
 
     // 3. Extremes, after sanitize() has had its say.
     {
-        declick::Params p;
-        p.sensitivity = 1.0f; p.extent = 0.0f; p.maxLengthMs = 20.0f;
-        p.depth = 1.0f; p.dryWet = 0.0f; p.passes = 1; p.order = 8;
+        declick::Params p = declick::Params::defaults();
+        p.sensitivity = 1.0f; p.dryWet = 0.0f; p.order = 8;
         p.delta = false;
-        p.sanitize();
-        compare(roundTrip(p), p, "extremes round-trip");
+        declick::Params want = p;
+        want.order = 64;
+        compare(roundTrip(p), want, "extremes round-trip");
     }
 
-    // 4. A version-1 preset still loads, with depth at its default.
+    // 4. A version-1 preset still loads: what it set that is still settable
+    //    survives, and everything else is at its default.
     {
         declick::Params p = declick::Params::defaults();
         p.sensitivity = 0.8125f;
@@ -123,8 +143,10 @@ int main() {
         makeLegacyV1(p, preset);
         const declick::Params got = declick_preset::parse(preset);
 
-        declick::Params want = p;
-        want.depth = declick::Params::defaults().depth;
+        declick::Params want = declick::Params::defaults();
+        want.sensitivity = p.sensitivity;
+        want.dryWet      = p.dryWet;
+        want.order       = 64;    // 48, on the nearest of the three
         compare(got, want, "version-1 preset upgrades");
     }
 
@@ -140,8 +162,9 @@ int main() {
         makeLegacyV2(p, preset);
         const declick::Params got = declick_preset::parse(preset);
 
-        declick::Params want = p;
-        want.delta = false;
+        declick::Params want = declick::Params::defaults();
+        want.sensitivity = p.sensitivity;
+        want.order       = 64;
         compare(got, want, "version-2 preset upgrades");
     }
 

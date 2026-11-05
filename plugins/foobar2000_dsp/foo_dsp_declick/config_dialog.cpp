@@ -10,6 +10,7 @@
 #include "declick_preset.h"
 #include "resource.h"
 
+#include <math.h>
 #include <stdio.h>
 
 using declick::Params;
@@ -17,12 +18,15 @@ using declick::Params;
 namespace {
 
 //! Each slider works in integer steps and maps onto its parameter through
-//! `lo + pos * step`. Keeping the mapping in a table lets one handler drive
-//! all six of them.
+//! `lo + pos * step`, or, where `choices` is set, picks choices[pos]. Keeping
+//! the mapping in a table lets one handler drive all of them.
 //!
-//! `help` is the hover text, shared word for word with the AU's parameter
-//! tooltips; it is condensed from the rationale in declick_core.h, which has
-//! the measurements behind it.
+//! Only the controls Params::restrictToControls() keeps are here: the stages
+//! after the AR repair were tuned with the rest at their defaults.
+//!
+//! `help` is the hover text, shared word for word with the macOS view; it is
+//! condensed from the rationale in declick_core.h, which has the measurements
+//! behind it.
 struct slider_def {
     int    sliderId;
     int    labelId;
@@ -31,44 +35,27 @@ struct slider_def {
     double lo, hi;       // parameter range
     int    decimals;     // for the readout
     const wchar_t * suffix;
+    const double *  choices;   // steps + 1 values, or NULL for a linear slider
     const wchar_t * help;
 };
 
+const double k_orders[] = { 64.0, 128.0, 256.0 };
+
 const slider_def k_sliders[] = {
-    { IDC_SLIDER_SENSITIVITY, IDC_LABEL_SENSITIVITY, IDC_VALUE_SENSITIVITY, 1000,  0.0,  1.0, 3, L"",
+    { IDC_SLIDER_SENSITIVITY, IDC_LABEL_SENSITIVITY, IDC_VALUE_SENSITIVITY, 1000,  0.0,  1.0, 3, L"", NULL,
       L"How readily a sample is called a click. The default, 0.9, puts the trigger at 2.85 sigma "
       L"above the local noise estimate. Detections near the trigger are only partly repaired - "
       L"they are as likely noise or music as clicks - and full repair is kept for clear ones. "
       L"Past the default, music starts being flagged as damage faster than crackle is found. On "
       L"clean records 0.7-0.8 takes less still." },
 
-    { IDC_SLIDER_EXTENT,      IDC_LABEL_EXTENT,      IDC_VALUE_EXTENT,      1000,  0.0,  1.0, 3, L"",
-      L"How far each detection spreads outwards into the tail of the click. Higher repairs more "
-      L"of the decay, but it lowers the floor for every repair, so too high starts replacing good "
-      L"audio either side. A strong click whose error rings through zero is repaired whole "
-      L"without it. Lower it (0.3) on clean records." },
+    { IDC_SLIDER_ORDER,       IDC_LABEL_ORDER,       IDC_VALUE_ORDER,          2, 64.0, 256.0, 0, L"", k_orders,
+      L"Taps in the autoregressive model that predicts what the waveform should have been. 128 is "
+      L"the balance. 256 models the music better and changes clean records least, but misses more "
+      L"of the short clicks on heavily crackled transfers. 64 costs about 0.6x the CPU of 128 and "
+      L"gives up surprisingly little - the one to pick on a slow machine; 256 costs about 2.4x." },
 
-    { IDC_SLIDER_MAXLEN,      IDC_LABEL_MAXLEN,      IDC_VALUE_MAXLEN,       198,  0.2, 20.0, 1, L" ms",
-      L"The longest single stretch that may be reconstructed. Damage longer than this is left "
-      L"alone rather than guessed at." },
-
-    { IDC_SLIDER_PASSES,      IDC_LABEL_PASSES,      IDC_VALUE_PASSES,         2,  1.0,  3.0, 0, L"",
-      L"How many times the detector sweeps each block. A second pass catches clicks that the "
-      L"first pass's repairs uncover." },
-
-    { IDC_SLIDER_ORDER,       IDC_LABEL_ORDER,       IDC_VALUE_ORDER,        124,  8.0, 256.0, 0, L"",
-      L"Taps in the autoregressive model that predicts what the waveform should have been. Higher "
-      L"orders model the music better, so they change clean records least - 256 is the gentlest - "
-      L"but they also miss more of the short clicks on heavily crackled transfers, where 64-128 "
-      L"catches more. 128 is the balance. Any value works, not only powers of two; CPU and latency "
-      L"grow with it (256 costs about 2.4x what 128 does, 64 about 0.6x)." },
-
-    { IDC_SLIDER_DEPTH,       IDC_LABEL_DEPTH,       IDC_VALUE_DEPTH,       1000,  0.0,  1.0, 3, L"",
-      L"How much of the estimated click is subtracted. 1, the default, replaces the damaged "
-      L"samples outright. 0 subtracts 45% of each click - the least added error by whole-file "
-      L"measure, but it leaves every click no more than 5 dB quieter." },
-
-    { IDC_SLIDER_DRYWET,      IDC_LABEL_DRYWET,      IDC_VALUE_DRYWET,      1000,  0.0,  1.0, 3, L"",
+    { IDC_SLIDER_DRYWET,      IDC_LABEL_DRYWET,      IDC_VALUE_DRYWET,      1000,  0.0,  1.0, 3, L"", NULL,
       L"Blend of the repaired signal against the original. 0 passes the input through "
       L"untouched." },
 };
@@ -83,11 +70,7 @@ const wchar_t * const k_delta_help =
 double get_param(const Params & p, size_t i) {
     switch (i) {
     case 0: return p.sensitivity;
-    case 1: return p.extent;
-    case 2: return p.maxLengthMs;
-    case 3: return (double)p.passes;
-    case 4: return (double)p.order;
-    case 5: return p.depth;
+    case 1: return (double)p.order;
     default: return p.dryWet;
     }
 }
@@ -95,21 +78,29 @@ double get_param(const Params & p, size_t i) {
 void set_param(Params & p, size_t i, double v) {
     switch (i) {
     case 0: p.sensitivity = (float)v; break;
-    case 1: p.extent = (float)v; break;
-    case 2: p.maxLengthMs = (float)v; break;
-    case 3: p.passes = (int)(v + 0.5); break;
-    case 4: p.order = (int)(v + 0.5); break;
-    case 5: p.depth = (float)v; break;
+    case 1: p.order = (int)(v + 0.5); break;
     default: p.dryWet = (float)v; break;
     }
 }
 
 double pos_to_value(const slider_def & s, int pos) {
     if (s.steps <= 0) return s.lo;
+    if (s.choices) {
+        if (pos < 0) pos = 0;
+        if (pos > s.steps) pos = s.steps;
+        return s.choices[pos];
+    }
     return s.lo + (s.hi - s.lo) * ((double)pos / (double)s.steps);
 }
 
 int value_to_pos(const slider_def & s, double v) {
+    if (s.choices) {
+        int best = 0;
+        for (int k = 1; k <= s.steps; ++k) {
+            if (fabs(s.choices[k] - v) < fabs(s.choices[best] - v)) best = k;
+        }
+        return best;
+    }
     if (s.hi <= s.lo) return 0;
     double t = (v - s.lo) / (s.hi - s.lo);
     if (t < 0.0) t = 0.0;

@@ -58,7 +58,7 @@ int g_ioChanged = 0;
  *  shim that ships, not a test double - so the only way to see what the plug-in
  *  told the host is to be the host. audioMasterIOChanged is the one callback
  *  anything in this tree ever makes, and for this plug-in it must happen when
- *  Max repair or Model order moves and at no other time. */
+ *  Model order moves and at no other time. */
 VstIntPtr VSTCALLBACK hostCallback(AEffect * effect, VstInt32 opcode, VstInt32 index,
                                    VstIntPtr value, void * ptr, float opt) {
     (void)effect; (void)index; (void)value; (void)ptr; (void)opt;
@@ -182,28 +182,18 @@ void testLatency(const std::vector<double> & refL, const declick::Config & cfg) 
     check(db < -40.0, "clean audio passes through at the declared delay", d);
 }
 
-//! Clicks shrink, and Repair depth is the lever the README says it is.
+//! Clicks shrink. The default is full-depth replacement, so most of each one
+//! goes.
 void testRepair(const std::vector<double> & inL, const std::vector<double> & inR,
                 const std::vector<double> & refL, const std::vector<int> & clickAt,
                 const declick::Config & cfg) {
-    struct Case { float depth; double mustBeat; const char * what; };
+    (void)inR;
+    struct Case { double mustBeat; const char * what; };
     static const Case cases[] = {
-        // At the shipping default only the calibrated 0.45 of each click is
-        // subtracted, which the README measures at about 1.8 dB whole-file - so
-        // a modest reduction is the correct expectation, and depth 1 is where a
-        // large one belongs.
-        { -1.0f, 1.00, "clicks come out smaller at the default depth" },
-        {  1.0f, 1.33, "Repair depth 1 takes most of the click out" }
+        { 1.33, "the defaults take most of the click out" }
     };
-    for (int c = 0; c < 2; ++c) {
-        std::vector<double> aL, aR;
+    for (int c = 0; c < 1; ++c) {
         const std::vector<double> * use = &refL;
-        Declick fx(hostCallback);
-        if (cases[c].depth >= 0.0f) {
-            fx.setParameter(kParamD, cases[c].depth);
-            runBlocks(fx, inL, inR, aL, aR, oneBlockSize(512));
-            use = &aL;
-        }
         double before = 0.0, after = 0.0;
         for (size_t k = 0; k < clickAt.size(); ++k) {
             const int p = clickAt[k];
@@ -240,16 +230,17 @@ void testParameterMoves(const std::vector<double> & inL, const std::vector<doubl
     char d[64]; snprintf(d, sizeof d, "longest silent run %d samples", worstRun);
     check(worstRun < 64, "a Sensitivity move leaves no gap in the audio", d);
 
-    // Down from the default 128 to 32 (16 + 8 * floor(0.08 * 30.999)).
-    fx.setParameter(kParamF, 0.08f);            // Model order: rebuild
+    // Down from the default 128 to 64 (16 + 8 * floor(0.08 * 30.999) = 32,
+    // which snaps to 64).
+    fx.setParameter(kParamB, 0.08f);            // Model order: rebuild
     runBlocks(fx, inL, inR, aL, aR, bs);
-    declick::Params p32 = wrapperDefaults();
-    p32.sensitivity = 0.85f;
-    p32.order = 32;
-    declick::Config c32; c32.compute(p32, (double)kRate);
-    snprintf(d, sizeof d, "%d -> %d samples", (int)c32.pad, (int)fx.getAeffect()->initialDelay);
+    declick::Params p64 = wrapperDefaults();
+    p64.sensitivity = 0.85f;
+    p64.order = 64;
+    declick::Config c64; c64.compute(p64, (double)kRate);
+    snprintf(d, sizeof d, "%d -> %d samples", (int)c64.latency, (int)fx.getAeffect()->initialDelay);
     check(g_ioChanged > baseline, "a Model order move renegotiates latency");
-    check(fx.getAeffect()->initialDelay == c32.latency, "the rebuilt latency is the one order 32 needs", d);
+    check(fx.getAeffect()->initialDelay == c64.latency, "the rebuilt latency is the one order 64 needs", d);
     check(fx.getGetTailSize() == fx.getAeffect()->initialDelay,
           "declared delay and tail stay consistent after a rebuild");
 }
@@ -308,7 +299,7 @@ void testRobustness(const std::vector<double> & inL, const std::vector<double> &
     }
     {
         Declick fx(hostCallback);
-        fx.setParameter(kParamG, 0.0f);         // Dry/Wet 0
+        fx.setParameter(kParamC, 0.0f);         // Dry/Wet 0
         std::vector<double> aL, aR;
         runBlocks(fx, inL, inR, aL, aR, oneBlockSize(512));
         double w = 0.0;
@@ -379,17 +370,17 @@ void testParameterMapping() {
     Declick fx(hostCallback);
     char t[64];
     struct Case { int index; float set; double want; const char * what; };
+    // Model order reads its slider as the old 16 .. 256-in-eights one did and
+    // snaps that: below 96 is 64, below 192 is 128, the rest 256.
     static const Case cases[] = {
-        { kParamC, 0.2f, 4.0,  "Max repair at the default slider reads 4 ms" },
-        { kParamC, 0.0f, 0.2,  "Max repair at 0.0 clamps to 0.2 ms" },
-        { kParamC, 1.0f, 20.0, "Max repair at 1.0 reads 20 ms" },
-        { kParamE, 0.5f, 2.0,  "Passes at the default slider reads 2" },
-        { kParamE, 0.0f, 1.0,  "Passes at 0.0 reads 1" },
-        { kParamE, 1.0f, 3.0,  "Passes at 1.0 reads 3" },
-        { kParamF, 0.4677f, 128.0, "Model order at the default slider reads 128" },
-        { kParamF, 0.5f, 136.0, "Model order at mid slider reads 136" },
-        { kParamF, 0.0f, 16.0,  "Model order at 0.0 reads 16" },
-        { kParamF, 1.0f, 256.0, "Model order at 1.0 reads 256" }
+        { kParamB, 0.4677f, 128.0, "Model order at the default slider reads 128" },
+        { kParamB, 0.5f,   128.0, "Model order at mid slider reads 128" },
+        { kParamB, 0.0f,    64.0, "Model order at 0.0 reads 64" },
+        { kParamB, 0.30f,   64.0, "Model order at 0.30 (old 88) reads 64" },
+        { kParamB, 0.33f,  128.0, "Model order at 0.33 (old 96) reads 128" },
+        { kParamB, 0.70f,  128.0, "Model order at 0.70 (old 184) reads 128" },
+        { kParamB, 0.72f,  256.0, "Model order at 0.72 (old 192) reads 256" },
+        { kParamB, 1.0f,   256.0, "Model order at 1.0 reads 256" }
     };
     for (size_t c = 0; c < sizeof cases / sizeof cases[0]; ++c) {
         fx.setParameter(cases[c].index, cases[c].set);
@@ -401,27 +392,68 @@ void testParameterMapping() {
     }
 }
 
-//! Presets: a chunk has to carry every parameter, in the right slot.
+//! Presets: the chunk keeps the seven-slot layout of the builds that had seven
+//! sliders, so presets travel both ways.
 void testChunk() {
+    // Order 64 (old 16 + 8 * floor(0.2 * 30.999) = 48, nearest 64) and two
+    // distinct values, so a parameter read out of position cannot pass.
     Declick a(hostCallback), b(hostCallback);
-    // Distinct values, so a parameter read out of position cannot pass.
-    const float vals[kNumParameters] = { 0.11f, 0.22f, 0.33f, 0.44f, 0.55f, 0.66f, 0.77f };
-    for (int i = 0; i < kNumParameters; ++i) a.setParameter(i, vals[i]);
+    a.setParameter(kParamA, 0.11f);
+    a.setParameter(kParamB, 0.2f);
+    a.setParameter(kParamC, 0.77f);
 
     void * blob = NULL;
     const VstInt32 size = a.getChunk(&blob, true);
-    char d[64]; snprintf(d, sizeof d, "%d bytes", (int)size);
-    check(size == (VstInt32)(kNumParameters * sizeof(float)),
-          "a chunk is one float per parameter", d);
+    char d[96]; snprintf(d, sizeof d, "%d bytes", (int)size);
+    check(size == (VstInt32)(kChunkSlots * sizeof(float)),
+          "a chunk is the old seven-float layout", d);
+
+    const float * slots = (const float *)blob;
+    snprintf(d, sizeof d, "%.4f %.4f %.4f %.4f", slots[1], slots[2], slots[3], slots[4]);
+    check(slots[1] == 0.5f && slots[2] == 0.2f && slots[3] == 1.0f && slots[4] == 0.5f,
+          "the unused slots hold the old default positions", d);
+    // what an older build makes of the order slot: 16 + 8 * floor(v * 30.999)
+    const int oldOrder = 16 + 8 * (int)(slots[kChunkOrder] * 30.999f);
+    snprintf(d, sizeof d, "slot %.4f, order %d", slots[kChunkOrder], oldOrder);
+    check(oldOrder == 64, "an older build reads the order slot as the same order", d);
 
     b.setChunk(blob, size, true);
-    bool same = true;
-    for (int i = 0; i < kNumParameters; ++i) if (b.getParameter(i) != vals[i]) same = false;
-    check(same, "every parameter survives a chunk round trip");
+    char t[64] = { 0 };
+    b.getParameterDisplay(kParamB, t);
+    snprintf(d, sizeof d, "%.3f, %s, %.3f", b.getParameter(kParamA), t, b.getParameter(kParamC));
+    check(b.getParameter(kParamA) == 0.11f && atof(t) == 64.0 && b.getParameter(kParamC) == 0.77f,
+          "every parameter survives a chunk round trip", d);
+
+    // A chunk an older build saved: its own Extent, MaxLen, Depth and Passes
+    // are ignored, and Order lands on the nearest of the three.
+    {
+        Declick c(hostCallback);
+        float old[kChunkSlots] = { 0.8f, 0.1f, 0.9f, 0.0f, 1.0f, 0.62f, 0.5f };  // order 160
+        c.setChunk(old, (VstInt32)sizeof old, true);
+        memset(t, 0, sizeof t);
+        c.getParameterDisplay(kParamB, t);
+        snprintf(d, sizeof d, "order %s", t);
+        check(c.getParameter(kParamA) == 0.8f && atof(t) == 128.0 && c.getParameter(kParamC) == 0.5f,
+              "an older build's chunk loads its three, order snapped", d);
+        // and the hidden ones it set have no effect: same output as defaults
+        // with those three
+        Declick ref(hostCallback);
+        ref.setParameter(kParamA, 0.8f);
+        ref.setParameter(kParamB, 0.4677f);
+        ref.setParameter(kParamC, 0.5f);
+        std::vector<double> inL, inR, aL, aR, rL, rR;
+        std::vector<int> at;
+        makeSignal(inL, inR, at, 20000, true);
+        runBlocks(c, inL, inR, aL, aR, oneBlockSize(512));
+        runBlocks(ref, inL, inR, rL, rR, oneBlockSize(512));
+        const double w = fmax(worstDiff(aL, rL), worstDiff(aR, rR));
+        snprintf(d, sizeof d, "worst %.3e", w);
+        check(w == 0.0, "an older build's Extent, MaxLen, Depth and Passes are ignored", d);
+    }
 
     // Out-of-range values in a stored preset must be pinned, not trusted.
     Declick c(hostCallback);
-    float wild[kNumParameters] = { -3.0f, 4.0f, -0.5f, 2.0f, -1.0f, 9.0f, -9.0f };
+    float wild[kChunkSlots] = { -3.0f, 4.0f, -0.5f, 2.0f, -1.0f, 9.0f, -9.0f };
     c.setChunk(wild, (VstInt32)sizeof wild, true);
     bool pinned = true;
     for (int i = 0; i < kNumParameters; ++i) {

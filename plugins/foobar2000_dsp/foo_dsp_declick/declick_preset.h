@@ -17,11 +17,15 @@ GUID guid();
 //! 1 = pre-depth layout (still read, depth falls back to its default).
 //! 2 = adds `depth` between maxLengthMs and dryWet (still read, delta off).
 //! 3 = current layout, with `delta` appended after order.
+//! The layout still carries extent, maxLengthMs, depth and passes, so a chain
+//! saved here still loads in an older build; both directions write and read
+//! them as their defaults (Params::restrictToControls()).
 enum { version = 3 };
 
 void make(const declick::Params & params, dsp_preset & out);
 
-//! Never throws: anything unreadable falls back to the defaults.
+//! Never throws: anything unreadable falls back to the defaults. The result
+//! has been through Params::restrictToControls().
 declick::Params parse(const dsp_preset & in);
 
 } // namespace declick_preset

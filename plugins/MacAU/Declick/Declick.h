@@ -71,33 +71,27 @@
 //positions: see paramsFromControls() for the mappings, and the foobar2000_dsp
 //README for how each number was arrived at.
 static const float kDefaultValue_ParamA = 0.9f;  //Sensitv, 0.9 puts the trigger at 2.85 sigma
-static const float kDefaultValue_ParamB = 0.5f;  //Extent
-static const float kDefaultValue_ParamC = 0.2f;  //MaxLen, 4.0 ms
-static const float kDefaultValue_ParamD = 1.0f;  //Depth, outright replacement
-static const float kDefaultValue_ParamE = 0.5f;  //Passes, 2
-static const float kDefaultValue_ParamF = 0.4677f;  //Order, 128 - the slider runs 16 .. 256 in
-                                                   //eights, as far as the core's kMaxOrder; 128 is
-                                                   //the foobar2000 default
+static const float kDefaultValue_ParamF = 0.4677f;  //Order, 128 - 64 below, 256 above. The old
+                                                   //seven-slider builds' default, which reads
+                                                   //as 128 there too
 static const float kDefaultValue_ParamG = 1.0f;  //Dry/Wet
 
 static CFStringRef kParameterAName = CFSTR("Sensitv");
-static CFStringRef kParameterBName = CFSTR("Extent");
-static CFStringRef kParameterCName = CFSTR("MaxLen");
-static CFStringRef kParameterDName = CFSTR("Depth");
-static CFStringRef kParameterEName = CFSTR("Passes");
 static CFStringRef kParameterFName = CFSTR("Order");
 static CFStringRef kParameterGName = CFSTR("Dry/Wet");
 
+//Sensitivity, Model order and Dry/Wet: the controls Params::restrictToControls()
+//keeps. The IDs are the ones they had when there were seven sliders, and IDs
+//1..4 - Extent, MaxLen, Depth, Passes - still exist as storage: AudioUnitSDK
+//throws on restoring a saved state that names an indexed parameter it does not
+//have, which would refuse every preset an older build saved. They are not
+//listed (GetParameterList), have no info, and nothing reads them.
 enum {
 	kParam_A =0,
-	kParam_B =1,
-	kParam_C =2,
-	kParam_D =3,
-	kParam_E =4,
 	kParam_F =5,
 	kParam_G =6,
-	//Add your parameters here...
-	kNumberOfParameters=7
+	kParameterSlots=7,
+	kNumberOfParameters=3   //the ones a host sees
 };
 
 #pragma mark ____Declick
@@ -123,6 +117,11 @@ public:
 	virtual	ComponentResult		GetParameterInfo(AudioUnitScope			inScope,
 												 AudioUnitParameterID	inParameterID,
 												 AudioUnitParameterInfo	&outParameterInfo);
+
+	//the three live IDs out of the seven indexed slots: see the enum above
+	virtual	ComponentResult		GetParameterList(AudioUnitScope			inScope,
+												 AudioUnitParameterID	*outParameterList,
+												 UInt32					&outNumParameters);
     
 	//`bool &` where the other 542 folders here say `Boolean &`. AudioUnitSDK
 	//spells it bool, and that is what scripts/build.sh builds against - so

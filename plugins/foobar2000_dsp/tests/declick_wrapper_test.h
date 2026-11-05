@@ -18,7 +18,8 @@
 namespace {
 
 //! What the plug-in opens on: the core's defaults, order 128 included. The
-//! slider runs 16 .. 256 in eights, and the default position lands on 128.
+//! Model order slider snaps to 64, 128 or 256, and the default position lands
+//! on 128.
 declick::Params wrapperDefaults() {
     return declick::Params::defaults();
 }

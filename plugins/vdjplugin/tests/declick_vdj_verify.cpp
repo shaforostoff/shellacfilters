@@ -180,16 +180,19 @@ void testSliders() {
     StubHost host(cb);
     engine.declareParameters(host);
 
-    check(cb.declared.size() == 8, "seven sliders and a switch declared");
-    bool allSliders = cb.declared.size() == 8;
-    for (size_t i = 0; i < cb.declared.size(); ++i) {
-        const int type = (i < 7) ? VDJPARAM_SLIDER : VDJPARAM_SWITCH;
+    // Sensitivity, Model order and Dry/Wet keep the ids they had among seven
+    // sliders, so the positions VirtualDJ saved under them still land.
+    static const int ids[4] = { 1, 6, 7, 8 };
+    check(cb.declared.size() == 4, "three sliders and a switch declared");
+    bool allSliders = cb.declared.size() == 4;
+    for (size_t i = 0; allSliders && i < cb.declared.size(); ++i) {
+        const int type = (i < 3) ? VDJPARAM_SLIDER : VDJPARAM_SWITCH;
         if (cb.declared[i].type != type) allSliders = false;
-        if (cb.declared[i].id != (int)i + 1) allSliders = false;
+        if (cb.declared[i].id != ids[i]) allSliders = false;
     }
-    check(allSliders, "sliders with ids 1..7, then the Warm start switch at 8");
-    check(cb.declared.size() == 8 && cb.declared[7].def == 1.0f
-          && cb.declared[7].id == vdj::DeclickEngine::kWarmStart,
+    check(allSliders, "sliders with ids 1, 6, 7, then the Warm start switch at 8");
+    check(cb.declared.size() == 4 && cb.declared[3].def == 1.0f
+          && cb.declared[3].id == vdj::DeclickEngine::kWarmStart,
           "the warm start opens switched on");
 
     // The declared defaults are what VirtualDJ opens a fresh effect on, so they
@@ -206,12 +209,15 @@ void testSliders() {
            (double)got.maxLengthMs, (double)want.maxLengthMs);
 
     bool strings = true;
-    for (int id = 1; id <= 8; ++id) {
+    for (int k = 0; k < 4; ++k) {
         char text[64] = { 0 };
-        if (!engine.parameterString(id, text, (int)sizeof(text))) strings = false;
+        if (!engine.parameterString(ids[k], text, (int)sizeof(text))) strings = false;
         if (text[0] == 0) strings = false;
     }
     check(strings, "every parameter has a display string");
+    char retired[16];
+    check(!engine.parameterString(2, retired, (int)sizeof(retired)),
+          "the retired ids 2..5 are declined");
     char scratch[16];
     check(!engine.parameterString(99, scratch, (int)sizeof(scratch)),
           "an unknown parameter id is declined");

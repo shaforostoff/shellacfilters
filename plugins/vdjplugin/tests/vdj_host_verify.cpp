@@ -274,7 +274,7 @@ int main(int argc, char ** argv) {
     const std::string dir = argv[1];
     printf("  modules from %s\n", dir.c_str());
 
-    verifyBuffer<vdj::DeclickEngine>(dir, "Declick", "Declick", 8);   // seven sliders, Warm start
+    verifyBuffer<vdj::DeclickEngine>(dir, "Declick", "Declick", 4);   // three sliders, Warm start
     verifyBuffer<vdj::DehumEngine>(dir, "Dehum", "Dehum", 7);
 
     return finish("vdj_host_verify");

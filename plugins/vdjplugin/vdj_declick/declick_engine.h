@@ -46,21 +46,20 @@ public:
 
     // -- parameters ----------------------------------------------------------
 
+    // Sensitivity, Model order and Dry/Wet: the controls
+    // Params::restrictToControls() keeps. The ids are the ones they had when
+    // there were seven sliders - 2..5 were Extent, Max repair, Depth and
+    // Passes - so positions VirtualDJ saved under them still land here.
     enum {
-        kSensitivity = 1, kExtent, kMaxLength, kDepth, kPasses, kOrder, kDryWet,
-        kWarmStart
+        kSensitivity = 1, kOrder = 6, kDryWet = 7, kWarmStart = 8
     };
 
     void declareParameters(IVdjPlugin8 & host) {
         host.DeclareParameterSlider(&m_a, kSensitivity, "Sensitivity", "Sensitv", kDefA);
-        host.DeclareParameterSlider(&m_b, kExtent,      "Extent",     "Extent",  kDefB);
-        host.DeclareParameterSlider(&m_c, kMaxLength,   "Max repair", "MaxLen",  kDefC);
-        host.DeclareParameterSlider(&m_d, kDepth,       "Depth",      "Depth",   kDefD);
-        host.DeclareParameterSlider(&m_e, kPasses,      "Passes",     "Passes",  kDefE);
         host.DeclareParameterSlider(&m_f, kOrder,       "Model order", "Order",  kDefF);
         host.DeclareParameterSlider(&m_g, kDryWet,      "Dry/Wet",    "Dry/Wet", kDefG);
-        // Last, so the seven sliders keep the ids their saved positions are
-        // filed under. See declick_vdj_warm.h.
+        // Last, so the sliders keep the ids their saved positions are filed
+        // under. See declick_vdj_warm.h.
         host.DeclareParameterSwitch(&m_warmOn, kWarmStart, "Warm start", "Warm", true);
     }
 
@@ -68,10 +67,6 @@ public:
         const declick::Params p = params();
         switch (id) {
             case kSensitivity: snprintf(out, size, "%.0f %%", pinParameter(m_a) * 100.0); return true;
-            case kExtent:      snprintf(out, size, "%.0f %%", pinParameter(m_b) * 100.0); return true;
-            case kMaxLength:   snprintf(out, size, "%.1f ms", (double)p.maxLengthMs);     return true;
-            case kDepth:       snprintf(out, size, "%.0f %%", pinParameter(m_d) * 100.0); return true;
-            case kPasses:      snprintf(out, size, "%d", p.passes);                       return true;
             case kOrder:       snprintf(out, size, "%d", p.order);                        return true;
             case kDryWet:      snprintf(out, size, "%.0f %%", pinParameter(m_g) * 100.0); return true;
             case kWarmStart:   snprintf(out, size, "%s", m_warmOn ? "on" : "off");        return true;
@@ -82,7 +77,7 @@ public:
     //! Sliders to core units: the core's own mapping, as the VST2 and AU
     //! ports'.
     declick::Params params() const {
-        const float s[7] = { m_a, m_b, m_c, m_d, m_e, m_f, m_g };
+        const float s[declick::Params::kSliderCount] = { m_a, m_f, m_g };
         return declick::Params::fromSliders(s);
     }
 
@@ -109,9 +104,9 @@ public:
         declick::Config next;
         next.compute(p, rate);
 
-        // Sensitivity, Extent, Depth, Passes and Dry/Wet need the same buffers,
-        // so they go in live and the audio does not break. Max repair and Model
-        // order resize the pipeline and cannot.
+        // Sensitivity and Dry/Wet need the same buffers, so they go in live and
+        // the audio does not break. Model order resizes the pipeline and
+        // cannot.
         if (m_configured && rate == m_rate && next.structurallyEquals(m_cfg)
             && m_chan[0].retune(next) && m_chan[1].retune(next)) {
             m_cfg = next;
@@ -211,21 +206,16 @@ private:
     }
 
     // Slider positions for the calibrated defaults, the same ones the VST2 port
-    // opens on. Named because two of them are not the round number they look
-    // like: MaxLen is linear in milliseconds and Order in eights.
+    // opens on. Order's is not the round number it looks like: it is the old
+    // 16 .. 256 slider's position for 128, which reads as 128 here too.
     static constexpr float kDefA = 0.9f;   // Sensitivity -> trigger at 2.85 sigma
-    static constexpr float kDefB = 0.5f;   // Extent
-    static constexpr float kDefC = 0.2f;   // Max repair -> 4.0 ms
-    static constexpr float kDefD = 1.0f;   // Depth -> outright replacement
-    static constexpr float kDefE = 0.5f;   // Passes -> 2
-    static constexpr float kDefF = 0.4677f; // Model order -> 128
+    static constexpr float kDefF = 0.4677f; // Model order -> 128; 64 below, 256 above
     static constexpr float kDefG = 1.0f;   // Dry/Wet
 
     // VirtualDJ writes straight through the pointers DeclareParameterSlider was
     // given, from whichever thread moved the control, so these are read once at
     // the top of each processing call and not again.
-    float m_a = kDefA, m_b = kDefB, m_c = kDefC, m_d = kDefD;
-    float m_e = kDefE, m_f = kDefF, m_g = kDefG;
+    float m_a = kDefA, m_f = kDefF, m_g = kDefG;
     int   m_warmOn = 1;
 
     //! Two pairs: the live one, which m_chan points at, and the warm start's.

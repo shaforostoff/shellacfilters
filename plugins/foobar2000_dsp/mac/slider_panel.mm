@@ -36,6 +36,11 @@ namespace {
 
 double pos_to_value(const row & r, int pos) {
     if (r.steps <= 0) return r.lo;
+    if (r.choices != NULL) {
+        if (pos < 0) pos = 0;
+        if (pos > r.steps) pos = r.steps;
+        return r.choices[pos];
+    }
     if (r.offText != NULL) {
         if (pos <= 0) return 0.0;
         return r.lo + (r.hi - r.lo) * ((double)(pos - 1) / (double)(r.steps - 1));
@@ -44,6 +49,13 @@ double pos_to_value(const row & r, int pos) {
 }
 
 int value_to_pos(const row & r, double v) {
+    if (r.choices != NULL) {
+        int best = 0;
+        for (int k = 1; k <= r.steps; ++k) {
+            if (fabs(r.choices[k] - v) < fabs(r.choices[best] - v)) best = k;
+        }
+        return best;
+    }
     if (r.hi <= r.lo) return 0;
     if (r.offText != NULL && v <= 0.0) return 0;
     double t = (v - r.lo) / (r.hi - r.lo);

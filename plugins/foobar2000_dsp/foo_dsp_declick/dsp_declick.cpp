@@ -310,9 +310,9 @@ private:
 
     //! A parameter move, through the channels already in hand.
     //!
-    //! Sensitivity, Extent, Repair depth, Passes and Dry/Wet are read per
-    //! block, so retune() swaps them in under the stream with no gap at all.
-    //! Model order and Max repair reshape the pipeline and need configure(),
+    //! Sensitivity, Dry/Wet and delta are read per block, so retune() swaps
+    //! them in under the stream with no gap at all. Model order reshapes the
+    //! pipeline and needs configure(),
     //! which resets it - but configure() reassigns every vector to the length
     //! the envelope in Config already gave it, so neither route touches the
     //! heap. That is what the envelope is for.

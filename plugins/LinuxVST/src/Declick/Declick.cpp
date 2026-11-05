@@ -16,13 +16,9 @@ Declick::Declick(audioMasterCallback audioMaster) :
 	//slider positions: see paramsFromControls() for the mappings, and the
 	//foobar2000_dsp README for how each number was arrived at.
 	A = 0.9;  //Sensitv, 0.9 puts the trigger at 2.85 sigma
-	B = 0.5;  //Extent
-	C = 0.2;  //MaxLen, 4.0 ms
-	D = 1.0;  //Depth, outright replacement
-	E = 0.5;  //Passes, 2
-	F = 0.4677;  //Order, 128 - the slider runs 16 .. 256 in eights, as far
-	             //as the core's kMaxOrder; 128 is the foobar2000 default
-	G = 1.0;  //Dry/Wet
+	B = 0.4677;  //Order, 128 - the old seven-slider builds' default position,
+	             //which reads as 128 there too; 64 below, 256 above
+	C = 1.0;  //Dry/Wet
 
 	//the channels allocate on configure(), so get that out of the audio thread
 	//by doing it here at the host's guess of a sample rate. The first process
@@ -71,7 +67,7 @@ static float pinParameter(float data)
 //ports use too, so a setting means the same in every format.
 declick::Params Declick::paramsFromControls()
 {
-	const float s[7] = { A, B, C, D, E, F, G };
+	const float s[declick::Params::kSliderCount] = { A, B, C };
 	return declick::Params::fromSliders(s);
 }
 
@@ -86,8 +82,8 @@ void Declick::updateConfig()
 	declick::Config next;
 	next.compute(p, rate);
 
-	//Sensitivity, Extent, Depth, Passes and Dry/Wet need the same buffers, so
-	//they go in live. Max repair and Model order resize the pipeline and cannot.
+	//Sensitivity and Dry/Wet need the same buffers, so they go in live. Model
+	//order resizes the pipeline and cannot.
 	if (!needsPrime && next.structurallyEquals(cfg)
 		&& chanL.retune(next) && chanR.retune(next)) {
 		cfg = next;
@@ -112,7 +108,7 @@ void Declick::updateConfig()
 	if (next.latency != reportedLatency) {
 		reportedLatency = next.latency;
 		setInitialDelay(next.latency);
-		ioChanged();   //only fires when Max repair or Model order moved
+		ioChanged();   //only fires when Model order moved, or the rate
 	}
 }
 
@@ -140,36 +136,43 @@ VstInt32 Declick::getGetTailSize()
 
 VstInt32 Declick::getChunk (void** data, bool isPreset)
 {
+	//The seven-slot layout of the builds that had seven sliders. The four
+	//slots no slider fills get those builds' default positions, and Order goes
+	//in as a position the old 16..256 slider reads as the same order, so a
+	//preset saved here opens in one of them sounding as it does here.
 	float *chunkData = chunk;
-	chunkData[0] = A;
-	chunkData[1] = B;
-	chunkData[2] = C;
-	chunkData[3] = D;
-	chunkData[4] = E;
-	chunkData[5] = F;
-	chunkData[6] = G;
+	chunkData[kChunkSensitivity] = A;
+	chunkData[1] = 0.5f;  //Extent
+	chunkData[2] = 0.2f;  //MaxLen, 4.0 ms
+	chunkData[3] = 1.0f;  //Depth
+	chunkData[4] = 0.5f;  //Passes, 2
+	//B itself where the old slider already reads it as 64, 128 or 256 - the
+	//default 0.4677 among them - so that a round trip gives back what was set
+	{
+		const float b = (B > 0.0f) ? ((B < 1.0f) ? B : 1.0f) : 0.0f;   //NaN to 0
+		const int oldOrder = 16 + 8 * (int)(b * 30.999f);
+		chunkData[kChunkOrder] = (oldOrder == declick::Params::snapOrder(oldOrder))
+			? b : declick::Params::orderSlider(oldOrder);
+	}
+	chunkData[kChunkDryWet] = C;
 	/* Note: The way this is set up, it will break if you manage to save settings on an Intel
 	 machine and load them on a PPC Mac. However, it's fine if you stick to the machine you
 	 started with. */
 
 	*data = chunkData;
-	return kNumParameters * sizeof(float);
+	return kChunkSlots * sizeof(float);
 }
 
 VstInt32 Declick::setChunk (void* data, VstInt32 byteSize, bool isPreset)
 {
 	float *chunkData = (float *)data;
-	A = pinParameter(chunkData[0]);
-	B = pinParameter(chunkData[1]);
-	C = pinParameter(chunkData[2]);
-	D = pinParameter(chunkData[3]);
-	E = pinParameter(chunkData[4]);
-	F = pinParameter(chunkData[5]);
-	G = pinParameter(chunkData[6]);
+	//Slots 1..4 held Extent, MaxLen, Depth and Passes. They are not read: those
+	//are at their defaults now whatever a preset says. Order's slot reads the
+	//same way the old 16..256 slider did, snapped to the nearest of the three.
+	A = pinParameter(chunkData[kChunkSensitivity]);
+	B = pinParameter(chunkData[kChunkOrder]);
+	C = pinParameter(chunkData[kChunkDryWet]);
 	/* We're ignoring byteSize as we found it to be a filthy liar */
-
-	/* calculate any other fields you need here - you could copy in
-	 code from setParameter() here. */
 	return 0;
 }
 
@@ -178,10 +181,6 @@ void Declick::setParameter(VstInt32 index, float value) {
         case kParamA: A = value; break;
         case kParamB: B = value; break;
         case kParamC: C = value; break;
-        case kParamD: D = value; break;
-        case kParamE: E = value; break;
-        case kParamF: F = value; break;
-        case kParamG: G = value; break;
         default: break;
     }
 	//no work here: updateConfig() picks the change up on the audio thread,
@@ -193,10 +192,6 @@ float Declick::getParameter(VstInt32 index) {
         case kParamA: return A; break;
         case kParamB: return B; break;
         case kParamC: return C; break;
-        case kParamD: return D; break;
-        case kParamE: return E; break;
-        case kParamF: return F; break;
-        case kParamG: return G; break;
         default: break; // unknown parameter, shouldn't happen!
     } return 0.0; //we only need to update the relevant name, this is simple to manage
 }
@@ -204,12 +199,8 @@ float Declick::getParameter(VstInt32 index) {
 void Declick::getParameterName(VstInt32 index, char *text) {
     switch (index) {
         case kParamA: vst_strncpy (text, "Sensitv", kVstMaxParamStrLen); break;
-		case kParamB: vst_strncpy (text, "Extent", kVstMaxParamStrLen); break;
-		case kParamC: vst_strncpy (text, "MaxLen", kVstMaxParamStrLen); break;
-		case kParamD: vst_strncpy (text, "Depth", kVstMaxParamStrLen); break;
-		case kParamE: vst_strncpy (text, "Passes", kVstMaxParamStrLen); break;
-		case kParamF: vst_strncpy (text, "Order", kVstMaxParamStrLen); break;
-		case kParamG: vst_strncpy (text, "Dry/Wet", kVstMaxParamStrLen); break;
+		case kParamB: vst_strncpy (text, "Order", kVstMaxParamStrLen); break;
+		case kParamC: vst_strncpy (text, "Dry/Wet", kVstMaxParamStrLen); break;
         default: break; // unknown parameter, shouldn't happen!
     } //this is our labels for displaying in the VST host
 }
@@ -218,12 +209,8 @@ void Declick::getParameterDisplay(VstInt32 index, char *text) {
 	declick::Params p = paramsFromControls();
     switch (index) {
         case kParamA: float2string (A, text, kVstMaxParamStrLen); break;
-        case kParamB: float2string (B, text, kVstMaxParamStrLen); break;
-        case kParamC: float2string (p.maxLengthMs, text, kVstMaxParamStrLen); break;
-        case kParamD: float2string (D, text, kVstMaxParamStrLen); break;
-        case kParamE: int2string ((VstInt32)p.passes, text, kVstMaxParamStrLen); break;
-        case kParamF: int2string ((VstInt32)p.order, text, kVstMaxParamStrLen); break;
-        case kParamG: float2string (G, text, kVstMaxParamStrLen); break;
+        case kParamB: int2string ((VstInt32)p.order, text, kVstMaxParamStrLen); break;
+        case kParamC: float2string (C, text, kVstMaxParamStrLen); break;
         default: break; // unknown parameter, shouldn't happen!
 	} //this displays the values and handles 'popups' where it's discrete choices
 }
@@ -232,11 +219,7 @@ void Declick::getParameterLabel(VstInt32 index, char *text) {
     switch (index) {
         case kParamA: vst_strncpy (text, "", kVstMaxParamStrLen); break;
         case kParamB: vst_strncpy (text, "", kVstMaxParamStrLen); break;
-        case kParamC: vst_strncpy (text, "ms", kVstMaxParamStrLen); break;
-        case kParamD: vst_strncpy (text, "", kVstMaxParamStrLen); break;
-        case kParamE: vst_strncpy (text, "", kVstMaxParamStrLen); break;
-        case kParamF: vst_strncpy (text, "", kVstMaxParamStrLen); break;
-        case kParamG: vst_strncpy (text, "", kVstMaxParamStrLen); break;
+        case kParamC: vst_strncpy (text, "", kVstMaxParamStrLen); break;
 		default: break; // unknown parameter, shouldn't happen!
     }
 }

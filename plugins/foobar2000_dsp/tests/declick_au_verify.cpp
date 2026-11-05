@@ -19,8 +19,9 @@
  *    - GetLatency() and GetTailTime() are seconds, not samples, and both have
  *      to come back out as cfg.latency at the rate in force;
  *    - PropertyChanged(kAudioUnitProperty_Latency) is what an AU says instead
- *      of ioChanged(), so it must fire for Max repair and Model order and for
- *      nothing else;
+ *      of ioChanged(), so it must fire for Model order and for nothing else;
+ *    - only three of the seven indexed slots are listed, so that saved states
+ *      from the seven-slider builds still restore;
  *    - Reset() is where resume() went;
  *    - kAudioUnitRenderAction_OutputIsSilence has to be cleared, because there
  *      is a whole pipeline of audio in here when the input goes quiet;
@@ -252,20 +253,16 @@ void testLatency(const std::vector<float> & outL, const declick::Config & cfg) {
     check(db < -40.0, "clean audio passes through at the declared delay", d);
 }
 
-//! Clicks shrink, and Repair depth is the lever the README says it is.
+//! Clicks shrink. The default is full-depth replacement, so most of each one
+//! goes.
 void testRepair(const std::vector<float> & inL, const std::vector<float> & inR,
                 const std::vector<int> & clickAt, const declick::Config & cfg) {
-    struct Case { float depth; double mustBeat; const char * what; };
+    struct Case { double mustBeat; const char * what; };
     static const Case cases[] = {
-        // At the shipping default only the calibrated 0.45 of each click is
-        // subtracted, so a modest reduction is the correct expectation and
-        // depth 1 is where a large one belongs.
-        { -1.0f, 1.00, "clicks come out smaller at the default depth" },
-        {  1.0f, 1.33, "Repair depth 1 takes most of the click out" }
+        { 1.33, "the defaults take most of the click out" }
     };
-    for (int c = 0; c < 2; ++c) {
+    for (int c = 0; c < 1; ++c) {
         Declick fx((AudioUnit)0);
-        if (cases[c].depth >= 0.0f) fx.SetParameter(kParam_D, cases[c].depth);
         start(fx, (double)kRate);
         std::vector<float> aL, aR;
         runBlocks(fx, inL, inR, aL, aR, oneBlockSize(512));
@@ -308,22 +305,23 @@ void testParameterMoves(const std::vector<float> & inL, const std::vector<float>
     char d[64]; snprintf(d, sizeof d, "longest silent run %d samples", worstRun);
     check(worstRun < 64, "a Sensitivity move leaves no gap in the audio", d);
 
-    // Down from the default 128 to 32 (16 + 8 * floor(0.08 * 30.999)).
+    // Down from the default 128 to 64 (16 + 8 * floor(0.08 * 30.999) = 32,
+    // which snaps to 64).
     fx.SetParameter(kParam_F, 0.08f);            // Model order: rebuild
     runBlocks(fx, inL, inR, aL, aR, bs);
-    declick::Params p32 = wrapperDefaults();
-    p32.sensitivity = 0.85f;
-    p32.order = 32;
-    declick::Config c32; c32.compute(p32, (double)kRate);
+    declick::Params p64 = wrapperDefaults();
+    p64.sensitivity = 0.85f;
+    p64.order = 64;
+    declick::Config c64; c64.compute(p64, (double)kRate);
     const double declared = fx.GetLatency() * (double)kRate;
     snprintf(d, sizeof d, "%d changes, id %u", (unsigned)fx.AUShimPropertyChangeCount(),
              (unsigned)fx.AUShimLastPropertyChanged());
     check(fx.AUShimPropertyChangeCount() == 1
           && fx.AUShimLastPropertyChanged() == kAudioUnitProperty_Latency,
           "a Model order move announces the latency property", d);
-    snprintf(d, sizeof d, "%d -> %.1f samples", c32.latency, declared);
-    check(fabs(declared - (double)c32.latency) < 1e-6,
-          "the rebuilt latency is the one order 32 needs", d);
+    snprintf(d, sizeof d, "%d -> %.1f samples", c64.latency, declared);
+    check(fabs(declared - (double)c64.latency) < 1e-6,
+          "the rebuilt latency is the one order 64 needs", d);
     check(fx.GetTailTime() == fx.GetLatency(),
           "declared latency and tail stay consistent after a rebuild");
 }
@@ -409,14 +407,26 @@ void testRobustness(const std::vector<float> & inL, const std::vector<float> & i
 //! What the plug-in tells the host about its own controls.
 void testParameterInfo() {
     Declick fx((AudioUnit)0);
-    static const char * names[kNumberOfParameters] = {
-        "Sensitv", "Extent", "MaxLen", "Depth", "Passes", "Order", "Dry/Wet"
-    };
+
+    // What a host enumerates: the three controls, by the IDs they had when
+    // there were seven.
+    UInt32 count = 99;
+    check(fx.GetParameterList(kAudioUnitScope_Global, NULL, count) == noErr && count == 3,
+          "the parameter list counts three");
+    AudioUnitParameterID ids[8] = { 99, 99, 99, 99, 99, 99, 99, 99 };
+    fx.GetParameterList(kAudioUnitScope_Global, ids, count);
+    check(count == 3 && ids[0] == 0 && ids[1] == 5 && ids[2] == 6 && ids[3] == 99,
+          "and lists IDs 0, 5 and 6");
+    check(fx.Globals()->GetIndexedParameterCount() == 7,
+          "seven indexed slots, so older saved states restore");
+
+    static const AudioUnitParameterID live[3] = { kParam_A, kParam_F, kParam_G };
+    static const char * names[3] = { "Sensitv", "Order", "Dry/Wet" };
     bool named = true, ranged = true, flagged = true, defaulted = true;
-    for (int i = 0; i < kNumberOfParameters; ++i) {
+    for (int i = 0; i < 3; ++i) {
         AudioUnitParameterInfo info;
         memset(&info, 0, sizeof info);
-        if (fx.GetParameterInfo(kAudioUnitScope_Global, (AudioUnitParameterID)i, info) != noErr) {
+        if (fx.GetParameterInfo(kAudioUnitScope_Global, live[i], info) != noErr) {
             named = false;
             continue;
         }
@@ -426,18 +436,48 @@ void testParameterInfo() {
             || !(info.flags & kAudioUnitParameterFlag_IsWritable)) flagged = false;
         // the classic template slip: an advertised default that is not the one
         // the constructor actually set
-        if (info.defaultValue != fx.GetParameter((AudioUnitParameterID)i)) defaulted = false;
+        if (info.defaultValue != fx.GetParameter(live[i])) defaulted = false;
     }
-    check(named, "all seven parameters are named, in the VST's order");
+    check(named, "the three parameters are named, in the VST's order");
     check(ranged, "every parameter is 0..1");
     check(flagged, "every parameter is readable and writable");
     check(defaulted, "the advertised default is the one the constructor set");
 
     AudioUnitParameterInfo info;
     memset(&info, 0, sizeof info);
-    check(fx.GetParameterInfo(kAudioUnitScope_Global,
-                              (AudioUnitParameterID)kNumberOfParameters, info)
+    bool hidden = true;
+    for (AudioUnitParameterID id = 1; id <= 4; ++id) {
+        if (fx.GetParameterInfo(kAudioUnitScope_Global, id, info) != kAudioUnitErr_InvalidParameter)
+            hidden = false;
+    }
+    check(hidden, "the storage-only slots 1..4 have no info");
+    check(fx.GetParameterInfo(kAudioUnitScope_Global, (AudioUnitParameterID)7, info)
           == kAudioUnitErr_InvalidParameter, "an out-of-range parameter is refused");
+
+    // What a restored older state does: its Extent, MaxLen, Depth and Passes
+    // land in the slots and change nothing.
+    {
+        Declick old((AudioUnit)0), ref((AudioUnit)0);
+        old.SetParameter(1, 0.1f);
+        old.SetParameter(2, 0.9f);
+        old.SetParameter(3, 0.0f);
+        old.SetParameter(4, 1.0f);
+        start(old, (double)kRate);
+        start(ref, (double)kRate);
+        std::vector<float> inL, inR, aL, aR, rL, rR;
+        std::vector<int> at;
+        makeSignal(inL, inR, at, 20000, true);
+        runBlocks(old, inL, inR, aL, aR, oneBlockSize(512));
+        runBlocks(ref, inL, inR, rL, rR, oneBlockSize(512));
+        // the two instances dither differently, so to the dither: a setting
+        // that took effect would move repaired samples by far more than that
+        const std::vector<double> want(rL.begin(), rL.end());
+        double w = 0.0;
+        const double ulp = worstUlp(aL, want, &w);
+        char d[80]; snprintf(d, sizeof d, "worst %.3e = %.2f ULP", w, ulp);
+        check(aL.size() == rL.size() && ulp <= 4.0,
+              "an older state's Extent, MaxLen, Depth and Passes are ignored", d);
+    }
     check(fx.GetParameterInfo(1 /* input scope */, 0, info)
           == kAudioUnitErr_InvalidParameter, "a non-global scope is refused");
 
