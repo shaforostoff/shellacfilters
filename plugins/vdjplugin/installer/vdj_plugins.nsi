@@ -43,10 +43,10 @@ Unicode true
   !define DIST "..\..\dist\vdj\x64"
 !endif
 !ifndef VERSION
-  !define VERSION "1.1.2"
+  !define VERSION "1.1.3"
 !endif
 !ifndef VERSION4
-  !define VERSION4 "1.1.2.0"
+  !define VERSION4 "1.1.3.0"
 !endif
 !ifndef LICENSEFILE
   ; Relative paths in an .nsi resolve against the directory holding the script,
