@@ -49,6 +49,10 @@ void core_remove();
 //! Blocking modal configuration dialog. Main thread only.
 void paraeq_config_popup(const dsp_preset & data, HWND parent,
                          dsp_preset_edit_callback & callback);
+#else
+//! The macOS configuration view, a wrapped NSViewController - see
+//! config_view_mac.mm. Main thread only.
+service_ptr paraeq_config_view(dsp_preset_edit_callback_v2::ptr callback);
 #endif
 
 #endif // FOO_DSP_PARAEQ_PRESET_H

@@ -12,7 +12,9 @@
  *	AUv3 to AUv2: there the view reached an AUParameterTree, here it holds the
  *	opaque AudioUnit and goes through AudioUnitGetParameter, AUParameterSet and
  *	an AUEventListener. The layout, the drawing and the knob behaviour are
- *	unchanged, and both are MIT.
+ *	unchanged, and both are MIT. They live in ParaEQEditor.mm, behind a
+ *	backend, because foo_dsp_paraeq on foobar2000 for Mac shows the same view
+ *	over a dsp_preset; the AudioUnit backend is ParaEQView.mm.
  *
  *	Sixteen controls is a wall of sliders in a host's generic view, which the
  *	clumps only soften. A fixed layout is not sixteen of anything: it is four
@@ -55,25 +57,8 @@ OSStatus ParaEQ_CopyCocoaViewInfo(AudioUnitCocoaViewInfo * outInfo);
 @end
 
 
-@interface ShellacFiltersParaEQView : NSView
-
-- (instancetype) initWithAudioUnit:(AudioUnit)audioUnit;
-
-//! Picks the values back up after something outside the view changed them. Not
-//! normally needed - the event listener catches preset loads and a host
-//! automating a parameter on its own - but harmless, and cheap.
-- (void) reloadData;
-
-//! Every gain and the output trim to 0 dB, leaving frequencies and Q where they
-//! are. The counterpart of the VST editor's Flatten, and the right gesture here
-//! for the same reason: the setup is worth keeping, the curve is not.
-- (void) flatten;
-
-//! Every control back to Params::defaults(), which is what the VST editor's
-//! Reset does. A host that offers its own is welcome to; not all of them do.
-- (void) restoreDefaults;
-
-@end
+// The view itself is ShellacFiltersParaEQView, in ParaEQEditor.h, which the
+// foobar2000 component shares.
 
 #endif // __OBJC__
 

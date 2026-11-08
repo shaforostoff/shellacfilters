@@ -54,6 +54,8 @@
 		DEC11C0DE000000000000008 /* ParaEQControls.h in Headers */ = {isa = PBXBuildFile; fileRef = DEC11C0DE000000000000005 /* ParaEQControls.h */; };
 		DEC11C0DE000000000000009 /* ParaEQView.h in Headers */ = {isa = PBXBuildFile; fileRef = DEC11C0DE000000000000006 /* ParaEQView.h */; };
 		DEC11C0DE00000000000000A /* ParaEQView.mm in Sources */ = {isa = PBXBuildFile; fileRef = DEC11C0DE000000000000007 /* ParaEQView.mm */; };
+		DEC11C0DE00000000000000D /* ParaEQEditor.h in Headers */ = {isa = PBXBuildFile; fileRef = DEC11C0DE00000000000000B /* ParaEQEditor.h */; };
+		DEC11C0DE00000000000000E /* ParaEQEditor.mm in Sources */ = {isa = PBXBuildFile; fileRef = DEC11C0DE00000000000000C /* ParaEQEditor.mm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -109,6 +111,8 @@
 		DEC11C0DE000000000000005 /* ParaEQControls.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ParaEQControls.h; sourceTree = "<group>"; };
 		DEC11C0DE000000000000006 /* ParaEQView.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ParaEQView.h; sourceTree = "<group>"; };
 		DEC11C0DE000000000000007 /* ParaEQView.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = ParaEQView.mm; sourceTree = "<group>"; };
+		DEC11C0DE00000000000000B /* ParaEQEditor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ParaEQEditor.h; sourceTree = "<group>"; };
+		DEC11C0DE00000000000000C /* ParaEQEditor.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = ParaEQEditor.mm; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -187,6 +191,8 @@
 				DEC11C0DE000000000000005 /* ParaEQControls.h */,
 				DEC11C0DE000000000000006 /* ParaEQView.h */,
 				DEC11C0DE000000000000007 /* ParaEQView.mm */,
+				DEC11C0DE00000000000000B /* ParaEQEditor.h */,
+				DEC11C0DE00000000000000C /* ParaEQEditor.mm */,
 			);
 			name = "AU Source";
 			sourceTree = "<group>";
@@ -277,6 +283,7 @@
 				DEC11C0DE000000000000004 /* paraeq_core.h in Headers */,
 				DEC11C0DE000000000000008 /* ParaEQControls.h in Headers */,
 				DEC11C0DE000000000000009 /* ParaEQView.h in Headers */,
+				DEC11C0DE00000000000000D /* ParaEQEditor.h in Headers */,
 				8BA05AAF072073D300365D66 /* AUBase.h in Headers */,
 				8BA05AB1072073D300365D66 /* AUDispatch.h in Headers */,
 				8BA05AB3072073D300365D66 /* AUInputElement.h in Headers */,
@@ -377,6 +384,7 @@
 				8BA05A6B0720730100365D66 /* ParaEQ.cpp in Sources */,
 				DEC11C0DE000000000000003 /* paraeq_core.cpp in Sources */,
 				DEC11C0DE00000000000000A /* ParaEQView.mm in Sources */,
+				DEC11C0DE00000000000000E /* ParaEQEditor.mm in Sources */,
 				8BA05AAE072073D300365D66 /* AUBase.cpp in Sources */,
 				8BA05AB0072073D300365D66 /* AUDispatch.cpp in Sources */,
 				8BA05AB2072073D300365D66 /* AUInputElement.cpp in Sources */,
