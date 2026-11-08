@@ -261,7 +261,32 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 | **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.9** (2.85σ). Runs that barely cross the trigger are only partly repaired — half of what the model says is wrong at the trigger, rising to all of it 3.5σ above — so the default reaches small clicks without taking much from clean records; on clean records 0.7–0.8 takes less still. See [Dense crackle](#dense-crackle). |
 | **Model order** | **64**, **128** (default) or **256**. Higher orders model the music better, so they change clean records least, and remove isolated clicks better; but they also predict some short clicks well enough to miss them on heavily crackled transfers. 128 is the balance. 64 costs about 0.6× the CPU of 128 and gives up surprisingly little — the one for a slow machine; 256 costs about 2.1×. In the VST2, AU and VirtualDJ ports the slider reads as the old 16–256-in-eights one did, snapped to the nearest of the three (below 96 → 64, below 192 → 128), so positions saved by older builds keep their meaning. See [Choosing settings](#choosing-settings) and [Does more CPU help?](#does-more-cpu-help). |
 | **Dry/Wet** | 0 bypasses. |
+| **Extra cautious** | Off by default. On, Declick is the AR detect-and-interpolate repair and nothing else: the shape fit, the body, fine, micro and mid stages, the flank repair and the crackle floor are off, and so are the carpet and Poisson keys, which only gate them. Those stages work on the audio around the flagged samples, and on some records some of what they take is music; with this on, only the flagged samples change. More crackle stays (the carpet under the clicks, and the bodies and ringing of the clicks that are repaired). It also cuts the latency from ~140 ms to ~24 ms at 44.1 kHz and the CPU to about 0.4×. A checkbox in foobar2000, a switch in the VST2 (`Caution`), AU and VirtualDJ ports. See [Extra cautious](#extra-cautious-the-ar-repair-alone). |
 | **Output only what is removed** | Delta monitoring, for testing: outputs input minus output, so you hear what the repair takes out. It should be crackle and clicks and nothing else; music heard in it is collateral damage, and the cue to lower Sensitivity. Saved with the preset, so untick it when done. foobar2000 only. |
+
+### Extra cautious: the AR repair alone
+
+`Params::cautious`, applied in `Config::compute()`; `declick_cli --cautious`.
+Measured on the 39 Pedro Laurenz shellac transfers that have a sample-aligned
+decrackled version (2026-11-08, `research/cautious/c01_stages.py` and
+`c03_summary.py`). For each, the removal that the decrackled version does not
+make (per STFT cell, what Declick takes beyond what the decrackled version
+takes, relative to the input) stands in for music taken. Default Declick:
+−26 to −42 dB. Extra cautious: −32 to −50 dB, 0.6–11 dB less, less on every
+song. Of the stages it turns off, on the eight .m4a transfers the body stage
+accounts for most of it (median −31 dB on its own), then the flank repair, the
+shape fit and the crackle floor (−41 to −43 dB); on the .flac transfers it is
+spread over the crackle floor, the body, fine and mid stages (−44 to −47 dB).
+What is left is the AR repair's own. Total removal falls by 0.8–5.6 dB.
+With it off the output is bit-identical to before it existed.
+
+Presets keep their layout. foobar2000 appends it after delta without
+changing the preset version, so an older build reads the preset as before and
+ignores it; a preset from before it reads as off. The VST2 chunk appends it
+after the seven old slots, behind a marker, so an older build reads its seven
+and a seven-slot chunk reads as off. The AU gives it ID 7: a state saved with
+it does **not** restore in an older AU build, which refuses indexed IDs it does
+not have. VirtualDJ declares it as a switch at id 9, after Warm start.
 
 That is all a user can reach. The core still has Extent (0.5), Max repair
 (4 ms), Repair depth (1) and Passes (2), and the CLI still sets them, but every

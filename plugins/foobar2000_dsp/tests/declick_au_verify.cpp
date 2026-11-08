@@ -408,22 +408,22 @@ void testRobustness(const std::vector<float> & inL, const std::vector<float> & i
 void testParameterInfo() {
     Declick fx((AudioUnit)0);
 
-    // What a host enumerates: the three controls, by the IDs they had when
-    // there were seven.
+    // What a host enumerates: the three sliders, by the IDs they had when
+    // there were seven, and Extra cautious after them.
     UInt32 count = 99;
-    check(fx.GetParameterList(kAudioUnitScope_Global, NULL, count) == noErr && count == 3,
-          "the parameter list counts three");
+    check(fx.GetParameterList(kAudioUnitScope_Global, NULL, count) == noErr && count == 4,
+          "the parameter list counts four");
     AudioUnitParameterID ids[8] = { 99, 99, 99, 99, 99, 99, 99, 99 };
     fx.GetParameterList(kAudioUnitScope_Global, ids, count);
-    check(count == 3 && ids[0] == 0 && ids[1] == 5 && ids[2] == 6 && ids[3] == 99,
-          "and lists IDs 0, 5 and 6");
-    check(fx.Globals()->GetIndexedParameterCount() == 7,
-          "seven indexed slots, so older saved states restore");
+    check(count == 4 && ids[0] == 0 && ids[1] == 5 && ids[2] == 6 && ids[3] == 7 && ids[4] == 99,
+          "and lists IDs 0, 5, 6 and 7");
+    check(fx.Globals()->GetIndexedParameterCount() == 8,
+          "eight indexed slots, so older saved states restore");
 
-    static const AudioUnitParameterID live[3] = { kParam_A, kParam_F, kParam_G };
-    static const char * names[3] = { "Sensitv", "Order", "Dry/Wet" };
+    static const AudioUnitParameterID live[4] = { kParam_A, kParam_F, kParam_G, kParam_H };
+    static const char * names[4] = { "Sensitv", "Order", "Dry/Wet", "Extra cautious" };
     bool named = true, ranged = true, flagged = true, defaulted = true;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         AudioUnitParameterInfo info;
         memset(&info, 0, sizeof info);
         if (fx.GetParameterInfo(kAudioUnitScope_Global, live[i], info) != noErr) {
@@ -438,7 +438,7 @@ void testParameterInfo() {
         // the constructor actually set
         if (info.defaultValue != fx.GetParameter(live[i])) defaulted = false;
     }
-    check(named, "the three parameters are named, in the VST's order");
+    check(named, "the four parameters are named, in the VST's order");
     check(ranged, "every parameter is 0..1");
     check(flagged, "every parameter is readable and writable");
     check(defaulted, "the advertised default is the one the constructor set");
@@ -451,8 +451,9 @@ void testParameterInfo() {
             hidden = false;
     }
     check(hidden, "the storage-only slots 1..4 have no info");
-    check(fx.GetParameterInfo(kAudioUnitScope_Global, (AudioUnitParameterID)7, info)
+    check(fx.GetParameterInfo(kAudioUnitScope_Global, (AudioUnitParameterID)8, info)
           == kAudioUnitErr_InvalidParameter, "an out-of-range parameter is refused");
+    check(fx.GetParameter(kParam_H) == 0.0f, "Extra cautious opens off");
 
     // What a restored older state does: its Extent, MaxLen, Depth and Passes
     // land in the slots and change nothing.

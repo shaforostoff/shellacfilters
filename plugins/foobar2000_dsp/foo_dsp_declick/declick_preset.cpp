@@ -25,6 +25,9 @@ void make(const Params & params, dsp_preset & out) {
     builder << p.sensitivity << p.extent << p.maxLengthMs << p.depth << p.dryWet;
     builder << (t_uint32)p.passes << (t_uint32)p.order;
     builder << (t_uint32)(p.delta ? 1 : 0);
+    // Appended without a version bump: an older build reads up to delta and
+    // never looks further, so it still opens this preset (without the flag).
+    builder << (t_uint32)(p.cautious ? 1 : 0);
     builder.finish(guid(), out);
 }
 
@@ -42,6 +45,13 @@ Params parse(const dsp_preset & in) {
                 if (ver >= 2u) parser >> tmp.depth;   // absent in version 1
                 parser >> tmp.dryWet >> passes >> order;
                 if (ver >= 3u) parser >> delta;       // absent before version 3
+                if (ver >= 3u) {
+                    // Extra cautious, appended to version 3 later; absent in a
+                    // preset saved before it was, which reads as off.
+                    t_uint32 cautious = 0;
+                    try { parser >> cautious; } catch (...) { cautious = 0; }
+                    tmp.cautious = (cautious != 0);
+                }
                 tmp.passes = (int)passes;
                 tmp.order = (int)order;
                 tmp.delta = (delta != 0);

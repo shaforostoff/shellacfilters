@@ -333,7 +333,9 @@ to mean the same thing in every port or the measurements in the foobar2000
 README stop describing any of them. `declick_vdj_verify` and `dehum_vdj_verify`
 pin the default positions against `Params::defaults()`. Declick has one switch
 besides, **Warm start** (on by default; see [below](#warm-start-declick)),
-declared after the sliders so that their saved positions keep their ids.
+declared after the sliders so that their saved positions keep their ids, and
+**Extra cautious** (off by default) after that: the AR repair alone, every
+later stage off. See the foobar2000 README, *Extra cautious*.
 
 ### Declick
 

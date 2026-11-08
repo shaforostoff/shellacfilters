@@ -59,6 +59,16 @@ struct Params {
     //! repaired audio. For listening to what is being removed: it should be
     //! crackle and nothing else, and any music heard in it is collateral.
     bool  delta;
+    //! Extra cautious: the AR detect-and-interpolate repair and nothing else.
+    //! Every stage after it - the shape fit, the body, fine, micro and mid
+    //! stages, the flank repair and the crackle floor - takes something from
+    //! the spectrum or the waveform beside the flagged samples, and on some
+    //! records some of that is music. This turns all of them off (and the
+    //! carpet and Poisson keys, which only gate them), so what is removed is
+    //! the clicks the detector flags and the music is left as it is. More
+    //! crackle stays: the carpet under the clicks, and the bodies and ringing
+    //! of the clicks that are repaired. Config::compute() applies it.
+    bool  cautious;
 
     static Params defaults() {
         Params p;
@@ -90,6 +100,7 @@ struct Params {
         p.order       = 128;
         p.dryWet      = 1.0f;
         p.delta       = false;
+        p.cautious    = false;
         return p;
     }
     //! What a user can reach. Every stage added after the AR repair - body,
@@ -97,8 +108,9 @@ struct Params {
     //! tuned by ear with that repair at its defaults, so moving Extent, Max
     //! repair, Repair depth or Passes moves the ground all of them stand on,
     //! into combinations nobody has heard. The plug-ins therefore expose only
-    //! Sensitivity, Model order (64, 128 or 256), Dry/Wet and, where there is a
-    //! place for it, delta. This puts every other field back to its default
+    //! Sensitivity, Model order (64, 128 or 256), Dry/Wet, Extra cautious and,
+    //! where there is a place for it, delta. This puts every other field back
+    //! to its default
     //! and Model order on the nearest of the three. The CLI and the tests set
     //! Params directly and are not held to it.
     void restrictToControls();
@@ -107,12 +119,13 @@ struct Params {
 
     enum { kSliderCount = 3 };
     //! The plug-in formats' three sliders, each 0..1 and pinned there, in the
-    //! order Sensitivity, Model order, Dry/Wet; everything else is default.
+    //! order Sensitivity, Model order, Dry/Wet, and the Extra cautious switch;
+    //! everything else is default.
     //! Model order reads its slider the way the old 16 .. 256-in-eights one
     //! did and snaps that to 64, 128 or 256, so a position saved by an older
     //! build lands on the nearest of the three: 0 on 64, 0.4677 (the old
     //! default) and 0.5 on 128, 1 on 256.
-    static Params fromSliders(const float s[kSliderCount]);
+    static Params fromSliders(const float s[kSliderCount], bool cautious = false);
     //! A Model order slider position that reads as snapOrder(order) both here
     //! and on the old 16 .. 256 slider: 0.2097, 0.4677 or 1. For writing a
     //! preset an older build can open as it sounds here.

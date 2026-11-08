@@ -182,18 +182,21 @@ void testSliders() {
 
     // Sensitivity, Model order and Dry/Wet keep the ids they had among seven
     // sliders, so the positions VirtualDJ saved under them still land.
-    static const int ids[4] = { 1, 6, 7, 8 };
-    check(cb.declared.size() == 4, "three sliders and a switch declared");
-    bool allSliders = cb.declared.size() == 4;
+    static const int ids[5] = { 1, 6, 7, 8, 9 };
+    check(cb.declared.size() == 5, "three sliders and two switches declared");
+    bool allSliders = cb.declared.size() == 5;
     for (size_t i = 0; allSliders && i < cb.declared.size(); ++i) {
         const int type = (i < 3) ? VDJPARAM_SLIDER : VDJPARAM_SWITCH;
         if (cb.declared[i].type != type) allSliders = false;
         if (cb.declared[i].id != ids[i]) allSliders = false;
     }
-    check(allSliders, "sliders with ids 1, 6, 7, then the Warm start switch at 8");
-    check(cb.declared.size() == 4 && cb.declared[3].def == 1.0f
+    check(allSliders, "sliders with ids 1, 6, 7, then the Warm start switch at 8 and Extra cautious at 9");
+    check(cb.declared.size() == 5 && cb.declared[3].def == 1.0f
           && cb.declared[3].id == vdj::DeclickEngine::kWarmStart,
           "the warm start opens switched on");
+    check(cb.declared.size() == 5 && cb.declared[4].def == 0.0f
+          && cb.declared[4].id == vdj::DeclickEngine::kCautious,
+          "Extra cautious opens switched off");
 
     // The declared defaults are what VirtualDJ opens a fresh effect on, so they
     // have to be the same positions the members start at - and those have to
@@ -209,7 +212,7 @@ void testSliders() {
            (double)got.maxLengthMs, (double)want.maxLengthMs);
 
     bool strings = true;
-    for (int k = 0; k < 4; ++k) {
+    for (int k = 0; k < 5; ++k) {
         char text[64] = { 0 };
         if (!engine.parameterString(ids[k], text, (int)sizeof(text))) strings = false;
         if (text[0] == 0) strings = false;

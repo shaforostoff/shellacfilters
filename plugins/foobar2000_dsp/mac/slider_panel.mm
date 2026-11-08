@@ -101,6 +101,7 @@ const int k_max_ticks = 20;
 
     NSMutableArray<NSSlider *> *     _sliders;
     NSMutableArray<NSTextField *> *  _readouts;
+    NSButton *                       _optionBox;   // nil without spec->optionLabel
     NSButton *                       _deltaBox;
 }
 
@@ -109,7 +110,7 @@ const int k_max_ticks = 20;
     if ((self = [super initWithNibName:nil bundle:nil])) {
         _spec = spec;
         _callback = callback;
-        _values.assign(spec->count, 0.0);
+        _values.assign(spec->count + (spec->optionLabel ? 1 : 0), 0.0);
         _delta = false;
 
         dsp_preset_impl preset;
@@ -159,6 +160,15 @@ const int k_max_ticks = 20;
         [cells addObject:@[ label, slider, readout ]];
     }
 
+    const NSInteger firstBox = (NSInteger)s.count;
+    if (s.optionLabel) {
+        _optionBox = [NSButton checkboxWithTitle:[NSString stringWithUTF8String:s.optionLabel]
+                                          target:self action:@selector(optionToggled:)];
+        if (s.optionHelp) _optionBox.toolTip = [NSString stringWithUTF8String:s.optionHelp];
+        [cells addObject:@[ [NSGridCell emptyContentView], _optionBox, [NSGridCell emptyContentView] ]];
+    }
+    const NSInteger deltaRow = (NSInteger)cells.count;
+
     _deltaBox = [NSButton checkboxWithTitle:[NSString stringWithUTF8String:s.deltaLabel]
                                      target:self action:@selector(deltaToggled:)];
     _deltaBox.toolTip = [NSString stringWithUTF8String:s.deltaHelp];
@@ -170,8 +180,9 @@ const int k_max_ticks = 20;
     grid.rowSpacing = 8.0;
     grid.columnSpacing = 8.0;
     grid.rowAlignment = NSGridRowAlignmentFirstBaseline;
-    [grid rowAtIndex:(NSInteger)s.count].topPadding = 4.0;
-    [[grid rowAtIndex:(NSInteger)s.count] mergeCellsInRange:NSMakeRange(1, 2)];
+    [grid rowAtIndex:firstBox].topPadding = 4.0;
+    for (NSInteger k = firstBox; k <= deltaRow; ++k)
+        [[grid rowAtIndex:k] mergeCellsInRange:NSMakeRange(1, 2)];
     // A slider has no baseline worth aligning to; centre each row on it instead.
     for (size_t i = 0; i < s.count; ++i) {
         [grid rowAtIndex:(NSInteger)i].yPlacement = NSGridCellPlacementCenter;
@@ -210,6 +221,8 @@ const int k_max_ticks = 20;
         _sliders[i].integerValue = value_to_pos(r, _values[i]);
         _readouts[i].stringValue = readout_text(r, _values[i]);
     }
+    if (_optionBox)
+        _optionBox.state = (_values[_spec->count] != 0.0) ? NSControlStateValueOn : NSControlStateValueOff;
     _deltaBox.state = _delta ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
@@ -232,6 +245,11 @@ const int k_max_ticks = 20;
         _readouts[i].stringValue = readout_text(r, v);
         [self push];
     }
+}
+
+- (void)optionToggled:(NSButton *)sender {
+    _values[_spec->count] = (sender.state == NSControlStateValueOn) ? 1.0 : 0.0;
+    [self push];
 }
 
 - (void)deltaToggled:(NSButton *)sender {

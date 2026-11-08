@@ -48,6 +48,7 @@ void compare(const declick::Params & got, const declick::Params & want,
     check(got.passes == want.passes, "passes");
     check(got.order  == want.order,  "order");
     check(got.delta  == want.delta,  "delta");
+    check(got.cautious == want.cautious, "cautious");
 }
 
 declick::Params roundTrip(const declick::Params & in) {
@@ -63,6 +64,15 @@ void makeLegacyV1(const declick::Params & p, dsp_preset & out) {
     builder << (t_uint32)1;
     builder << p.sensitivity << p.extent << p.maxLengthMs << p.dryWet;
     builder << (t_uint32)p.passes << (t_uint32)p.order;
+    builder.finish(declick_preset::guid(), out);
+}
+
+//! A version-3 preset, as written before `cautious` was appended to it.
+void makeLegacyV3(const declick::Params & p, dsp_preset & out) {
+    dsp_preset_builder builder;
+    builder << (t_uint32)3;
+    builder << p.sensitivity << p.extent << p.maxLengthMs << p.depth << p.dryWet;
+    builder << (t_uint32)p.passes << (t_uint32)p.order << (t_uint32)(p.delta ? 1 : 0);
     builder.finish(declick_preset::guid(), out);
 }
 
@@ -92,6 +102,7 @@ int main() {
         p.dryWet      = 0.75f;
         p.order       = 256;
         p.delta       = true;
+        p.cautious    = true;
         compare(roundTrip(p), p, "non-default values round-trip");
         p.order = 64;
         compare(roundTrip(p), p, "order 64 round-trips");
@@ -166,6 +177,40 @@ int main() {
         want.sensitivity = p.sensitivity;
         want.order       = 64;
         compare(got, want, "version-2 preset upgrades");
+    }
+
+    // 4c. A version-3 preset from before Extra cautious loads with it off and
+    //     everything else as saved.
+    {
+        declick::Params p = declick::Params::defaults();
+        p.sensitivity = 0.8125f;
+        p.order       = 256;
+        p.delta       = true;
+        dsp_preset_impl preset;
+        makeLegacyV3(p, preset);
+        compare(declick_preset::parse(preset), p, "version-3 preset without cautious");
+    }
+
+    // 4d. And the other way: a build from before Extra cautious reads up to
+    //     delta and stops, so what it reads must be where it was.
+    {
+        declick::Params p = declick::Params::defaults();
+        p.sensitivity = 0.8125f;
+        p.order       = 256;
+        p.delta       = true;
+        p.cautious    = true;
+        dsp_preset_impl preset;
+        declick_preset::make(p, preset);
+        dsp_preset_parser parser(preset);
+        t_uint32 ver = 0, passes = 0, order = 0, delta = 0;
+        float s = 0, e = 0, l = 0, d = 0, w = 0;
+        parser >> ver >> s >> e >> l >> d >> w >> passes >> order >> delta;
+        printf("older build reads a new preset\n");
+        check(ver == 3u, "still version 3");
+        checkNear(s, p.sensitivity, "sensitivity");
+        checkNear(w, p.dryWet, "dryWet");
+        check(order == 256u, "order");
+        check(delta == 1u, "delta");
     }
 
     // 5. A preset belonging to somebody else is ignored, not misread.

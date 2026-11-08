@@ -51,7 +51,7 @@ public:
     // there were seven sliders - 2..5 were Extent, Max repair, Depth and
     // Passes - so positions VirtualDJ saved under them still land here.
     enum {
-        kSensitivity = 1, kOrder = 6, kDryWet = 7, kWarmStart = 8
+        kSensitivity = 1, kOrder = 6, kDryWet = 7, kWarmStart = 8, kCautious = 9
     };
 
     void declareParameters(IVdjPlugin8 & host) {
@@ -61,6 +61,8 @@ public:
         // Last, so the sliders keep the ids their saved positions are filed
         // under. See declick_vdj_warm.h.
         host.DeclareParameterSwitch(&m_warmOn, kWarmStart, "Warm start", "Warm", true);
+        // After Warm start for the same reason. See Params::cautious.
+        host.DeclareParameterSwitch(&m_cautious, kCautious, "Extra cautious", "Cautious", false);
     }
 
     bool parameterString(int id, char * out, int size) const {
@@ -70,6 +72,7 @@ public:
             case kOrder:       snprintf(out, size, "%d", p.order);                        return true;
             case kDryWet:      snprintf(out, size, "%.0f %%", pinParameter(m_g) * 100.0); return true;
             case kWarmStart:   snprintf(out, size, "%s", m_warmOn ? "on" : "off");        return true;
+            case kCautious:    snprintf(out, size, "%s", m_cautious ? "on" : "off");      return true;
             default: return false;
         }
     }
@@ -78,7 +81,7 @@ public:
     //! ports'.
     declick::Params params() const {
         const float s[declick::Params::kSliderCount] = { m_a, m_f, m_g };
-        return declick::Params::fromSliders(s);
+        return declick::Params::fromSliders(s, m_cautious != 0);
     }
 
     // -- pipeline ------------------------------------------------------------
@@ -217,6 +220,7 @@ private:
     // the top of each processing call and not again.
     float m_a = kDefA, m_f = kDefF, m_g = kDefG;
     int   m_warmOn = 1;
+    int   m_cautious = 0;
 
     //! Two pairs: the live one, which m_chan points at, and the warm start's.
     //! They change places when the warm start swaps a caught-up pair in.

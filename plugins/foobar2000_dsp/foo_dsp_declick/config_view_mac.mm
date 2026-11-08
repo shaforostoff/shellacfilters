@@ -42,10 +42,12 @@ const slider_panel::row k_rows[] = {
 
 const size_t k_count = sizeof(k_rows) / sizeof(k_rows[0]);
 
+// v[3] is the Extra cautious checkbox, the panel's option (k_spec below).
 void to_values(const Params & p, double * v, bool & delta) {
     v[0] = p.sensitivity;
     v[1] = (double)p.order;
     v[2] = p.dryWet;
+    v[3] = p.cautious ? 1.0 : 0.0;
     delta = p.delta;
 }
 
@@ -58,6 +60,7 @@ void write(const double * v, bool delta, dsp_preset & out) {
     p.sensitivity = (float)v[0];
     p.order       = (int)(v[1] + 0.5);
     p.dryWet      = (float)v[2];
+    p.cautious    = (v[3] != 0.0);
     p.delta       = delta;
     declick_preset::make(p, out);
 }
@@ -75,6 +78,12 @@ const slider_panel::spec k_spec = {
     "Sensitivity is the one to reach for: raise it until the crackle goes, then back off as "
     "soon as the music dulls. Model order 64 is for a slow machine; 256 for clean records.",
     read, write, defaults,
+    "Extra cautious: repair the clicks, leave everything else",
+    "Repairs only the clicks the detector flags, and turns off every stage that works "
+    "on the audio around them: the click-shape fit, the crackle body, top-band and mid "
+    "stages, the flank repair and the crackle floor. Those take the carpet of crackle "
+    "under the clicks, and on some records a little of the music with it. With this on "
+    "the music is left as it is, and more crackle stays. Uses less CPU.",
 };
 
 } // anonymous namespace

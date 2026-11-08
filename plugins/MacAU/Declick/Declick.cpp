@@ -87,6 +87,7 @@ Declick::Declick(AudioUnit component)
 	SetParameter(kParam_A, kDefaultValue_ParamA );
 	SetParameter(kParam_F, kDefaultValue_ParamF );
 	SetParameter(kParam_G, kDefaultValue_ParamG );
+	SetParameter(kParam_H, kDefaultValue_ParamH );
 	//the unlisted slots hold the old builds' default positions for Extent,
 	//MaxLen, Depth and Passes, so a state saved here opens in one of those
 	//sounding as it does here. Nothing here reads them.
@@ -171,6 +172,13 @@ ComponentResult			Declick::GetParameterInfo(AudioUnitScope		inScope,
                 outParameterInfo.maxValue = 1.0;
                 outParameterInfo.defaultValue = kDefaultValue_ParamG;
                 break;
+            case kParam_H:
+                AUBase::FillInParameterName (outParameterInfo, kParameterHName, false);
+                outParameterInfo.unit = kAudioUnitParameterUnit_Boolean;
+                outParameterInfo.minValue = 0.0;
+                outParameterInfo.maxValue = 1.0;
+                outParameterInfo.defaultValue = kDefaultValue_ParamH;
+                break;
 			default:
                 result = kAudioUnitErr_InvalidParameter;
                 break;
@@ -187,7 +195,7 @@ ComponentResult			Declick::GetParameterInfo(AudioUnitScope		inScope,
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //	Declick::GetParameterList
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//The base class lists every indexed slot, 0..6. Only three of them are
+//The base class lists every indexed slot, 0..7. Only four of them are
 //controls; the rest are kept so that older saved states restore.
 ComponentResult			Declick::GetParameterList(AudioUnitScope		inScope,
                                                         AudioUnitParameterID	*outParameterList,
@@ -197,7 +205,7 @@ ComponentResult			Declick::GetParameterList(AudioUnitScope		inScope,
 		outNumParameters = 0;
 		return noErr;
 	}
-	static const AudioUnitParameterID live[kNumberOfParameters] = { kParam_A, kParam_F, kParam_G };
+	static const AudioUnitParameterID live[kNumberOfParameters] = { kParam_A, kParam_F, kParam_G, kParam_H };
 	if (outParameterList != NULL) {
 		for (UInt32 i = 0; i < kNumberOfParameters; ++i) outParameterList[i] = live[i];
 	}
@@ -267,7 +275,7 @@ declick::Params Declick::paramsFromControls()
 {
 	const float s[declick::Params::kSliderCount] = { GetParameter( kParam_A ),
 	                     GetParameter( kParam_F ), GetParameter( kParam_G ) };
-	return declick::Params::fromSliders(s);
+	return declick::Params::fromSliders(s, GetParameter( kParam_H ) >= 0.5f);
 }
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -285,7 +293,7 @@ void Declick::updateConfig()
 	next.compute(p, rate);
 
 	//Sensitivity and Dry/Wet need the same buffers, so they go in live. Model
-	//order resizes the pipeline and cannot.
+	//order and Extra cautious resize the pipeline and cannot.
 	if (!needsPrime && next.structurallyEquals(cfg)
 		&& chanL.retune(next) && chanR.retune(next)) {
 		cfg = next;
@@ -310,7 +318,7 @@ void Declick::updateConfig()
 	if (next.latency != reportedLatency) {
 		reportedLatency = next.latency;
 		//the AU's ioChanged(): the host re-reads GetLatency() when it is told
-		//the property moved. Only Model order and the rate get here.
+		//the property moved. Only Model order, Extra cautious and the rate get here.
 		PropertyChanged(kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0);
 	}
 }

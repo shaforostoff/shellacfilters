@@ -3,7 +3,8 @@
  *
  *  The Cocoa counterpart of the two components' config_dialog.cpp, which are
  *  the same dialog with a different table: a row per parameter - label,
- *  slider, readout - then the delta checkbox, a paragraph of advice and a
+ *  slider, readout - then an optional checkbox of the component's own, the
+ *  delta checkbox, a paragraph of advice and a
  *  Defaults button. Here the machinery is written once and each component
  *  supplies only the table and the conversions to and from its preset.
  *
@@ -53,7 +54,8 @@ struct row {
 };
 
 //! Everything the panel knows about one component. `values` always has one
-//! entry per row, in row order.
+//! entry per row, in row order, and with `optionLabel` set one more after them
+//! for its checkbox: 1 ticked, 0 not.
 struct spec {
     const row *  rows;
     size_t       count;
@@ -65,6 +67,11 @@ struct spec {
     void (*read)(const dsp_preset & in, double * values, bool & delta);
     void (*write)(const double * values, bool delta, dsp_preset & out);
     void (*defaults)(double * values, bool & delta);
+
+    //! A checkbox above the delta one, for a switch of the component's own;
+    //! NULL for none. Last, so a table that leaves them out gets none.
+    const char * optionLabel;
+    const char * optionHelp;
 };
 
 //! The view controller, wrapped for the host. `s` must outlive it - a static

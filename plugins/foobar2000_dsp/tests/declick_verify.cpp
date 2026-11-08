@@ -735,6 +735,66 @@ void testRetune() {
     }
 }
 
+//! Extra cautious is the AR repair alone: the same output, bit for bit, as
+//! every later stage turned off by hand, and the same latency. It cannot go in
+//! live, because it changes the latency.
+void allStagesOff(Config & c) {
+    c.shape = 0; c.body = 0; c.fine = 0; c.micro = 0; c.mid = 0;
+    c.flank = 0; c.crackleFloor = 0; c.carpet = 0; c.carpetFano = 0;
+}
+
+void testCautious() {
+    printf("extra cautious\n");
+    const double sr = 44100.0;
+    const size_t N = (size_t)(3.0 * sr);
+    const std::vector<double> dirty = clickedTone(N, sr, 29u);
+
+    Params p = Params::defaults();
+    const std::vector<double> full = runChannel(dirty, p, sr);
+    const std::vector<double> manual = runChannel(dirty, p, sr, allStagesOff);
+    p.cautious = true;
+    const std::vector<double> cautious = runChannel(dirty, p, sr);
+
+    double worst = 0.0, removed = 0.0;
+    for (size_t i = 0; i < N; ++i) {
+        worst = fmax(worst, fabs(cautious[i] - manual[i]));
+        removed += (dirty[i] - cautious[i]) * (dirty[i] - cautious[i]);
+    }
+    printf("  worst difference from the stages off by hand %.3g\n", worst);
+    if (worst != 0.0) {
+        printf("  FAIL  cautious is not the AR repair alone\n");
+        ++g_failures;
+    }
+    if (!(removed > 0.0)) {
+        printf("  FAIL  cautious repaired nothing\n");
+        ++g_failures;
+    }
+
+    Config a, b, m;
+    Params q = Params::defaults();
+    a.compute(q, sr);
+    q.cautious = true;
+    b.compute(q, sr);
+    allStagesOff(m);
+    m.compute(Params::defaults(), sr);
+    printf("  latency %d full, %d cautious\n", a.latency, b.latency);
+    if (b.latency != m.latency || !(b.latency < a.latency)) {
+        printf("  FAIL  cautious latency %d, stages off by hand %d\n", b.latency, m.latency);
+        ++g_failures;
+    }
+    if (q == Params::defaults()) {
+        printf("  FAIL  Params == does not see cautious\n");
+        ++g_failures;
+    }
+    Channel ch;
+    ch.configure(a);
+    if (b.structurallyEquals(a) || ch.retune(b)) {
+        printf("  FAIL  retune() took a switch to cautious\n");
+        ++g_failures;
+    }
+    (void)full;
+}
+
 } // anonymous namespace
 
 int main() {
@@ -746,6 +806,7 @@ int main() {
     testDelta();
     testEdges();
     testRetune();
+    testCautious();
 
     if (g_failures == 0) { printf("\nOK\n"); return 0; }
     printf("\n%d failure(s)\n", g_failures);

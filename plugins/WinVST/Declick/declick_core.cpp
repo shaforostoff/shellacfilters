@@ -1857,13 +1857,14 @@ void Params::restrictToControls() {
     sanitize();
 }
 
-Params Params::fromSliders(const float s[kSliderCount]) {
+Params Params::fromSliders(const float s[kSliderCount], bool cautious) {
     float v[kSliderCount];
     for (int i = 0; i < kSliderCount; ++i) v[i] = (s[i] > 0.0f) ? ((s[i] < 1.0f) ? s[i] : 1.0f) : 0.0f;   // NaN to 0
     Params p = defaults();
     p.sensitivity = v[0];
     p.order       = snapOrder(16 + 8 * (int)(v[1] * 30.999f));
     p.dryWet      = v[2];
+    p.cautious    = cautious;
     p.sanitize();
     return p;
 }
@@ -1894,7 +1895,8 @@ void Params::sanitize() {
 bool Params::operator==(const Params & o) const {
     return sensitivity == o.sensitivity && extent == o.extent
         && maxLengthMs == o.maxLengthMs && depth == o.depth && passes == o.passes
-        && order == o.order && dryWet == o.dryWet && delta == o.delta;
+        && order == o.order && dryWet == o.dryWet && delta == o.delta
+        && cautious == o.cautious;
 }
 
 // ---------------------------------------------------------------------------
@@ -1933,6 +1935,20 @@ void Config::compute(const Params & pIn, double sampleRate) {
     wet    = p.dryWet;
     delta  = p.delta;
     depth  = p.depth;
+
+    // Extra cautious: the AR repair alone. Off before anything below derives
+    // a latency, a delay or a buffer from these.
+    if (p.cautious) {
+        shape        = 0;
+        body         = 0;
+        fine         = 0;
+        micro        = 0;
+        mid          = 0;
+        flank        = 0;
+        crackleFloor = 0;
+        carpet       = 0;
+        carpetFano   = 0;
+    }
 
     // Sensitivity 0..1 maps onto the trigger threshold, in robust sigmas.
     // 6.0 catches only unmistakable clicks; 2.5 is aggressive enough to start

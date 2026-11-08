@@ -62,6 +62,13 @@ const slider_def k_sliders[] = {
 
 const size_t k_count = sizeof(k_sliders) / sizeof(k_sliders[0]);
 
+const wchar_t * const k_cautious_help =
+    L"Repairs only the clicks the detector flags, and turns off every stage that works "
+    L"on the audio around them: the click-shape fit, the crackle body, top-band and mid "
+    L"stages, the flank repair and the crackle floor. Those take the carpet of crackle "
+    L"under the clicks, and on some records a little of the music with it. With this on "
+    L"the music is left as it is, and more crackle stays. Uses less CPU.";
+
 const wchar_t * const k_delta_help =
     L"Outputs what the repair takes out - the input minus the output - instead of the "
     L"repaired audio. For testing: it should be crackle and clicks and nothing else, and "
@@ -132,6 +139,7 @@ void load_controls(HWND dlg, dialog_state * st) {
                            (LPARAM)value_to_pos(k_sliders[i], v));
         refresh_label(dlg, k_sliders[i], v);
     }
+    CheckDlgButton(dlg, IDC_CAUTIOUS, st->params.cautious ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dlg, IDC_DELTA, st->params.delta ? BST_CHECKED : BST_UNCHECKED);
 }
 
@@ -174,6 +182,7 @@ void create_tooltips(HWND dlg) {
                              k_sliders[i].valueId };
         for (int k = 0; k < 3; ++k) add_tooltip(tips, dlg, row[k], k_sliders[i].help);
     }
+    add_tooltip(tips, dlg, IDC_CAUTIOUS, k_cautious_help);
     add_tooltip(tips, dlg, IDC_DELTA, k_delta_help);
 }
 
@@ -217,6 +226,13 @@ INT_PTR CALLBACK dialog_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         if (st == NULL) break;
         switch (LOWORD(wp)) {
+        case IDC_CAUTIOUS:
+            if (HIWORD(wp) == BN_CLICKED) {
+                st->params.cautious = (IsDlgButtonChecked(dlg, IDC_CAUTIOUS) == BST_CHECKED);
+                push_preset(st);
+                return TRUE;
+            }
+            break;
         case IDC_DELTA:
             if (HIWORD(wp) == BN_CLICKED) {
                 st->params.delta = (IsDlgButtonChecked(dlg, IDC_DELTA) == BST_CHECKED);

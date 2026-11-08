@@ -16,7 +16,10 @@ GUID guid();
 
 //! 1 = pre-depth layout (still read, depth falls back to its default).
 //! 2 = adds `depth` between maxLengthMs and dryWet (still read, delta off).
-//! 3 = current layout, with `delta` appended after order.
+//! 3 = current layout, with `delta` appended after order, and then
+//!     `cautious` (Extra cautious) after that. That one came later without a
+//!     version bump, so older builds still read the preset; a version 3
+//!     preset without it reads as off.
 //! The layout still carries extent, maxLengthMs, depth and passes, so a chain
 //! saved here still loads in an older build; both directions write and read
 //! them as their defaults (Params::restrictToControls()).

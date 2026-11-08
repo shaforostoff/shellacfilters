@@ -8,7 +8,7 @@
 /////////////////////////////////////////////////////////////////////////////
 // Configuration dialog
 
-IDD_DECLICK DIALOGEX 0, 0, 292, 142
+IDD_DECLICK DIALOGEX 0, 0, 292, 156
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Declick"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -25,14 +25,15 @@ BEGIN
     CONTROL         "",IDC_SLIDER_DRYWET,"msctls_trackbar32",TBS_HORZ | TBS_NOTICKS | WS_TABSTOP,62,53,178,15
     RTEXT           "1.000",IDC_VALUE_DRYWET,244,56,41,8,SS_NOTIFY
 
-    AUTOCHECKBOX    "&Output only what is removed (delta, for testing)",IDC_DELTA,62,74,223,10
+    AUTOCHECKBOX    "E&xtra cautious: repair the clicks, leave everything else",IDC_CAUTIOUS,62,74,223,10
+    AUTOCHECKBOX    "&Output only what is removed (delta, for testing)",IDC_DELTA,62,88,223,10
 
     LTEXT           "Sensitivity is the one to reach for: raise it until the crackle goes, then back off as soon as the music dulls. Model order 64 is for a slow machine; 256 for clean records.",
-                    IDC_HINT,7,90,278,26
+                    IDC_HINT,7,104,278,26
 
-    PUSHBUTTON      "&Defaults",IDC_DEFAULTS,7,119,54,15
-    DEFPUSHBUTTON   "OK",IDOK,177,119,54,15
-    PUSHBUTTON      "Cancel",IDCANCEL,235,119,50,15
+    PUSHBUTTON      "&Defaults",IDC_DEFAULTS,7,133,54,15
+    DEFPUSHBUTTON   "OK",IDOK,177,133,54,15
+    PUSHBUTTON      "Cancel",IDCANCEL,235,133,50,15
 END
 
 /////////////////////////////////////////////////////////////////////////////

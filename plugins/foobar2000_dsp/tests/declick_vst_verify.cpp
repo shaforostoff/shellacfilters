@@ -393,7 +393,8 @@ void testParameterMapping() {
 }
 
 //! Presets: the chunk keeps the seven-slot layout of the builds that had seven
-//! sliders, so presets travel both ways.
+//! sliders, so presets travel both ways, and Extra cautious follows behind a
+//! marker.
 void testChunk() {
     // Order 64 (old 16 + 8 * floor(0.2 * 30.999) = 48, nearest 64) and two
     // distinct values, so a parameter read out of position cannot pass.
@@ -401,12 +402,13 @@ void testChunk() {
     a.setParameter(kParamA, 0.11f);
     a.setParameter(kParamB, 0.2f);
     a.setParameter(kParamC, 0.77f);
+    a.setParameter(kParamD, 1.0f);
 
     void * blob = NULL;
     const VstInt32 size = a.getChunk(&blob, true);
     char d[96]; snprintf(d, sizeof d, "%d bytes", (int)size);
-    check(size == (VstInt32)(kChunkSlots * sizeof(float)),
-          "a chunk is the old seven-float layout", d);
+    check(size == (VstInt32)(kChunkSlots * sizeof(float)) && kChunkSlots == 9,
+          "a chunk is the old seven-float layout, then the marker and Extra cautious", d);
 
     const float * slots = (const float *)blob;
     snprintf(d, sizeof d, "%.4f %.4f %.4f %.4f", slots[1], slots[2], slots[3], slots[4]);
@@ -420,16 +422,52 @@ void testChunk() {
     b.setChunk(blob, size, true);
     char t[64] = { 0 };
     b.getParameterDisplay(kParamB, t);
-    snprintf(d, sizeof d, "%.3f, %s, %.3f", b.getParameter(kParamA), t, b.getParameter(kParamC));
-    check(b.getParameter(kParamA) == 0.11f && atof(t) == 64.0 && b.getParameter(kParamC) == 0.77f,
+    snprintf(d, sizeof d, "%.3f, %s, %.3f, %.0f", b.getParameter(kParamA), t,
+             b.getParameter(kParamC), b.getParameter(kParamD));
+    check(b.getParameter(kParamA) == 0.11f && atof(t) == 64.0 && b.getParameter(kParamC) == 0.77f
+          && b.getParameter(kParamD) == 1.0f,
           "every parameter survives a chunk round trip", d);
+
+    // Extra cautious is the core's: on, the plug-in is the AR repair alone,
+    // with that latency, and the same output as the core run that way.
+    {
+        Declick on(hostCallback), ref(hostCallback);
+        on.setParameter(kParamD, 1.0f);
+        std::vector<double> inL, inR, oL, oR, rL, rR;
+        std::vector<int> at;
+        makeSignal(inL, inR, at, 20000, true);
+        runBlocks(on, inL, inR, oL, oR, oneBlockSize(512));
+        runBlocks(ref, inL, inR, rL, rR, oneBlockSize(512));
+        declick::Params p = wrapperDefaults();
+        p.cautious = true;
+        declick::Config cc;
+        cc.compute(p, (double)kRate);
+        char dl[64];
+        snprintf(dl, sizeof dl, "latency %d, core %d", (int)on.getGetTailSize(), cc.latency);
+        check(on.getGetTailSize() == cc.latency, "Extra cautious reports the AR repair's latency", dl);
+        snprintf(dl, sizeof dl, "worst %.3e", fmax(worstDiff(oL, rL), worstDiff(oR, rR)));
+        check(fmax(worstDiff(oL, rL), worstDiff(oR, rR)) > 0.0, "and changes the output", dl);
+        memset(t, 0, sizeof t);
+        on.getParameterDisplay(kParamD, t);
+        check(strcmp(t, "on") == 0, "and displays as on", t);
+    }
 
     // A chunk an older build saved: its own Extent, MaxLen, Depth and Passes
     // are ignored, and Order lands on the nearest of the three.
     {
         Declick c(hostCallback);
-        float old[kChunkSlots] = { 0.8f, 0.1f, 0.9f, 0.0f, 1.0f, 0.62f, 0.5f };  // order 160
+        float old[7] = { 0.8f, 0.1f, 0.9f, 0.0f, 1.0f, 0.62f, 0.5f };  // order 160
+        c.setParameter(kParamD, 1.0f);   // an older chunk has none: loads as off
         c.setChunk(old, (VstInt32)sizeof old, true);
+        check(c.getParameter(kParamD) == 0.0f, "an older build's chunk loads Extra cautious off");
+        // and one whose host claims more bytes than it holds is believed only
+        // as far as the marker
+        {
+            float padded[kChunkSlots] = { 0.8f, 0.1f, 0.9f, 0.0f, 1.0f, 0.62f, 0.5f, 0.0f, 1.0f };
+            Declick e(hostCallback);
+            e.setChunk(padded, (VstInt32)sizeof padded, true);
+            check(e.getParameter(kParamD) == 0.0f, "a long chunk without the marker loads it off");
+        }
         memset(t, 0, sizeof t);
         c.getParameterDisplay(kParamB, t);
         snprintf(d, sizeof d, "order %s", t);
@@ -453,7 +491,7 @@ void testChunk() {
 
     // Out-of-range values in a stored preset must be pinned, not trusted.
     Declick c(hostCallback);
-    float wild[kChunkSlots] = { -3.0f, 4.0f, -0.5f, 2.0f, -1.0f, 9.0f, -9.0f };
+    float wild[kChunkSlots] = { -3.0f, 4.0f, -0.5f, 2.0f, -1.0f, 9.0f, -9.0f, kChunkMarkerValue, 7.0f };
     c.setChunk(wild, (VstInt32)sizeof wild, true);
     bool pinned = true;
     for (int i = 0; i < kNumParameters; ++i) {

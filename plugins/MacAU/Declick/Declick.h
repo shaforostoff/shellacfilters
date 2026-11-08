@@ -75,13 +75,16 @@ static const float kDefaultValue_ParamF = 0.4677f;  //Order, 128 - 64 below, 256
                                                    //seven-slider builds' default, which reads
                                                    //as 128 there too
 static const float kDefaultValue_ParamG = 1.0f;  //Dry/Wet
+static const float kDefaultValue_ParamH = 0.0f;  //Extra cautious, off
 
 static CFStringRef kParameterAName = CFSTR("Sensitv");
 static CFStringRef kParameterFName = CFSTR("Order");
 static CFStringRef kParameterGName = CFSTR("Dry/Wet");
+static CFStringRef kParameterHName = CFSTR("Extra cautious");
 
-//Sensitivity, Model order and Dry/Wet: the controls Params::restrictToControls()
-//keeps. The IDs are the ones they had when there were seven sliders, and IDs
+//Sensitivity, Model order, Dry/Wet and Extra cautious: the controls
+//Params::restrictToControls() keeps. The first three have the IDs they had when
+//there were seven sliders; Extra cautious came later and takes the next. IDs
 //1..4 - Extent, MaxLen, Depth, Passes - still exist as storage: AudioUnitSDK
 //throws on restoring a saved state that names an indexed parameter it does not
 //have, which would refuse every preset an older build saved. They are not
@@ -90,8 +93,9 @@ enum {
 	kParam_A =0,
 	kParam_F =5,
 	kParam_G =6,
-	kParameterSlots=7,
-	kNumberOfParameters=3   //the ones a host sees
+	kParam_H =7,            //Extra cautious, a switch: on from 0.5
+	kParameterSlots=8,
+	kNumberOfParameters=4   //the ones a host sees
 };
 
 #pragma mark ____Declick
