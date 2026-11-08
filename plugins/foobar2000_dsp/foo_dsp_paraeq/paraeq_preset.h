@@ -49,6 +49,15 @@ void core_remove();
 //! Blocking modal configuration dialog. Main thread only.
 void paraeq_config_popup(const dsp_preset & data, HWND parent,
                          dsp_preset_edit_callback & callback);
+#else
+//! The macOS configuration view: a wrapped NSViewController holding the curve
+//! editor, for foobar2000 to put in a window of its own. config_view_mac.mm.
+service_ptr paraeq_config_view(dsp_preset_edit_callback_v2::ptr callback);
+
+//! The rate the equaliser is most likely running at - the playing track's, or
+//! 44.1 kHz when nothing is playing - so the curve is drawn for it.
+//! ui_element_mac.mm keeps it. Main thread only.
+double paraeq_mac_sample_rate();
 #endif
 
 #endif // FOO_DSP_PARAEQ_PRESET_H

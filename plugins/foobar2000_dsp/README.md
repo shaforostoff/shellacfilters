@@ -184,9 +184,9 @@ archive and writes it back under the Windows name. `--help` lists the rest
 (`--arch`, `--sign`, `--skip-tests`, `--clean`, and naming components).
 
 Declick and Dehum have the same settings on macOS as on Windows, in a
-view foobar2000 for Mac shows in its own window. The Parametric EQ has no
-configuration view there yet, nor a UI element, so it runs with its
-defaults - which is flat.
+view foobar2000 for Mac shows in its own window. The Parametric EQ has its
+curve editor there too, both as its configuration window and as a layout
+element - see [On macOS](#on-macos).
 
 ---
 
@@ -3319,6 +3319,51 @@ That is also why it is owner-drawn rather than a dialog full of trackbars:
 standard controls do not follow foobar2000's dark mode without the SDK's
 `DarkMode` helpers, and those live in `helpers/` and `libPPUI/`, which this
 project deliberately does not build — see [Layout](#layout).
+
+### On macOS
+
+foobar2000 for Mac gets the same editor, redrawn in Cocoa
+(`paraeq_editor_mac.mm`): the same curve, readout strip and footer, the same
+gestures and the same rules for shedding the strip and the footer as the panel
+gets smaller. It takes the system's colours and font, so it follows light and
+dark mode by itself. **Configure** in the DSP Manager opens it in a window of
+foobar2000's own, whose buttons keep or discard the change.
+
+Where the platforms differ, **Option stands in for Ctrl**, because Ctrl-click
+is the Mac's right-click and Cmd with an arrow belongs to the menus:
+
+| | |
+| --- | --- |
+| Option + drag | Fine adjustment, a quarter of the movement. |
+| Scroll | Gain, 0.5 dB a notch; with Option, 0.1 dB. A trackpad counts about a dozen points of travel as a notch, and up on the trackpad is up on the curve whichever way the system scrolls documents. |
+| Shift + scroll | Q, or the shelf/bell switch on a band that has no Q. |
+| Right-click or Ctrl-click | The context menu. |
+| Option + ← → | Select the previous or next band. |
+| Option + ↑ ↓ | Q. Page up and down still do the same. |
+| Option + Home | Reset every band. |
+
+The rest of the keyboard table is unchanged; Delete is the Mac's backspace key.
+
+**The layout element.** foobar2000 for Mac builds its window from a text layout,
+**View → Layout → Edit Layout…**, one element per line, indented to nest. Add a
+line reading `paraeq` where the equaliser should go, for instance under the
+playlist:
+
+```
+splitter horizontal style=thin
+ splitter vertical style=thin
+  albumlist
+  playlist
+ paraeq
+ playback-controls
+```
+
+It behaves as the Windows element does: it holds no settings of its own, edits
+the live DSP chain, stays level with every other copy and with the
+configuration window through `dsp_config_callback`, and draws a dimmed curve
+with **Add to DSP chain** when the equaliser is not in the chain. There is no
+layout editing mode to lock it out of, and no View-menu command, since the Mac
+element interface has neither.
 
 ### Why a control move cannot click
 

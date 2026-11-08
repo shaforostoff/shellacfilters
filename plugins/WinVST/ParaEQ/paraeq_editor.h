@@ -39,6 +39,10 @@
  *              is the thing on the modifier.
  *    Readout   every value is written out under the curve, so what a drag did
  *              is legible without moving the pointer off it.
+ *
+ *  paraeq_editor_mac.mm is the same editor in Cocoa, for foobar2000 for Mac.
+ *  It carries its own copy of the band table, the nudges and the drag rates,
+ *  so a change to how a gesture behaves here goes there too.
  * ======================================== */
 
 #ifndef FOO_DSP_PARAEQ_EDITOR_H

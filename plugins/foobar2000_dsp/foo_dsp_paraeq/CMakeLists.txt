@@ -26,4 +26,13 @@ fb2k_component(foo_dsp_paraeq "Parametric EQ"
         foo_dsp_paraeq.rc
 
         paraeq_editor.h
+
+    # The same editor in Cocoa, for the DSP's configuration window and the
+    # layout element.
+    MAC_SOURCES
+        paraeq_editor_mac.mm
+        config_view_mac.mm
+        ui_element_mac.mm
+
+        paraeq_editor_mac.h
 )

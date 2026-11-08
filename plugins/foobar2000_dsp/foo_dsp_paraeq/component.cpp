@@ -45,7 +45,8 @@ DECLARE_COMPONENT_VERSION(
     "It is also a Default UI element. Turn on View / Layout / Enable layout\n"
     "editing mode, right-click a panel, and add Parametric EQ from the DSP\n"
     "group; it edits the DSP chain directly, so it and the Preferences dialog\n"
-    "always show the same settings.\n"
+    "always show the same settings. On macOS, add a line reading paraeq to\n"
+    "View / Layout / Edit Layout, and use Option where Windows uses Ctrl.\n"
     "\n"
     "This DSP has zero latency.\n"
 );
