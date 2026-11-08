@@ -23,7 +23,7 @@
  *    - resume() must keep what the detector has learned while dropping the
  *      stale analysis window;
  *    - the slider mappings, the off positions on Freq and Rumble, hostile
- *      input, dry/wet bypass and the preset chunk.
+ *      input and the preset chunk, which keeps the retired Dry/Wet's slot.
  *
  *  Built against plugins/WinVST/vst2_shim - the same clean-room VST2 shim the
  *  shipped DLL is built against, not Steinberg's SDK, which is not in this
@@ -233,10 +233,10 @@ void testParameterMovesRetune(const std::vector<double> & inL,
     std::vector<double> vL, vR;
     runPlugin(fx, inL, inR, vL, vR, 512);
 
-    //Move all seven, one at a time, and require no renegotiation and no hole in
+    //Move all six, one at a time, and require no renegotiation and no hole in
     //the audio. Only a sample rate change may rebuild in this core.
     const char * names[kNumParameters] =
-        { "Sensitv", "Bandwid", "SrchTo", "Harmncs", "Freq", "Rumble", "Dry/Wet" };
+        { "Sensitv", "Bandwid", "SrchTo", "Harmncs", "Freq", "Rumble" };
     for (int k = 0; k < kNumParameters; ++k) {
         const int before = g_ioChanged;
         const float was = fx.getParameter(k);
@@ -309,18 +309,33 @@ void testRobustness(const std::vector<double> & inL, const std::vector<double> &
     }
 }
 
-void testBypass(const std::vector<double> & inL, const std::vector<double> & inR) {
-    printf("\ndry/wet 0\n");
+//Dry/Wet is gone: an older chunk that had it at 0, once a bypass, now cleans,
+//exactly as the same chunk with it at 1 does.
+void testOldDryWetIgnored(const std::vector<double> & inL, const std::vector<double> & inR) {
+    printf("\nan older chunk's Dry/Wet\n");
+    Dehum ref(hostCallback);
+    ref.setSampleRate((float)kRate);
+    std::vector<double> rL, rR;
+    runPlugin(ref, inL, inR, rL, rR, 512);
+
+    void * data = NULL;
+    const VstInt32 size = ref.getChunk(&data, true);
+    float old[kChunkFloats];
+    memcpy(old, data, sizeof(old));
+    free(data);
+    old[kChunkDryWet] = 0.0f;
+
     Dehum fx(hostCallback);
+    fx.setChunk(old, (VstInt32)sizeof(old), true);
     fx.setSampleRate((float)kRate);
-    fx.setParameter(kParamG, 0.0f);
-    fx.setParameter(kParamF, 0.0f);   //Rumble off too: a high-pass is not a bypass
     std::vector<double> vL, vR;
     runPlugin(fx, inL, inR, vL, vR, 512);
-    const double w = worstDiff(vL, inL) + worstDiff(vR, inR);
+    const double w = worstDiff(vL, rL) + worstDiff(vR, rR);
+    const double moved = worstDiff(vL, inL);
     char d[64];
-    snprintf(d, sizeof(d), "worst %.3e", w);
-    check(w == 0.0, "Dry/Wet 0 with Rumble off is a bit-exact bypass", d);
+    snprintf(d, sizeof(d), "worst %.3e, %.3e from the input", w, moved);
+    check(size == (VstInt32)sizeof(old) && w == 0.0 && moved > 0.0,
+          "Dry/Wet 0 in an older chunk is ignored: fully wet", d);
 }
 
 void testFloatPathIsDoublePlusDither(const std::vector<double> & inL,
@@ -429,13 +444,15 @@ void testParameterMapping() {
 void testChunk() {
     printf("\npreset chunk\n");
     Dehum fx(hostCallback);
-    const float set[kNumParameters] = { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f };
+    const float set[kNumParameters] = { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f };
     for (int i = 0; i < kNumParameters; ++i) fx.setParameter(i, set[i]);
 
     void * data = NULL;
     const VstInt32 size = fx.getChunk(&data, true);
-    check(size == (VstInt32)(kNumParameters * sizeof(float)),
-          "the chunk is one float per parameter");
+    check(size == (VstInt32)(kChunkFloats * sizeof(float)),
+          "the chunk keeps its seven floats, one per parameter and the retired Dry/Wet");
+    check(((const float *)data)[kChunkDryWet] == 1.0f,
+          "the retired Dry/Wet goes out as 1: an older build opens it fully wet");
 
     Dehum other(hostCallback);
     other.setChunk(data, size, true);
@@ -446,7 +463,7 @@ void testChunk() {
     check(same, "every parameter survives a chunk round trip");
     free(data);
 
-    float wild[kNumParameters] = { -5.0f, 5.0f, -0.1f, 1.1f, 0.5f, 2.0f, -2.0f };
+    float wild[kChunkFloats] = { -5.0f, 5.0f, -0.1f, 1.1f, 0.5f, 2.0f, -2.0f };
     Dehum third(hostCallback);
     third.setChunk(wild, (VstInt32)sizeof(wild), true);
     bool pinned = true;
@@ -471,7 +488,7 @@ int main() {
     testRemovesHum(inL, inR, humHz);
     testParameterMovesRetune(inL, inR);
     testRobustness(inL, inR);
-    testBypass(inL, inR);
+    testOldDryWetIgnored(inL, inR);
     testFloatPathIsDoublePlusDither(inL, inR);
     testResumeKeepsLines(inL, inR, humHz);
     testParameterMapping();

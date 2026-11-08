@@ -19,20 +19,21 @@
 
 #include "declick_core.h"
 
-//Sensitivity, Model order, Dry/Wet and Extra cautious: the controls
+//Sensitivity, Model order and Extra cautious: the controls
 //Params::restrictToControls() keeps. The other four the stages after the AR
-//repair were tuned against at their defaults, so they are not offered.
+//repair were tuned against at their defaults, so they are not offered, and nor
+//is Dry/Wet, which was index 2 before Extra cautious took it.
 enum {
 	kParamA =0,  //Sensitv
 	kParamB =1,  //Order: 64, 128 or 256
-	kParamC =2,  //Dry/Wet
-	kParamD =3,  //Cautious: off below 0.5, on from it
-  kNumParameters = 4
+	kParamC =2,  //Cautious: off below 0.5, on from it
+  kNumParameters = 3
 }; //
 
 //A chunk keeps the seven-float layout of the builds that had seven sliders, so
-//presets travel both ways: these are the slots the three sliders live in, and
-//the other four are written as the old defaults and ignored on the way in.
+//presets travel both ways: these are the slots the two sliders live in, and
+//the other five, Dry/Wet among them, are written as the old defaults (Dry/Wet
+//fully wet) and ignored on the way in.
 //Extra cautious goes after them, behind a marker: older builds read seven
 //floats and stop, and a seven-float chunk from one of them has no marker
 //where this build looks for it, so it reads as off.
@@ -86,10 +87,9 @@ private:
     float A;
     float B;
     float C;
-    float D;
     float chunk[kChunkSlots];   //!< what getChunk() hands the host, which never frees it
 
-	//A..D are the host's 0..1 sliders; these turn them into the core's units,
+	//A..C are the host's 0..1 controls; these turn them into the core's units,
 	//and reconfigure or retune the two channels when anything actually moved.
 	declick::Params paramsFromControls();
 	void updateConfig();

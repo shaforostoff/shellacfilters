@@ -108,18 +108,20 @@ struct Params {
     //! tuned by ear with that repair at its defaults, so moving Extent, Max
     //! repair, Repair depth or Passes moves the ground all of them stand on,
     //! into combinations nobody has heard. The plug-ins therefore expose only
-    //! Sensitivity, Model order (64, 128 or 256), Dry/Wet, Extra cautious and,
-    //! where there is a place for it, delta. This puts every other field back
-    //! to its default
-    //! and Model order on the nearest of the three. The CLI and the tests set
+    //! Sensitivity, Model order (64, 128 or 256), Extra cautious and, where
+    //! there is a place for it, delta. This puts every other field back to its
+    //! default - Dry/Wet included, at 1: a declicker blended with its input
+    //! gives the clicks back only 6 dB down at half wet, so there was no
+    //! setting between bypass and full worth having - and Model order on the
+    //! nearest of the three. The CLI and the tests set
     //! Params directly and are not held to it.
     void restrictToControls();
     //! 64, 128 or 256, whichever is nearest; a tie goes up.
     static int snapOrder(int order);
 
-    enum { kSliderCount = 3 };
-    //! The plug-in formats' three sliders, each 0..1 and pinned there, in the
-    //! order Sensitivity, Model order, Dry/Wet, and the Extra cautious switch;
+    enum { kSliderCount = 2 };
+    //! The plug-in formats' two sliders, each 0..1 and pinned there, in the
+    //! order Sensitivity, Model order, and the Extra cautious switch;
     //! everything else is default.
     //! Model order reads its slider the way the old 16 .. 256-in-eights one
     //! did and snaps that to 64, 128 or 256, so a position saved by an older

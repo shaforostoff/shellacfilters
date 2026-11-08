@@ -15,13 +15,21 @@ namespace dehum_preset {
 GUID guid();
 
 //! 1 = pre-delta layout (still read, delta off).
-//! 2 = current layout, with `delta` appended after harmonics.
+//! 2 = current layout, with `delta` appended after harmonics, and then
+//!     `bypass`. That came later without a version bump, so older builds
+//!     still read the preset; a version 2 preset without it reads it as off.
+//! The layout still carries dryWet, which is no longer settable: it is written
+//! as 1, so an older build opens the preset fully wet, and read past, so an
+//! older preset's Dry/Wet is ignored.
 enum { version = 2 };
 
-void make(const dehum::Params & params, dsp_preset & out);
+//! `bypass` is foobar2000's own: the other hosts have a bypass of their own,
+//! so it is not a core parameter.
+void make(const dehum::Params & params, dsp_preset & out, bool bypass = false);
 
-//! Never throws: anything unreadable falls back to the defaults.
-dehum::Params parse(const dsp_preset & in);
+//! Never throws: anything unreadable falls back to the defaults (bypass off).
+//! The result is always fully wet.
+dehum::Params parse(const dsp_preset & in, bool * bypass = NULL);
 
 } // namespace dehum_preset
 

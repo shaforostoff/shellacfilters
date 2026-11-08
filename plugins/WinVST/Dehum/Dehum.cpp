@@ -20,7 +20,6 @@ static const float kDefaultC = 60.0f / 460.0f;  //SearchTo -> 100 Hz
 static const float kDefaultD = 0.0f;            //Harmnics -> 1
 static const float kDefaultE = 0.0f;            //Freq -> auto
 static const float kDefaultF = 0.02f + (57.0f / 190.0f) * 0.98f;  //Rumble -> 67 Hz
-static const float kDefaultG = 1.0f;            //Dry/Wet
 
 Dehum::Dehum(audioMasterCallback audioMaster) :
     AudioEffectX(audioMaster, kNumPrograms, kNumParameters)
@@ -31,7 +30,6 @@ Dehum::Dehum(audioMasterCallback audioMaster) :
 	D = kDefaultD;
 	E = kDefaultE;
 	F = kDefaultF;
-	G = kDefaultG;
 
 	//the channels allocate on configure(), so get that out of the audio thread
 	//by doing it here at the host's guess of a sample rate. The first process
@@ -101,7 +99,6 @@ dehum::Params Dehum::paramsFromControls()
 	p.harmonics   = 1 + (int)(D * 7.999f);          //1 .. 8
 	p.frequency   = withOffPosition(E, 10.0f, 500.0f);   //0 = automatic
 	p.rumbleHz    = withOffPosition(F, 10.0f, 200.0f);   //0 = off
-	p.dryWet      = G;
 	p.sanitize();
 	return p;
 }
@@ -153,20 +150,20 @@ void Dehum::resume()
 
 VstInt32 Dehum::getChunk (void** data, bool isPreset)
 {
-	float *chunkData = (float *)calloc(kNumParameters, sizeof(float));
+	float *chunkData = (float *)calloc(kChunkFloats, sizeof(float));
 	chunkData[0] = A;
 	chunkData[1] = B;
 	chunkData[2] = C;
 	chunkData[3] = D;
 	chunkData[4] = E;
 	chunkData[5] = F;
-	chunkData[6] = G;
+	chunkData[kChunkDryWet] = 1.0f;   //retired Dry/Wet: fully wet
 	/* Note: The way this is set up, it will break if you manage to save settings on an Intel
 	 machine and load them on a PPC Mac. However, it's fine if you stick to the machine you
 	 started with. */
 
 	*data = chunkData;
-	return kNumParameters * sizeof(float);
+	return kChunkFloats * sizeof(float);
 }
 
 VstInt32 Dehum::setChunk (void* data, VstInt32 byteSize, bool isPreset)
@@ -178,7 +175,7 @@ VstInt32 Dehum::setChunk (void* data, VstInt32 byteSize, bool isPreset)
 	D = pinParameter(chunkData[3]);
 	E = pinParameter(chunkData[4]);
 	F = pinParameter(chunkData[5]);
-	G = pinParameter(chunkData[6]);
+	//chunkData[kChunkDryWet], an older build's Dry/Wet, is ignored
 	/* We're ignoring byteSize as we found it to be a filthy liar */
 
 	/* calculate any other fields you need here - you could copy in
@@ -194,7 +191,6 @@ void Dehum::setParameter(VstInt32 index, float value) {
         case kParamD: D = value; break;
         case kParamE: E = value; break;
         case kParamF: F = value; break;
-        case kParamG: G = value; break;
         default: throw; // unknown parameter, shouldn't happen!
     }
 	//no work here: updateConfig() picks the change up on the audio thread,
@@ -209,7 +205,6 @@ float Dehum::getParameter(VstInt32 index) {
         case kParamD: return D; break;
         case kParamE: return E; break;
         case kParamF: return F; break;
-        case kParamG: return G; break;
         default: break; // unknown parameter, shouldn't happen!
     } return 0.0; //we only need to update the relevant name, this is simple to manage
 }
@@ -222,7 +217,6 @@ void Dehum::getParameterName(VstInt32 index, char *text) {
 		case kParamD: vst_strncpy (text, "Harmncs", kVstMaxParamStrLen); break;
 		case kParamE: vst_strncpy (text, "Freq", kVstMaxParamStrLen); break;
 		case kParamF: vst_strncpy (text, "Rumble", kVstMaxParamStrLen); break;
-		case kParamG: vst_strncpy (text, "Dry/Wet", kVstMaxParamStrLen); break;
         default: break; // unknown parameter, shouldn't happen!
     } //this is our labels for displaying in the VST host
 }
@@ -244,7 +238,6 @@ void Dehum::getParameterDisplay(VstInt32 index, char *text) {
 			if (p.rumbleHz <= 0.0f) vst_strncpy (text, "off", kVstMaxParamStrLen);
 			else float2string (p.rumbleHz, text, kVstMaxParamStrLen);
 			break;
-        case kParamG: float2string (G, text, kVstMaxParamStrLen); break;
         default: break; // unknown parameter, shouldn't happen!
 	} //this displays the values and handles 'popups' where it's discrete choices
 }
@@ -257,7 +250,6 @@ void Dehum::getParameterLabel(VstInt32 index, char *text) {
         case kParamD: vst_strncpy (text, "", kVstMaxParamStrLen); break;
         case kParamE: vst_strncpy (text, (E <= kOffZone) ? "" : "Hz", kVstMaxParamStrLen); break;
         case kParamF: vst_strncpy (text, (F <= kOffZone) ? "" : "Hz", kVstMaxParamStrLen); break;
-        case kParamG: vst_strncpy (text, "", kVstMaxParamStrLen); break;
 		default: break; // unknown parameter, shouldn't happen!
     }
 }

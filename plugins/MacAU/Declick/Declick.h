@@ -74,28 +74,28 @@ static const float kDefaultValue_ParamA = 0.9f;  //Sensitv, 0.9 puts the trigger
 static const float kDefaultValue_ParamF = 0.4677f;  //Order, 128 - 64 below, 256 above. The old
                                                    //seven-slider builds' default, which reads
                                                    //as 128 there too
-static const float kDefaultValue_ParamG = 1.0f;  //Dry/Wet
+static const float kDefaultValue_ParamG = 1.0f;  //Dry/Wet, retired: storage only
 static const float kDefaultValue_ParamH = 0.0f;  //Extra cautious, off
 
 static CFStringRef kParameterAName = CFSTR("Sensitv");
 static CFStringRef kParameterFName = CFSTR("Order");
-static CFStringRef kParameterGName = CFSTR("Dry/Wet");
 static CFStringRef kParameterHName = CFSTR("Extra cautious");
 
-//Sensitivity, Model order, Dry/Wet and Extra cautious: the controls
-//Params::restrictToControls() keeps. The first three have the IDs they had when
-//there were seven sliders; Extra cautious came later and takes the next. IDs
-//1..4 - Extent, MaxLen, Depth, Passes - still exist as storage: AudioUnitSDK
-//throws on restoring a saved state that names an indexed parameter it does not
-//have, which would refuse every preset an older build saved. They are not
-//listed (GetParameterList), have no info, and nothing reads them.
+//Sensitivity, Model order and Extra cautious: the controls
+//Params::restrictToControls() keeps. The first two have the IDs they had when
+//there were seven sliders; Extra cautious came later and takes the next free
+//one. IDs 1..4 - Extent, MaxLen, Depth, Passes - and 6, Dry/Wet, still exist
+//as storage: AudioUnitSDK throws on restoring a saved state that names an
+//indexed parameter it does not have, which would refuse every preset an older
+//build saved. They are not listed (GetParameterList), have no info, and
+//nothing reads them.
 enum {
 	kParam_A =0,
 	kParam_F =5,
-	kParam_G =6,
+	kParam_G =6,            //Dry/Wet, retired: storage only
 	kParam_H =7,            //Extra cautious, a switch: on from 0.5
 	kParameterSlots=8,
-	kNumberOfParameters=4   //the ones a host sees
+	kNumberOfParameters=3   //the ones a host sees
 };
 
 #pragma mark ____Declick

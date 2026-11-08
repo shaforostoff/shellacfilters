@@ -140,6 +140,32 @@ bool pump(dsp::ptr d, unsigned channels, unsigned rate, size_t frames, size_t co
     return true;
 }
 
+//! Stereo 44.1 kHz chunks `first`..`first + count - 1`, as pump() makes them,
+//! through the DSP. Adds the frames that come out to `outFrames`; with
+//! `untouched`, also requires every chunk out to be the chunk that went in.
+bool pumpCounted(dsp::ptr d, size_t frames, size_t first, size_t count,
+                 size_t & outFrames, bool untouched, int lastFlags = 0) {
+    for (size_t i = first; i < first + count; ++i) {
+        dsp_chunk_list_impl list;
+        audio_chunk * c = list.add_item(frames * 2);
+        fillChunk(*c, 2, 44100, frames, i * frames);
+        d->run_abortable(&list, dsp_track_t(), (i + 1 == first + count) ? lastFlags : 0,
+                         fb2k::noAbort);
+        if (untouched && list.get_count() != 1) return false;
+        for (t_size k = 0; k < list.get_count(); ++k) {
+            const audio_chunk * o = list.get_item(k);
+            outFrames += o->get_sample_count();
+            if (!untouched) continue;
+            audio_chunk_impl want;
+            fillChunk(want, 2, 44100, frames, i * frames);
+            if (o->get_sample_count() != frames
+                || memcmp(o->get_data(), want.get_data(), frames * 2 * sizeof(audio_sample)) != 0)
+                return false;
+        }
+    }
+    return true;
+}
+
 // -- configuration dialog ----------------------------------------------------
 
 //! Records what the dialog pushes back at the host.
@@ -454,6 +480,112 @@ int wmain(int argc, wchar_t ** argv) {
         instance->flush();
         check(instance->get_latency() < latencyBefore,
               "the live preset was read: order 64 has the shorter latency");
+    }
+
+    // --- Declick's Bypass, foobar2000's own ----------------------------------
+    // The default preset with its last field, Bypass, set.
+    if (isDeclick) {
+        dsp_preset_impl bypassed = preset;
+        {
+            pfc::array_t<t_uint8> data;
+            data.set_size(preset.get_data_size());
+            memcpy(data.get_ptr(), preset.get_data(), preset.get_data_size());
+            const t_uint8 on[4] = { 1, 0, 0, 0 };
+            memcpy(data.get_ptr() + data.get_size() - 4, on, 4);
+            bypassed.set_data(data.get_ptr(), data.get_size());
+        }
+        dsp::ptr b;
+        check(entryService->instantiate(b, bypassed), "instantiates with Bypass on");
+        size_t out = 0;
+        check(b.is_valid() && pumpCounted(b, 1024, 0, 20, out, true),
+              "Bypass passes every chunk through untouched");
+        check(b.is_valid() && b->get_latency() == 0.0, "and reports no latency");
+        b.release();
+
+        // Live: process, tick Bypass, untick it, end playback. Every frame
+        // that went in comes out once, and while bypassed it is the input.
+        dsp::ptr live;
+        entryService->instantiate(live, preset);
+        size_t in = 0;
+        out = 0;
+        bool ok = live.is_valid();
+        ok = ok && pumpCounted(live, 1024, 0, 400, out, false);   // past the warm start
+        in += 400 * 1024;
+        check(ok && out > 0 && out < in, "processing, with the pipeline's latency held back");
+        live->apply_preset_(bypassed);
+        size_t tail = 0;
+        {
+            dsp_chunk_list_impl list;
+            audio_chunk * c = list.add_item(1024 * 2);
+            fillChunk(*c, 2, 44100, 1024, 400 * 1024);
+            live->run_abortable(&list, dsp_track_t(), 0, fb2k::noAbort);
+            for (t_size k = 0; k < list.get_count(); ++k) tail += list.get_item(k)->get_sample_count();
+            in += 1024;
+            out += tail;
+            audio_chunk_impl want;
+            fillChunk(want, 2, 44100, 1024, 400 * 1024);
+            const audio_chunk * last = list.get_count() ? list.get_item(list.get_count() - 1) : NULL;
+            check(last && last->get_sample_count() == 1024
+                  && memcmp(last->get_data(), want.get_data(), 1024 * 2 * sizeof(audio_sample)) == 0,
+                  "ticking Bypass passes the chunk through after the pipeline's tail");
+        }
+        check(out == in, "and nothing is lost or repeated");
+        ok = pumpCounted(live, 1024, 401, 20, out, true);
+        in += 20 * 1024;
+        check(ok && live->get_latency() == 0.0, "bypassed, the input comes back untouched");
+        live->apply_preset_(preset);
+        ok = pumpCounted(live, 1024, 421, 40, out, false, dsp::FLUSH);
+        in += 40 * 1024;
+        std::printf("  (bypass cycle: %u frames in, %u out)\n", (unsigned)in, (unsigned)out);
+        check(ok && out == in, "unticked, it processes again and ends with every frame out");
+        live.release();
+    }
+
+    // --- Dehum's Bypass, foobar2000's own ------------------------------------
+    // Zero latency and in place, so the cycle is simpler: every chunk comes
+    // back as one chunk, and while bypassed it is the input.
+    if (std::strncmp(name.get_ptr(), "Dehum", 5) == 0) {
+        dsp_preset_impl bypassed = preset;
+        {
+            pfc::array_t<t_uint8> data;
+            data.set_size(preset.get_data_size());
+            memcpy(data.get_ptr(), preset.get_data(), preset.get_data_size());
+            const t_uint8 on[4] = { 1, 0, 0, 0 };
+            memcpy(data.get_ptr() + data.get_size() - 4, on, 4);
+            bypassed.set_data(data.get_ptr(), data.get_size());
+        }
+        dsp::ptr b;
+        check(entryService->instantiate(b, bypassed), "instantiates with Bypass on");
+        size_t out = 0;
+        check(b.is_valid() && pumpCounted(b, 1024, 0, 20, out, true),
+              "Bypass passes every chunk through untouched");
+        b.release();
+
+        dsp::ptr live;
+        entryService->instantiate(live, preset);
+        out = 0;
+        bool ok = live.is_valid() && pumpCounted(live, 1024, 0, 40, out, false);
+        size_t changed = 0;
+        {
+            // Processing: the default Rumble high-pass moves every chunk.
+            dsp_chunk_list_impl list;
+            audio_chunk * c = list.add_item(1024 * 2);
+            fillChunk(*c, 2, 44100, 1024, 40 * 1024);
+            live->run_abortable(&list, dsp_track_t(), 0, fb2k::noAbort);
+            audio_chunk_impl want;
+            fillChunk(want, 2, 44100, 1024, 40 * 1024);
+            if (list.get_count() == 1
+                && memcmp(list.get_item(0)->get_data(), want.get_data(),
+                          1024 * 2 * sizeof(audio_sample)) != 0) changed = 1;
+        }
+        check(ok && changed == 1, "processing, the chunk is changed");
+        live->apply_preset_(bypassed);
+        check(pumpCounted(live, 1024, 41, 20, out, true), "ticked, the input comes back untouched");
+        live->apply_preset_(preset);
+        out = 0;
+        ok = pumpCounted(live, 1024, 61, 20, out, false);
+        check(ok && out == 20 * 1024, "unticked, it processes again, a chunk for a chunk");
+        live.release();
     }
 
     // --- robustness against a corrupt stored preset -------------------------

@@ -27,9 +27,15 @@ enum {
 	kParamD =3,
 	kParamE =4,
 	kParamF =5,
-	kParamG =6,
-  kNumParameters = 7
+  kNumParameters = 6
 }; //
+
+//The chunk keeps the seven floats it had when Dry/Wet was the seventh
+//parameter. Dry/Wet is gone - the notches are always fully applied, and the
+//host's own bypass is the way to hear the input - but its slot is still
+//written, as 1.0, so an older build opens a new chunk fully wet, and read
+//past, so an older chunk's Dry/Wet is ignored.
+enum { kChunkFloats = 7, kChunkDryWet = 6 };
 
 const int kNumPrograms = 0;
 const int kNumInputs = 2;
@@ -75,7 +81,6 @@ private:
     float D;
     float E;
     float F;
-    float G;
 
 	//A..G are the host's 0..1 sliders; these turn them into the core's units,
 	//and retune or reconfigure the two channels when anything actually moved.

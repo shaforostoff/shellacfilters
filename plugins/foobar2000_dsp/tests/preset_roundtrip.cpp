@@ -99,7 +99,6 @@ int main() {
     {
         declick::Params p = declick::Params::defaults();
         p.sensitivity = 0.8125f;   // exact in binary, no rounding to argue about
-        p.dryWet      = 0.75f;
         p.order       = 256;
         p.delta       = true;
         p.cautious    = true;
@@ -116,6 +115,7 @@ int main() {
         p.maxLengthMs = 6.5f;
         p.depth       = 0.25f;
         p.passes      = 3;
+        p.dryWet      = 0.75f;
         p.order       = 48;
         declick::Params want = declick::Params::defaults();
         want.order = 64;
@@ -135,6 +135,7 @@ int main() {
         p.delta = false;
         declick::Params want = p;
         want.order = 64;
+        want.dryWet = 1.0f;   // Dry/Wet is no longer settable: always fully wet
         compare(roundTrip(p), want, "extremes round-trip");
     }
 
@@ -156,8 +157,8 @@ int main() {
 
         declick::Params want = declick::Params::defaults();
         want.sensitivity = p.sensitivity;
-        want.dryWet      = p.dryWet;
         want.order       = 64;    // 48, on the nearest of the three
+                                  // and its Dry/Wet 0.75 ignored: fully wet
         compare(got, want, "version-1 preset upgrades");
     }
 
@@ -208,9 +209,45 @@ int main() {
         printf("older build reads a new preset\n");
         check(ver == 3u, "still version 3");
         checkNear(s, p.sensitivity, "sensitivity");
-        checkNear(w, p.dryWet, "dryWet");
+        checkNear(w, 1.0f, "dryWet, fully wet");
         check(order == 256u, "order");
         check(delta == 1u, "delta");
+    }
+
+    // 4e. Bypass, foobar2000's own, after cautious: it round-trips, it is
+    //     off when not asked for and in a preset from before it, and it moves
+    //     nothing in front of it.
+    {
+        declick::Params p = declick::Params::defaults();
+        p.sensitivity = 0.8125f;
+        p.order       = 256;
+        p.delta       = true;
+        p.cautious    = true;
+        bool bypass = false;
+        dsp_preset_impl preset;
+        declick_preset::make(p, preset, true);
+        compare(declick_preset::parse(preset, &bypass), p, "bypass preset, other fields");
+        check(bypass, "bypass round-trips on");
+        compare(declick_preset::parse(preset), p, "and reads without asking for it");
+
+        declick_preset::make(p, preset);
+        bypass = true;
+        declick_preset::parse(preset, &bypass);
+        check(!bypass, "bypass defaults to off");
+
+        makeLegacyV3(p, preset);
+        bypass = true;
+        declick_preset::parse(preset, &bypass);
+        check(!bypass, "a preset from before it reads bypass off");
+
+        GUID other = declick_preset::guid();
+        other.Data1 ^= 1;
+        dsp_preset_builder builder;
+        builder << (t_uint32)0xDEADBEEF;
+        builder.finish(other, preset);
+        bypass = true;
+        declick_preset::parse(preset, &bypass);
+        check(!bypass, "a foreign preset reads bypass off");
     }
 
     // 5. A preset belonging to somebody else is ignored, not misread.
@@ -274,7 +311,8 @@ int main() {
 
         dsp_preset_impl preset;
         dehum_preset::make(p, preset);
-        const Params got = dehum_preset::parse(preset);
+        bool bypassed = true;
+        const Params got = dehum_preset::parse(preset, &bypassed);
 
         printf("dehum round-trip\n");
         checkNear(got.sensitivity, p.sensitivity, "sensitivity");
@@ -282,9 +320,34 @@ int main() {
         checkNear(got.searchTo,    p.searchTo,    "searchTo");
         checkNear(got.frequency,   p.frequency,   "frequency");
         checkNear(got.rumbleHz,    p.rumbleHz,    "rumbleHz");
-        checkNear(got.dryWet,      p.dryWet,      "dryWet");
+        checkNear(got.dryWet,      1.0f,          "dryWet 0.8125 goes out as fully wet");
         check(got.harmonics == p.harmonics, "harmonics");
         check(got.delta == p.delta, "delta");
+        check(!bypassed, "bypass off by default");
+
+        // Bypass, foobar2000's own, appended after delta.
+        dsp_preset_impl byp;
+        dehum_preset::make(p, byp, true);
+        bypassed = false;
+        const Params gotByp = dehum_preset::parse(byp, &bypassed);
+        check(bypassed, "bypass round-trips");
+        check(gotByp == got, "and leaves the parameters alone");
+
+        // A version-2 preset from before Bypass (and with Dry/Wet at 0, once
+        // a bypass of its own): bypass off, and fully wet.
+        dsp_preset_impl v2;
+        {
+            dsp_preset_builder b;
+            b << (t_uint32)2;
+            b << p.sensitivity << p.bandwidth << p.searchTo << p.frequency
+              << p.rumbleHz << 0.0f;
+            b << (t_uint32)p.harmonics << (t_uint32)1;
+            b.finish(dehum_preset::guid(), v2);
+        }
+        bypassed = true;
+        const Params gotV2 = dehum_preset::parse(v2, &bypassed);
+        check(!bypassed, "a version-2 preset without Bypass reads it as off");
+        check(gotV2 == got, "and an older Dry/Wet 0 is ignored: fully wet");
 
         // A version-1 preset, from before delta existed, loads with it off.
         dsp_preset_impl v1;
@@ -296,7 +359,7 @@ int main() {
             b << (t_uint32)p.harmonics;
             b.finish(dehum_preset::guid(), v1);
         }
-        Params wantV1 = p;
+        Params wantV1 = got;
         wantV1.delta = false;
         check(dehum_preset::parse(v1) == wantV1, "version-1 preset upgrades with delta off");
 

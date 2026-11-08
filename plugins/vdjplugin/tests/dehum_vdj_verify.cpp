@@ -98,17 +98,18 @@ void testSliders() {
     StubHost host(cb);
     engine.declareParameters(host);
 
-    check(cb.declared.size() == 7, "seven sliders declared");
+    check(cb.declared.size() == 6, "six sliders declared");
     bool allSliders = true;
     for (size_t i = 0; i < cb.declared.size(); ++i) {
         if (cb.declared[i].type != VDJPARAM_SLIDER) allSliders = false;
         if (cb.declared[i].id != (int)i + 1) allSliders = false;
     }
-    check(allSliders, "all seven are sliders with ids 1..7");
+    check(allSliders, "all six are sliders with ids 1..6; Dry/Wet's 7 is retired");
 
     const dehum::Params want = dehum::Params::defaults();
     const dehum::Params got = engine.params();
     check(got == want, "default slider positions map to Params::defaults()");
+    check(got.dryWet == 1.0f, "always fully wet");
     // The two that are not the round number they look like, called out because
     // they are the ones a careless edit silently moves.
     checkf(got.bandwidth == want.bandwidth, "bandwidth %.4f Hz, expected %.4f",
@@ -119,7 +120,7 @@ void testSliders() {
            (double)got.searchTo, (double)want.searchTo);
 
     bool strings = true;
-    for (int id = 1; id <= 7; ++id) {
+    for (int id = 1; id <= 6; ++id) {
         char text[64] = { 0 };
         if (!engine.parameterString(id, text, (int)sizeof(text))) strings = false;
         if (text[0] == 0) strings = false;

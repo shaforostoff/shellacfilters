@@ -36,7 +36,7 @@ namespace {
 class dsp_dehum : public dsp_impl_base_t<dsp_v3> {
 public:
     dsp_dehum(const dsp_preset & in) {
-        m_pending = dehum_preset::parse(in);
+        m_pending = dehum_preset::parse(in, &m_pendingBypass);
         m_active = m_pending;
         m_cfg.compute(m_active, 44100.0);
     }
@@ -71,9 +71,11 @@ public:
 
     bool apply_preset(const dsp_preset & preset) override {
         if (preset.get_owner() != g_get_guid()) return false;
-        const Params p = dehum_preset::parse(preset);
+        bool bypass = false;
+        const Params p = dehum_preset::parse(preset, &bypass);
         std::lock_guard<std::mutex> lock(m_lock);
         m_pending = p;
+        m_pendingBypass = bypass;
         return true;
     }
 
@@ -86,12 +88,27 @@ public:
         if (channels == 0 || rate == 0 || frames == 0) return true;
 
         Params params;
+        bool bypass;
         {
             std::lock_guard<std::mutex> lock(m_lock);
             params = m_pending;
+            bypass = m_pendingBypass;
         }
 
         const bool newTrack = updateTrack(params);
+
+        // Bypass: the chunk goes out as it came in. The track is still followed
+        // and the scout still runs, so what was learned about this record's hum
+        // - and what the scout finds meanwhile, which waits in it until taken -
+        // is there when the bypass comes off. A new track still forgets the
+        // last one's.
+        if (bypass) {
+            if (newTrack) {
+                for (size_t c = 0; c < m_chan.size(); ++c) m_chan[c]->reset();
+            }
+            m_bypassed = true;
+            return true;
+        }
 
         if (channels != m_channels || rate != m_rate) {
             if (!rebuild(channels, rate, params)) return true;
@@ -117,6 +134,13 @@ public:
         // and before adopting, because reset() discards adopted lines too.
         if (newTrack) {
             for (size_t c = 0; c < m_chan.size(); ++c) m_chan[c]->reset();
+        }
+
+        // Back from a bypass, the filters' history is of audio that went by
+        // unprocessed: treat it as a seek, which clears that and keeps the lines.
+        if (m_bypassed) {
+            for (size_t c = 0; c < m_chan.size(); ++c) m_chan[c]->flush();
+            m_bypassed = false;
         }
 
         if (m_scout) {
@@ -221,7 +245,9 @@ private:
 
     std::mutex m_lock;
     Params m_pending;
+    bool m_pendingBypass = false;   //!< under m_lock, like m_pending
     Params m_active;
+    bool m_bypassed = false;        //!< playback thread: the last chunk was bypassed
     Config m_cfg;
 
     std::vector<std::unique_ptr<Channel> > m_chan;

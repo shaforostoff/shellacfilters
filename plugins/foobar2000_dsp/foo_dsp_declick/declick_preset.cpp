@@ -16,7 +16,7 @@ GUID guid() {
     return g;
 }
 
-void make(const Params & params, dsp_preset & out) {
+void make(const Params & params, dsp_preset & out, bool bypass) {
     Params p = params;
     p.restrictToControls();   // the fields the dialog does not show go out as defaults
 
@@ -28,11 +28,13 @@ void make(const Params & params, dsp_preset & out) {
     // Appended without a version bump: an older build reads up to delta and
     // never looks further, so it still opens this preset (without the flag).
     builder << (t_uint32)(p.cautious ? 1 : 0);
+    builder << (t_uint32)(bypass ? 1 : 0);   // likewise, after cautious
     builder.finish(guid(), out);
 }
 
-Params parse(const dsp_preset & in) {
+Params parse(const dsp_preset & in, bool * bypass) {
     Params p = Params::defaults();
+    bool bypassed = false;
     if (in.get_owner() == guid()) {
         try {
             dsp_preset_parser parser(in);
@@ -48,9 +50,12 @@ Params parse(const dsp_preset & in) {
                 if (ver >= 3u) {
                     // Extra cautious, appended to version 3 later; absent in a
                     // preset saved before it was, which reads as off.
-                    t_uint32 cautious = 0;
+                    t_uint32 cautious = 0, byp = 0;
                     try { parser >> cautious; } catch (...) { cautious = 0; }
                     tmp.cautious = (cautious != 0);
+                    // Bypass, appended after it; absent reads as off.
+                    try { parser >> byp; } catch (...) { byp = 0; }
+                    bypassed = (byp != 0);
                 }
                 tmp.passes = (int)passes;
                 tmp.order = (int)order;
@@ -59,8 +64,10 @@ Params parse(const dsp_preset & in) {
             }
         } catch (...) {
             p = Params::defaults();
+            bypassed = false;
         }
     }
+    if (bypass) *bypass = bypassed;
     // Extent, Max repair, Repair depth and Passes are no longer settable, and a
     // preset saved while they were must not leave them stuck at a value the
     // dialog cannot show or undo. Model order lands on 64, 128 or 256.

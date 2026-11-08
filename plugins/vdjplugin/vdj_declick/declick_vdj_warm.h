@@ -160,7 +160,8 @@ public:
         begin();
     }
 
-    //! The "Warm start" switch, read every call. Off, restarts are cold,
+    //! On unless turned off, which only the tests do: VirtualDJ has no switch
+    //! for it, so the first seconds are never traded away. Off, restarts are cold,
     //! nothing is read and the worker stops; turned on again, this record's
     //! opening is read anew.
     void setEnabled(bool on) {

@@ -20,7 +20,7 @@
  *    - the reported latency has to be the real one, in both directions;
  *    - a live parameter move must not renegotiate latency or punch a hole,
  *      and a structural one must do exactly the opposite;
- *    - hostile input, sample rate changes, dry/wet bypass, resume(), and the
+ *    - hostile input, sample rate changes, resume(), and the
  *      preset chunk.
  *
  *  Built against plugins/WinVST/vst2_shim - the same clean-room VST2 shim the
@@ -247,7 +247,7 @@ void testParameterMoves(const std::vector<double> & inL, const std::vector<doubl
 
 //! Sample rate changes, hostile input, bypass, the float path, resume().
 void testRobustness(const std::vector<double> & inL, const std::vector<double> & inR,
-                    const std::vector<double> & refL, const declick::Config & cfg) {
+                    const std::vector<double> & refL) {
     {
         Declick fx(hostCallback);
         fx.setSampleRate(96000.0f);
@@ -296,18 +296,6 @@ void testRobustness(const std::vector<double> & inL, const std::vector<double> &
         double energy = 0.0;
         for (size_t i = okL.size() / 2; i < okL.size(); ++i) energy += okL[i] * okL[i];
         check(energy > 1.0, "the stream recovers after hostile input");
-    }
-    {
-        Declick fx(hostCallback);
-        fx.setParameter(kParamC, 0.0f);         // Dry/Wet 0
-        std::vector<double> aL, aR;
-        runBlocks(fx, inL, inR, aL, aR, oneBlockSize(512));
-        double w = 0.0;
-        for (int i = cfg.latency; i < kFrames; ++i) {
-            w = fmax(w, fabs(aL[(size_t)i] - inL[(size_t)(i - cfg.latency)]));
-        }
-        char d[64]; snprintf(d, sizeof d, "worst %.3e", w);
-        check(w == 0.0, "Dry/Wet 0 is a bit-exact bypass at the declared delay", d);
     }
     {
         // The float path is the double path plus the house dither and a float
@@ -401,8 +389,7 @@ void testChunk() {
     Declick a(hostCallback), b(hostCallback);
     a.setParameter(kParamA, 0.11f);
     a.setParameter(kParamB, 0.2f);
-    a.setParameter(kParamC, 0.77f);
-    a.setParameter(kParamD, 1.0f);
+    a.setParameter(kParamC, 1.0f);
 
     void * blob = NULL;
     const VstInt32 size = a.getChunk(&blob, true);
@@ -412,8 +399,9 @@ void testChunk() {
 
     const float * slots = (const float *)blob;
     snprintf(d, sizeof d, "%.4f %.4f %.4f %.4f", slots[1], slots[2], slots[3], slots[4]);
-    check(slots[1] == 0.5f && slots[2] == 0.2f && slots[3] == 1.0f && slots[4] == 0.5f,
-          "the unused slots hold the old default positions", d);
+    check(slots[1] == 0.5f && slots[2] == 0.2f && slots[3] == 1.0f && slots[4] == 0.5f
+          && slots[kChunkDryWet] == 1.0f,
+          "the unused slots hold the old default positions, Dry/Wet fully wet", d);
     // what an older build makes of the order slot: 16 + 8 * floor(v * 30.999)
     const int oldOrder = 16 + 8 * (int)(slots[kChunkOrder] * 30.999f);
     snprintf(d, sizeof d, "slot %.4f, order %d", slots[kChunkOrder], oldOrder);
@@ -422,17 +410,15 @@ void testChunk() {
     b.setChunk(blob, size, true);
     char t[64] = { 0 };
     b.getParameterDisplay(kParamB, t);
-    snprintf(d, sizeof d, "%.3f, %s, %.3f, %.0f", b.getParameter(kParamA), t,
-             b.getParameter(kParamC), b.getParameter(kParamD));
-    check(b.getParameter(kParamA) == 0.11f && atof(t) == 64.0 && b.getParameter(kParamC) == 0.77f
-          && b.getParameter(kParamD) == 1.0f,
+    snprintf(d, sizeof d, "%.3f, %s, %.0f", b.getParameter(kParamA), t, b.getParameter(kParamC));
+    check(b.getParameter(kParamA) == 0.11f && atof(t) == 64.0 && b.getParameter(kParamC) == 1.0f,
           "every parameter survives a chunk round trip", d);
 
     // Extra cautious is the core's: on, the plug-in is the AR repair alone,
     // with that latency, and the same output as the core run that way.
     {
         Declick on(hostCallback), ref(hostCallback);
-        on.setParameter(kParamD, 1.0f);
+        on.setParameter(kParamC, 1.0f);
         std::vector<double> inL, inR, oL, oR, rL, rR;
         std::vector<int> at;
         makeSignal(inL, inR, at, 20000, true);
@@ -448,37 +434,36 @@ void testChunk() {
         snprintf(dl, sizeof dl, "worst %.3e", fmax(worstDiff(oL, rL), worstDiff(oR, rR)));
         check(fmax(worstDiff(oL, rL), worstDiff(oR, rR)) > 0.0, "and changes the output", dl);
         memset(t, 0, sizeof t);
-        on.getParameterDisplay(kParamD, t);
+        on.getParameterDisplay(kParamC, t);
         check(strcmp(t, "on") == 0, "and displays as on", t);
     }
 
-    // A chunk an older build saved: its own Extent, MaxLen, Depth and Passes
-    // are ignored, and Order lands on the nearest of the three.
+    // A chunk an older build saved: its own Extent, MaxLen, Depth, Passes and
+    // Dry/Wet are ignored, and Order lands on the nearest of the three.
     {
         Declick c(hostCallback);
         float old[7] = { 0.8f, 0.1f, 0.9f, 0.0f, 1.0f, 0.62f, 0.5f };  // order 160
-        c.setParameter(kParamD, 1.0f);   // an older chunk has none: loads as off
+        c.setParameter(kParamC, 1.0f);   // an older chunk has none: loads as off
         c.setChunk(old, (VstInt32)sizeof old, true);
-        check(c.getParameter(kParamD) == 0.0f, "an older build's chunk loads Extra cautious off");
+        check(c.getParameter(kParamC) == 0.0f, "an older build's chunk loads Extra cautious off");
         // and one whose host claims more bytes than it holds is believed only
         // as far as the marker
         {
             float padded[kChunkSlots] = { 0.8f, 0.1f, 0.9f, 0.0f, 1.0f, 0.62f, 0.5f, 0.0f, 1.0f };
             Declick e(hostCallback);
             e.setChunk(padded, (VstInt32)sizeof padded, true);
-            check(e.getParameter(kParamD) == 0.0f, "a long chunk without the marker loads it off");
+            check(e.getParameter(kParamC) == 0.0f, "a long chunk without the marker loads it off");
         }
         memset(t, 0, sizeof t);
         c.getParameterDisplay(kParamB, t);
         snprintf(d, sizeof d, "order %s", t);
-        check(c.getParameter(kParamA) == 0.8f && atof(t) == 128.0 && c.getParameter(kParamC) == 0.5f,
-              "an older build's chunk loads its three, order snapped", d);
-        // and the hidden ones it set have no effect: same output as defaults
-        // with those three
+        check(c.getParameter(kParamA) == 0.8f && atof(t) == 128.0,
+              "an older build's chunk loads Sensitivity and Order, order snapped", d);
+        // and the hidden ones it set, Dry/Wet 0.5 among them, have no effect:
+        // same output as defaults with those two
         Declick ref(hostCallback);
         ref.setParameter(kParamA, 0.8f);
         ref.setParameter(kParamB, 0.4677f);
-        ref.setParameter(kParamC, 0.5f);
         std::vector<double> inL, inR, aL, aR, rL, rR;
         std::vector<int> at;
         makeSignal(inL, inR, at, 20000, true);
@@ -486,7 +471,7 @@ void testChunk() {
         runBlocks(ref, inL, inR, rL, rR, oneBlockSize(512));
         const double w = fmax(worstDiff(aL, rL), worstDiff(aR, rR));
         snprintf(d, sizeof d, "worst %.3e", w);
-        check(w == 0.0, "an older build's Extent, MaxLen, Depth and Passes are ignored", d);
+        check(w == 0.0, "an older build's Extent, MaxLen, Depth, Passes and Dry/Wet are ignored", d);
     }
 
     // Out-of-range values in a stored preset must be pinned, not trusted.
@@ -520,7 +505,7 @@ int main() {
     testLatency(refL, cfg);
     testRepair(inL, inR, refL, clickAt, cfg);
     testParameterMoves(inL, inR);
-    testRobustness(inL, inR, refL, cfg);
+    testRobustness(inL, inR, refL);
     testParameterMapping();
     testChunk();
 

@@ -52,7 +52,7 @@ advconfig_checkbox_factory g_adv_warm_log(
 class dsp_declick : public dsp_impl_base_t<dsp_v3> {
 public:
     dsp_declick(const dsp_preset & in) {
-        m_pending = declick_preset::parse(in);
+        m_pending = declick_preset::parse(in, &m_pendingBypass);
         m_active = m_pending;
         m_cfg.compute(m_active, 44100.0);
         m_warmOn = g_adv_warm.get();
@@ -89,9 +89,11 @@ public:
 
     bool apply_preset(const dsp_preset & preset) override {
         if (preset.get_owner() != g_get_guid()) return false;
-        const Params p = declick_preset::parse(preset);
+        bool bypass = false;
+        const Params p = declick_preset::parse(preset, &bypass);
         std::lock_guard<std::mutex> lock(m_lock);
         m_pending = p;
+        m_pendingBypass = bypass;
         return true;
     }
 
@@ -109,10 +111,22 @@ public:
         updateTrack();
 
         Params params;
+        bool bypass;
         {
             std::lock_guard<std::mutex> lock(m_lock);
             params = m_pending;
+            bypass = m_pendingBypass;
         }
+
+        if (bypass) {
+            if (!m_bypassed) enterBypass();
+            // Kept disarmed: a track start or a seek while bypassed arms it,
+            // and unticking Bypass mid-song must not stall for a warm pass.
+            m_hold.disarm();
+            return true;     // the chunk as it came, after the tail emitted above
+        }
+        const bool resumed = m_bypassed;
+        m_bypassed = false;
 
         const unsigned config = chunk->get_channel_config();
         if (channels != m_channels || rate != m_rate) {
@@ -125,6 +139,9 @@ public:
             m_config = config;
             if (params != m_active) applyParams(params, rate);
         }
+        // Back from Bypass mid-song: someone at the controls, as with a Model
+        // order move, so no warm start - rebuild() above would have armed it.
+        if (resumed) m_hold.disarm();
 
         audio_sample * const data = chunk->get_data();
         if (data == NULL) return true;
@@ -162,13 +179,26 @@ public:
     //! The pipeline's, and while the warm start holds or hands back the
     //! track's first seconds, those too.
     double get_latency() override {
-        if (m_rate == 0) return 0.0;
+        if (m_rate == 0 || m_bypassed) return 0.0;
         return (double)((uint64_t)m_cfg.latency + m_hold.pending()) / (double)m_rate;
     }
 
     bool need_track_change_mark() override { return false; }
 
 private:
+    //! Bypass ticked: everything already taken in leaves, processed, ahead of
+    //! the chunk that is passed through untouched, so nothing is lost or
+    //! repeated. Then the pipeline goes back to its opening state, so that
+    //! unticking it starts from the audio heard then rather than from what was
+    //! in the window when it was ticked. A pipeline that was never built (the
+    //! preset had Bypass on from the start) has nothing to give back.
+    void enterBypass() {
+        settleHold();
+        drainAndEmit();
+        for (size_t c = 0; c < m_chan.size(); ++c) m_chan[c]->reset();
+        m_bypassed = true;
+    }
+
     //! Notices the track changing under us, which is the only place the per-track
     //! handling starts.
     //!
@@ -310,7 +340,7 @@ private:
 
     //! A parameter move, through the channels already in hand.
     //!
-    //! Sensitivity, Dry/Wet and delta are read per block, so retune() swaps
+    //! Sensitivity and delta are read per block, so retune() swaps
     //! them in under the stream with no gap at all. Model order reshapes the
     //! pipeline and needs configure(),
     //! which resets it - but configure() reassigns every vector to the length
@@ -398,7 +428,11 @@ private:
 
     std::mutex m_lock;
     Params m_pending;
+    bool m_pendingBypass = false;   // under m_lock, with m_pending
     Params m_active;
+    //! Passing the audio through untouched. The pipeline is reset and idle
+    //! while it is; see enterBypass().
+    bool m_bypassed = false;
     Config m_cfg;
 
     std::vector<std::unique_ptr<Channel> > m_chan;

@@ -177,7 +177,7 @@ double toneAmplitude(const std::vector<float> & v, double f) {
 
 // ---------------------------------------------------------------------------
 
-//! The one that matters: the wrapper must add no DSP. It also pins the seven
+//! The one that matters: the wrapper must add no DSP. It also pins the six
 //! slider defaults, because the reference is the core at Params::defaults() and
 //! nothing here touches a parameter - if a default position mapped anywhere
 //! else, this would not be two ULP, it would be a different stream.
@@ -274,7 +274,7 @@ void testParameterMovesRetune(const std::vector<float> & inL, const std::vector<
     runPlugin(fx, inL, inR, vL, vR, 512);
 
     static const char * names[kNumberOfParameters] =
-        { "Sensitv", "Bandwid", "SrchTo", "Harmncs", "Freq", "Rumble", "Dry/Wet" };
+        { "Sensitv", "Bandwid", "SrchTo", "Harmncs", "Freq", "Rumble" };
     for (int k = 0; k < kNumberOfParameters; ++k) {
         fx.AUShimResetPropertyChangeCount();
         const float was = fx.GetParameter((AudioUnitParameterID)k);
@@ -326,7 +326,7 @@ void testResetKeepsLines(const std::vector<float> & inL, const std::vector<float
     check(after < before * 0.5, "Reset() keeps what the detector learned", d);
 }
 
-//! Sample rate changes, hostile input, and the dry/wet bypass.
+//! Sample rate changes, hostile input, and an older state's Dry/Wet.
 void testRobustness(const std::vector<float> & inL, const std::vector<float> & inR) {
     printf("\nrobustness\n");
     {
@@ -368,19 +368,29 @@ void testRobustness(const std::vector<float> & inL, const std::vector<float> & i
         check(energy > 1.0, "the stream recovers after hostile input");
     }
     {
+        // Dry/Wet is retired: a state from an older build that had it at 0,
+        // once a bypass, now cleans like any other.
+        Dehum ref((AudioUnit)0);
+        start(ref, (double)kRate);
+        std::vector<float> rL, rR;
+        runPlugin(ref, inL, inR, rL, rR, 512);
+
         Dehum fx((AudioUnit)0);
-        fx.SetParameter(kParam_G, 0.0f);          // Dry/Wet 0
+        fx.SetParameter(kParam_G, 0.0f);          // an older state's Dry/Wet 0
         start(fx, (double)kRate);
         std::vector<float> vL, vR;
         runPlugin(fx, inL, inR, vL, vR, 512);
-        double w = 0.0, peak = 0.0;
+        double w = 0.0, moved = 0.0, peak = 0.0;
         for (size_t i = 0; i < vL.size(); ++i) {
-            w = fmax(w, fabs((double)vL[i] - (double)inL[i]));
-            peak = fmax(peak, fabs((double)inL[i]));
+            w = fmax(w, fabs((double)vL[i] - (double)rL[i]));
+            moved = fmax(moved, fabs((double)vL[i] - (double)inL[i]));
+            peak = fmax(peak, fabs((double)rL[i]));
         }
+        // Each instance seeds its own dither, so the two agree to the dither.
         const double ulp = ldexp(1.0, ilogb(peak) - 23);
-        char d[80]; snprintf(d, sizeof d, "worst %.3e = %.2f ULP", w, w / ulp);
-        check(w <= 2.0 * ulp, "Dry/Wet 0 is a bypass, to the dither", d);
+        char d[96]; snprintf(d, sizeof d, "worst %.2f ULP, %.3e from the input", w / ulp, moved);
+        check(w <= 2.0 * ulp && moved > 1e-3,
+              "an older state's Dry/Wet 0 is ignored: fully wet, to the dither", d);
     }
 }
 
@@ -389,7 +399,7 @@ void testParameterInfo() {
     printf("\nwhat the host is told\n");
     Dehum fx((AudioUnit)0);
     static const char * names[kNumberOfParameters] = {
-        "Sensitv", "Bandwid", "SrchTo", "Harmncs", "Freq", "Rumble", "Dry/Wet"
+        "Sensitv", "Bandwid", "SrchTo", "Harmncs", "Freq", "Rumble"
     };
     bool named = true, ranged = true, flagged = true, defaulted = true;
     for (int i = 0; i < kNumberOfParameters; ++i) {
@@ -405,7 +415,7 @@ void testParameterInfo() {
             || !(info.flags & kAudioUnitParameterFlag_IsWritable)) flagged = false;
         if (info.defaultValue != fx.GetParameter((AudioUnitParameterID)i)) defaulted = false;
     }
-    check(named, "all seven parameters are named, in the VST's order");
+    check(named, "all six parameters are named, in the VST's order");
     check(ranged, "every parameter is 0..1");
     check(flagged, "every parameter is readable and writable");
     check(defaulted, "the advertised default is the one the constructor set");
@@ -414,7 +424,19 @@ void testParameterInfo() {
     memset(&info, 0, sizeof info);
     check(fx.GetParameterInfo(kAudioUnitScope_Global,
                               (AudioUnitParameterID)kNumberOfParameters, info)
-          == kAudioUnitErr_InvalidParameter, "an out-of-range parameter is refused");
+          == kAudioUnitErr_InvalidParameter, "the retired Dry/Wet (6) has no info");
+
+    AudioUnitParameterID list[kParameterSlots];
+    UInt32 listed = 0;
+    fx.GetParameterList(kAudioUnitScope_Global, NULL, listed);
+    bool listOk = (listed == (UInt32)kNumberOfParameters);
+    if (listOk) {
+        fx.GetParameterList(kAudioUnitScope_Global, list, listed);
+        for (UInt32 i = 0; i < listed; ++i) if (list[i] != i) listOk = false;
+    }
+    check(listOk, "the host is listed IDs 0..5, and not the retired Dry/Wet");
+    check(fx.GetParameter(kParam_G) == 1.0f,
+          "the retired Dry/Wet's slot holds 1: an older build opens a state fully wet");
     check(fx.GetParameterInfo(1 /* input scope */, 0, info)
           == kAudioUnitErr_InvalidParameter, "a non-global scope is refused");
 

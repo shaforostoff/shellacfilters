@@ -3,7 +3,7 @@
  *
  *  The Cocoa counterpart of the two components' config_dialog.cpp, which are
  *  the same dialog with a different table: a row per parameter - label,
- *  slider, readout - then an optional checkbox of the component's own, the
+ *  slider, readout - then any checkboxes of the component's own, the
  *  delta checkbox, a paragraph of advice and a
  *  Defaults button. Here the machinery is written once and each component
  *  supplies only the table and the conversions to and from its preset.
@@ -53,25 +53,34 @@ struct row {
     const double * choices;
 };
 
+//! A checkbox of the component's own. `help` may be NULL. A row of its own
+//! under the sliders, or with `besideDelta` beside the delta checkbox, ahead
+//! of it, on the Defaults button's row.
+struct option {
+    const char * label;
+    const char * help;
+    bool         besideDelta;
+};
+
 //! Everything the panel knows about one component. `values` always has one
-//! entry per row, in row order, and with `optionLabel` set one more after them
-//! for its checkbox: 1 ticked, 0 not.
+//! entry per row, in row order, then one per option for its checkbox: 1
+//! ticked, 0 not.
 struct spec {
     const row *  rows;
     size_t       count;
     const char * deltaLabel;
     const char * deltaHelp;
-    const char * hint;
+    const char * hint;   //!< paragraph under the rows; NULL for none
 
     //! Never fail: a preset that does not parse reads as the defaults.
     void (*read)(const dsp_preset & in, double * values, bool & delta);
     void (*write)(const double * values, bool delta, dsp_preset & out);
     void (*defaults)(double * values, bool & delta);
 
-    //! A checkbox above the delta one, for a switch of the component's own;
-    //! NULL for none. Last, so a table that leaves them out gets none.
-    const char * optionLabel;
-    const char * optionHelp;
+    //! Checkboxes around the delta one, in order, for switches of the
+    //! component's own. Last, so a table that leaves them out gets none.
+    const option * options;
+    size_t         optionCount;
 };
 
 //! The view controller, wrapped for the host. `s` must outlive it - a static

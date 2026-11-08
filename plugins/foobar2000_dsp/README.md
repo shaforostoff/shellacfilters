@@ -260,9 +260,9 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 | --- | --- |
 | **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.9** (2.85σ). Runs that barely cross the trigger are only partly repaired — half of what the model says is wrong at the trigger, rising to all of it 3.5σ above — so the default reaches small clicks without taking much from clean records; on clean records 0.7–0.8 takes less still. See [Dense crackle](#dense-crackle). |
 | **Model order** | **64**, **128** (default) or **256**. Higher orders model the music better, so they change clean records least, and remove isolated clicks better; but they also predict some short clicks well enough to miss them on heavily crackled transfers. 128 is the balance. 64 costs about 0.6× the CPU of 128 and gives up surprisingly little — the one for a slow machine; 256 costs about 2.1×. In the VST2, AU and VirtualDJ ports the slider reads as the old 16–256-in-eights one did, snapped to the nearest of the three (below 96 → 64, below 192 → 128), so positions saved by older builds keep their meaning. See [Choosing settings](#choosing-settings) and [Does more CPU help?](#does-more-cpu-help). |
-| **Dry/Wet** | 0 bypasses. |
 | **Extra cautious** | Off by default. On, Declick is the AR detect-and-interpolate repair and nothing else: the shape fit, the body, fine, micro and mid stages, the flank repair and the crackle floor are off, and so are the carpet and Poisson keys, which only gate them. Those stages work on the audio around the flagged samples, and on some records some of what they take is music; with this on, only the flagged samples change. More crackle stays (the carpet under the clicks, and the bodies and ringing of the clicks that are repaired). It also cuts the latency from ~140 ms to ~24 ms at 44.1 kHz and the CPU to about 0.4×. A checkbox in foobar2000, a switch in the VST2 (`Caution`), AU and VirtualDJ ports. See [Extra cautious](#extra-cautious-the-ar-repair-alone). |
-| **Output only what is removed** | Delta monitoring, for testing: outputs input minus output, so you hear what the repair takes out. It should be crackle and clicks and nothing else; music heard in it is collateral damage, and the cue to lower Sensitivity. Saved with the preset, so untick it when done. foobar2000 only. |
+| **Bypass** | Passes the audio through untouched, for comparing against the repair. Ticking it first plays out what is already in the pipeline, processed, so nothing is skipped or repeated; unticking it starts the pipeline afresh (one latency's worth of audio is held back, as after a Model order move, with no warm start). Latency is 0 while it is on. Saved with the preset, appended after Extra cautious, so older builds still read it and ignore it. foobar2000 only: the other hosts have a bypass of their own. |
+| **Delta** | Delta monitoring, for testing: outputs input minus output, so you hear what the repair takes out. It should be crackle and clicks and nothing else; music heard in it is collateral damage, and the cue to lower Sensitivity. Saved with the preset, so untick it when done. foobar2000 only. |
 
 ### Extra cautious: the AR repair alone
 
@@ -286,17 +286,33 @@ ignores it; a preset from before it reads as off. The VST2 chunk appends it
 after the seven old slots, behind a marker, so an older build reads its seven
 and a seven-slot chunk reads as off. The AU gives it ID 7: a state saved with
 it does **not** restore in an older AU build, which refuses indexed IDs it does
-not have. VirtualDJ declares it as a switch at id 9, after Warm start.
+not have. VirtualDJ declares it as a switch at id 9, after the sliders.
 
 That is all a user can reach. The core still has Extent (0.5), Max repair
 (4 ms), Repair depth (1) and Passes (2), and the CLI still sets them, but every
 stage added since — the body, flank and crackle-floor stages, the carpet key,
 the micro and mid stages, the shape fit — was tuned by ear with those four at
 their defaults, so moving them only reached combinations nobody had heard.
-`Params::restrictToControls()` holds them there. Presets and host states keep
-their old layout, so a chain or project saved by an older build still loads:
-its three settable values come through, Model order snapped to the nearest of
-64/128/256, and its Extent, Max repair, Repair depth and Passes are ignored.
+`Params::restrictToControls()` holds them there.
+
+Dry/Wet went too, and the repair is always fully wet. A declicker blended with
+its input gives every click back at the blend's level: at half wet a click is
+only 6 dB down, still plainly a click, and whatever music the repair took comes
+back by the same proportion, so a blend trades the two evenly where Sensitivity
+and Extra cautious trade them selectively. The one setting worth having was 0,
+a bypass, and every host has one of its own (in foobar2000, the Bypass
+checkbox). The core keeps `dryWet` for the CLI (`-w`) and the tests.
+
+Presets and host states keep their old layout, so a chain or project saved by
+an older build still loads: its Sensitivity and Model order come through,
+Model order snapped to the nearest of 64/128/256, and its Extent, Max repair,
+Repair depth, Passes and Dry/Wet are ignored (a chain saved with Dry/Wet at 0,
+once a bypass, now repairs). Written the other way, Dry/Wet goes out as 1, so
+an older build opens a new preset fully wet. The VST2 parameter list is now
+Sensitv, Order and Caution: Caution took index 2, which was Dry/Wet, so host
+automation recorded on Dry/Wet by an older build would now move Extra
+cautious. The AU keeps Dry/Wet's ID 6 as unlisted storage, and VirtualDJ leaves
+its id 7 unused.
 What is saved here opens in an older build with those four at their defaults.
 
 The sections below on those four document how the defaults were arrived at.
@@ -433,7 +449,7 @@ in the output):
 * **Crackly 78s** — the defaults.
 * **Clean or lightly crackled records, remasters** — Model order 256 and
   Sensitivity 0.7–0.8: the least change to the music. Remasters that clip
-  can make *Output only what is removed* pulse with the rhythm; that is the
+  can make *Delta* pulse with the rhythm; that is the
   clipping and crackle on the loud beats being taken out, not the attacks
   (they measure unchanged, and none was heard missing).
 * **Heavily crackled transfers, MP3s especially** — keep order at 128, or try
@@ -2662,8 +2678,18 @@ Add *Dehum (line detection)* to the chain and press **Configure selected**.
 | **Harmonics** | Multiples of each detected line to cancel as well, 1–8, default **1**. Locked to exact multiples of the fundamental, not tracked separately. Raise it for a genuine mains buzz; leave it alone otherwise, because a notch removes the coherent part at its frequency whether or not that part is hum — see below. |
 | **Frequency** | 0 = detect automatically. Anything else pins the fundamental there and turns the detector off. **This is the control to use if you already know the frequency**, because it acts immediately where detection needs a few seconds. |
 | **Rumble** | 4th-order Butterworth high-pass, default **67 Hz**, 0 = off. Broadband low-frequency noise is a *different defect* from hum — see below — and this is the control for it. 40 Hz was the cautious end: about 4 dB out of the 32–45 Hz band, nothing above 90 Hz touched, safe on material that has real bass — but it leaves rumble audible on the transfers that have it. **67 Hz goes after it properly.** It takes the bottom octave of a double bass with it, so wind it back towards 40 where the low end is worth keeping. |
-| **Dry/Wet** | 0 bypasses, bit-exactly. |
-| **Output only what is removed** | Delta monitoring, for testing: outputs what the notches take out, which should be the hum and nothing else. Rumble is deliberately left out of it — see [Delta monitoring works for the notch, not for Rumble](#delta-monitoring-works-for-the-notch-not-for-rumble). Saved with the preset, so untick it when done. foobar2000 only. |
+| **Bypass** | Passes the audio through untouched, for comparing. The hum already found is kept, so it is cancelled again as soon as Bypass is unticked. Saved with the preset. foobar2000 only: the other hosts have a bypass of their own. |
+| **Delta** | Delta monitoring, for testing: outputs what the notches take out, which should be the hum and nothing else. Rumble is deliberately left out of it — see [Delta monitoring works for the notch, not for Rumble](#delta-monitoring-works-for-the-notch-not-for-rumble). Saved with the preset, so untick it when done. foobar2000 only. |
+
+Dry/Wet went, as it did from Declick: a blend gives the hum back at the
+blend's level, and its one useful setting, 0, was a bypass, which every host
+has. The notches are always fully applied. The core keeps `dryWet` for the CLI
+(`-w`) and the tests. A chain, VST2 chunk or AU state saved by an older build
+still loads, its Dry/Wet ignored (one saved at 0, once a bypass, now cleans);
+written the other way, Dry/Wet goes out as 1, so an older build opens it fully
+wet. It was the last of Dehum's parameters, so nothing else moves: the VST2
+list ends at Rumble, the AU keeps its ID 6 as unlisted storage, and VirtualDJ
+leaves its id 7 unused.
 
 Latency is **zero**: the detector reads the signal but does not sit in the path,
 so the component processes in place and needs no FIFO. Throughput is **320×
@@ -3532,7 +3558,7 @@ covers the parts a VST has to get right on its own: that block patterns from
 the pre-roll arithmetic (get it wrong and the core zero-fills mid-stream); that
 the declared latency is the real one in both directions; that a Sensitivity move
 retunes without renegotiating latency or leaving a gap while a Model order move
-does the opposite; dry/wet 0 as a bit-exact bypass; `resume()` starting from
+does the opposite; `resume()` starting from
 silence rather than the previous take; hostile input; the slider-to-core
 mappings; and the preset chunk, including pinning out-of-range stored values.
 Built against `plugins/WinVST/vst2_shim`, so it needs no SDK — the same shim the
@@ -3577,11 +3603,12 @@ plug-in's `processDoubleReplacing` output to be **bit-identical**, worst deviati
 block sizes from 1 to 4096 — including 1025, one past the scratch buffer it
 chunks through — all give the *same* stream; that the declared latency is zero
 and that **nothing** renegotiates it, for any parameter or across a sample rate
-change; that all seven sliders retune live without a gap; that `resume()` keeps
+change; that all six sliders retune live without a gap; that `resume()` keeps
 what the detector learned rather than re-acquiring; that the float path is the
-double path plus dither to within a float ULP; hostile input; dry/wet 0 as a
-bit-exact bypass; the slider mappings against `Params::defaults()`, including the
-off positions on Freq and Rumble; and the preset chunk.
+double path plus dither to within a float ULP; hostile input; that an older
+chunk's Dry/Wet is ignored; the slider mappings against `Params::defaults()`,
+including the off positions on Freq and Rumble; and the preset chunk, which
+keeps the retired Dry/Wet's slot at 1.
 
 **`paraeq_vst_verify`** does the same for the WinVST equaliser. Its central
 check drives `paraeq::Channel` with the same `Config` and requires
@@ -3625,7 +3652,7 @@ has to get right that a VST does not:
   shipping default, a different figure after dropping to order 64, 11008 at 96 kHz;
 * `PropertyChanged(kAudioUnitProperty_Latency)` is what an AU says instead of
   `audioMasterIOChanged`, so it must fire **exactly once** for Model order
-  and **never** for Sensitivity or Dry/Wet, for Dehum's seven, or across a
+  and **never** for Sensitivity, for Dehum's six, or across a
   sample rate change;
 * `Reset()` is where `resume()` went, with the same split: Declick starts the
   next take from silence, Dehum keeps what the detector learned (hum still

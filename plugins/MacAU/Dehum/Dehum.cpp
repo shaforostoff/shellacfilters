@@ -85,7 +85,7 @@ Dehum::Dehum(AudioUnit component)
 	: AUEffectBase(component)
 {
 	CreateElements();
-	Globals()->UseIndexedParameters(kNumberOfParameters);
+	Globals()->UseIndexedParameters(kParameterSlots);
 	SetParameter(kParam_A, kDefaultValue_ParamA );
 	SetParameter(kParam_B, kDefaultValue_ParamB );
 	SetParameter(kParam_C, kDefaultValue_ParamC );
@@ -190,13 +190,6 @@ ComponentResult			Dehum::GetParameterInfo(AudioUnitScope		inScope,
                 outParameterInfo.maxValue = 1.0;
                 outParameterInfo.defaultValue = kDefaultValue_ParamF;
                 break;
-            case kParam_G:
-                AUBase::FillInParameterName (outParameterInfo, kParameterGName, false);
-                outParameterInfo.unit = kAudioUnitParameterUnit_Generic;
-                outParameterInfo.minValue = 0.0;
-                outParameterInfo.maxValue = 1.0;
-                outParameterInfo.defaultValue = kDefaultValue_ParamG;
-                break;
 			default:
                 result = kAudioUnitErr_InvalidParameter;
                 break;
@@ -208,6 +201,26 @@ ComponentResult			Dehum::GetParameterInfo(AudioUnitScope		inScope,
 
 
 	return result;
+}
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//	Dehum::GetParameterList
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//The base class lists every indexed slot, 0..6. The last is the retired
+//Dry/Wet, kept so that older saved states restore.
+ComponentResult			Dehum::GetParameterList(AudioUnitScope		inScope,
+                                                        AudioUnitParameterID	*outParameterList,
+                                                        UInt32			&outNumParameters)
+{
+	if (inScope != kAudioUnitScope_Global) {
+		outNumParameters = 0;
+		return noErr;
+	}
+	if (outParameterList != NULL) {
+		for (UInt32 i = 0; i < kNumberOfParameters; ++i) outParameterList[i] = i;
+	}
+	outNumParameters = kNumberOfParameters;
+	return noErr;
 }
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -290,7 +303,6 @@ dehum::Params Dehum::paramsFromControls()
 	p.harmonics   = 1 + (int)(GetParameter( kParam_D ) * 7.999f);         //1 .. 8
 	p.frequency   = withOffPosition(GetParameter( kParam_E ), 10.0f, 500.0f);  //0 = automatic
 	p.rumbleHz    = withOffPosition(GetParameter( kParam_F ), 10.0f, 200.0f);  //0 = off
-	p.dryWet      = GetParameter( kParam_G );
 	p.sanitize();
 	return p;
 }

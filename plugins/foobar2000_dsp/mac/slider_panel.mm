@@ -101,7 +101,7 @@ const int k_max_ticks = 20;
 
     NSMutableArray<NSSlider *> *     _sliders;
     NSMutableArray<NSTextField *> *  _readouts;
-    NSButton *                       _optionBox;   // nil without spec->optionLabel
+    NSMutableArray<NSButton *> *     _optionBoxes; // one per spec->options
     NSButton *                       _deltaBox;
 }
 
@@ -110,7 +110,7 @@ const int k_max_ticks = 20;
     if ((self = [super initWithNibName:nil bundle:nil])) {
         _spec = spec;
         _callback = callback;
-        _values.assign(spec->count + (spec->optionLabel ? 1 : 0), 0.0);
+        _values.assign(spec->count + spec->optionCount, 0.0);
         _delta = false;
 
         dsp_preset_impl preset;
@@ -161,27 +161,36 @@ const int k_max_ticks = 20;
     }
 
     const NSInteger firstBox = (NSInteger)s.count;
-    if (s.optionLabel) {
-        _optionBox = [NSButton checkboxWithTitle:[NSString stringWithUTF8String:s.optionLabel]
-                                          target:self action:@selector(optionToggled:)];
-        if (s.optionHelp) _optionBox.toolTip = [NSString stringWithUTF8String:s.optionHelp];
-        [cells addObject:@[ [NSGridCell emptyContentView], _optionBox, [NSGridCell emptyContentView] ]];
+    _optionBoxes = [NSMutableArray arrayWithCapacity:s.optionCount];
+    for (size_t k = 0; k < s.optionCount; ++k) {
+        const slider_panel::option & o = s.options[k];
+        NSButton * box = [NSButton checkboxWithTitle:[NSString stringWithUTF8String:o.label]
+                                              target:self action:@selector(optionToggled:)];
+        box.tag = (NSInteger)k;
+        if (o.help) box.toolTip = [NSString stringWithUTF8String:o.help];
+        [_optionBoxes addObject:box];
+        if (!o.besideDelta)
+            [cells addObject:@[ [NSGridCell emptyContentView], box, [NSGridCell emptyContentView] ]];
     }
-    const NSInteger deltaRow = (NSInteger)cells.count;
+    const NSInteger lastBox = (NSInteger)cells.count - 1;
 
     _deltaBox = [NSButton checkboxWithTitle:[NSString stringWithUTF8String:s.deltaLabel]
                                      target:self action:@selector(deltaToggled:)];
     _deltaBox.toolTip = [NSString stringWithUTF8String:s.deltaHelp];
-    // Under the sliders, as on Windows, and across the readout column too: the
-    // label is longer than a slider.
-    [cells addObject:@[ [NSGridCell emptyContentView], _deltaBox, [NSGridCell emptyContentView] ]];
+    // On the Defaults button's row, after it, as on Windows, where they sit
+    // between Defaults and OK. Options marked besideDelta come first.
+    NSMutableArray<NSView *> * buttonRowViews = [NSMutableArray array];
+    for (size_t k = 0; k < s.optionCount; ++k) {
+        if (s.options[k].besideDelta) [buttonRowViews addObject:_optionBoxes[k]];
+    }
+    [buttonRowViews addObject:_deltaBox];
 
     NSGridView * grid = [NSGridView gridViewWithViews:cells];
     grid.rowSpacing = 8.0;
     grid.columnSpacing = 8.0;
     grid.rowAlignment = NSGridRowAlignmentFirstBaseline;
-    [grid rowAtIndex:firstBox].topPadding = 4.0;
-    for (NSInteger k = firstBox; k <= deltaRow; ++k)
+    if (firstBox <= lastBox) [grid rowAtIndex:firstBox].topPadding = 4.0;
+    for (NSInteger k = firstBox; k <= lastBox; ++k)
         [[grid rowAtIndex:k] mergeCellsInRange:NSMakeRange(1, 2)];
     // A slider has no baseline worth aligning to; centre each row on it instead.
     for (size_t i = 0; i < s.count; ++i) {
@@ -189,15 +198,24 @@ const int k_max_ticks = 20;
         [grid rowAtIndex:(NSInteger)i].rowAlignment = NSGridRowAlignmentNone;
     }
 
-    NSTextField * hint = [NSTextField wrappingLabelWithString:[NSString stringWithUTF8String:s.hint]];
-    hint.font = [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
-    hint.textColor = [NSColor secondaryLabelColor];
-    hint.selectable = NO;
+    NSTextField * hint = nil;
+    if (s.hint) {
+        hint = [NSTextField wrappingLabelWithString:[NSString stringWithUTF8String:s.hint]];
+        hint.font = [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
+        hint.textColor = [NSColor secondaryLabelColor];
+        hint.selectable = NO;
+    }
 
     NSButton * defaults = [NSButton buttonWithTitle:@"Defaults"
                                              target:self action:@selector(defaultsPressed:)];
+    [buttonRowViews insertObject:defaults atIndex:0];
+    NSStackView * buttons = [NSStackView stackViewWithViews:buttonRowViews];
+    buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    buttons.alignment = NSLayoutAttributeCenterY;
+    buttons.spacing = 20.0;
 
-    NSStackView * stack = [NSStackView stackViewWithViews:@[ grid, hint, defaults ]];
+    NSStackView * stack = [NSStackView stackViewWithViews:
+        hint ? @[ grid, hint, buttons ] : @[ grid, buttons ]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.alignment = NSLayoutAttributeLeading;
     stack.spacing = 14.0;
@@ -207,9 +225,11 @@ const int k_max_ticks = 20;
     // preferred width asks for its whole text on one line, and wins, pulling
     // the rows out to match. So the rows are measured first and the paragraph
     // told how wide it may be.
-    const CGFloat rowsWidth = grid.fittingSize.width;
-    hint.preferredMaxLayoutWidth = rowsWidth;
-    [hint.widthAnchor constraintEqualToConstant:rowsWidth].active = YES;
+    if (hint) {
+        const CGFloat rowsWidth = grid.fittingSize.width;
+        hint.preferredMaxLayoutWidth = rowsWidth;
+        [hint.widthAnchor constraintEqualToConstant:rowsWidth].active = YES;
+    }
 
     self.view = stack;
     [self loadControls];
@@ -221,8 +241,9 @@ const int k_max_ticks = 20;
         _sliders[i].integerValue = value_to_pos(r, _values[i]);
         _readouts[i].stringValue = readout_text(r, _values[i]);
     }
-    if (_optionBox)
-        _optionBox.state = (_values[_spec->count] != 0.0) ? NSControlStateValueOn : NSControlStateValueOff;
+    for (size_t k = 0; k < _spec->optionCount; ++k)
+        _optionBoxes[k].state = (_values[_spec->count + k] != 0.0) ? NSControlStateValueOn
+                                                                   : NSControlStateValueOff;
     _deltaBox.state = _delta ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
@@ -248,7 +269,9 @@ const int k_max_ticks = 20;
 }
 
 - (void)optionToggled:(NSButton *)sender {
-    _values[_spec->count] = (sender.state == NSControlStateValueOn) ? 1.0 : 0.0;
+    const size_t k = (size_t)sender.tag;
+    if (k >= _spec->optionCount) return;
+    _values[_spec->count + k] = (sender.state == NSControlStateValueOn) ? 1.0 : 0.0;
     [self push];
 }
 

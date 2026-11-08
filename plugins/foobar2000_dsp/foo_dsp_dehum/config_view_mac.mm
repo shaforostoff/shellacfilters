@@ -49,27 +49,27 @@ const slider_panel::row k_rows[] = {
       "High-pass corner for broadband turntable rumble - a separate defect that happens to "
       "share the band with hum. Set it to off to leave the low end alone. Higher removes more "
       "rumble, and more of the bass along with it." },
-
-    { "Dry/Wet",     1000,  0.0,   1.0, 3, "",    NULL,
-      "Blend of the processed signal against the original. 0 passes the input through "
-      "untouched." },
 };
 
 const size_t k_count = sizeof(k_rows) / sizeof(k_rows[0]);
 
-void to_values(const Params & p, double * v, bool & delta) {
+// v[6] is the Bypass checkbox, the panel's one option (k_options below), drawn
+// on the delta checkbox's row, ahead of it.
+void to_values(const Params & p, bool bypass, double * v, bool & delta) {
     v[0] = p.sensitivity;
     v[1] = p.bandwidth;
     v[2] = p.searchTo;
     v[3] = (double)p.harmonics;
     v[4] = p.frequency;
     v[5] = p.rumbleHz;
-    v[6] = p.dryWet;
+    v[6] = bypass ? 1.0 : 0.0;
     delta = p.delta;
 }
 
 void read(const dsp_preset & in, double * v, bool & delta) {
-    to_values(dehum_preset::parse(in), v, delta);
+    bool bypass = false;
+    const Params p = dehum_preset::parse(in, &bypass);
+    to_values(p, bypass, v, delta);
 }
 
 void write(const double * v, bool delta, dsp_preset & out) {
@@ -80,26 +80,31 @@ void write(const double * v, bool delta, dsp_preset & out) {
     p.harmonics   = (int)(v[3] + 0.5);
     p.frequency   = (float)v[4];
     p.rumbleHz    = (float)v[5];
-    p.dryWet      = (float)v[6];
     p.delta       = delta;
-    dehum_preset::make(p, out);
+    dehum_preset::make(p, out, v[6] != 0.0);
 }
 
 void defaults(double * v, bool & delta) {
-    to_values(Params::defaults(), v, delta);
+    to_values(Params::defaults(), false, v, delta);
 }
+
+const slider_panel::option k_options[] = {
+    { "Bypass",
+      "Passes the audio through untouched, for comparing against the cleaned audio. The "
+      "hum it has found is kept, so it is cancelled again as soon as this is unticked. "
+      "Saved with the preset.", true },
+};
 
 const slider_panel::spec k_spec = {
     k_rows, k_count,
-    "Output only what is removed (delta, for testing)",
+    "Delta",
     "Outputs what the notches take out - the input minus the output - instead of the "
     "cleaned audio. For testing: it should be hum and nothing else. Rumble is left out "
     "of it, because what a high-pass removes carries the whole spectrum as phase shift "
     "and sounds like the music. Saved with the preset; untick it when done.",
-    "Finds continuous tones by itself and cancels them; it takes a few seconds of a track to "
-    "decide. Frequency pins it instead, for a hum you already know. Rumble is a separate "
-    "high-pass for broadband low-frequency noise, which is a different defect from hum.",
+    NULL,   // no paragraph: the tooltips say it
     read, write, defaults,
+    k_options, sizeof(k_options) / sizeof(k_options[0]),
 };
 
 } // anonymous namespace

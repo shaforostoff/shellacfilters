@@ -54,13 +54,14 @@ const slider_def k_sliders[] = {
       L"the balance. 256 models the music better and changes clean records least, but misses more "
       L"of the short clicks on heavily crackled transfers. 64 costs about 0.6x the CPU of 128 and "
       L"gives up surprisingly little - the one to pick on a slow machine; 256 costs about 2.4x." },
-
-    { IDC_SLIDER_DRYWET,      IDC_LABEL_DRYWET,      IDC_VALUE_DRYWET,      1000,  0.0,  1.0, 3, L"", NULL,
-      L"Blend of the repaired signal against the original. 0 passes the input through "
-      L"untouched." },
 };
 
 const size_t k_count = sizeof(k_sliders) / sizeof(k_sliders[0]);
+
+const wchar_t * const k_bypass_help =
+    L"Passes the audio through untouched, for comparing against the repair. Whatever is "
+    L"already in the pipeline plays out first, so nothing is skipped or repeated. Saved "
+    L"with the preset.";
 
 const wchar_t * const k_cautious_help =
     L"Repairs only the clicks the detector flags, and turns off every stage that works "
@@ -77,16 +78,14 @@ const wchar_t * const k_delta_help =
 double get_param(const Params & p, size_t i) {
     switch (i) {
     case 0: return p.sensitivity;
-    case 1: return (double)p.order;
-    default: return p.dryWet;
+    default: return (double)p.order;
     }
 }
 
 void set_param(Params & p, size_t i, double v) {
     switch (i) {
     case 0: p.sensitivity = (float)v; break;
-    case 1: p.order = (int)(v + 0.5); break;
-    default: p.dryWet = (float)v; break;
+    default: p.order = (int)(v + 0.5); break;
     }
 }
 
@@ -118,6 +117,7 @@ int value_to_pos(const slider_def & s, double v) {
 struct dialog_state {
     dsp_preset_edit_callback * callback;
     Params                     params;
+    bool                       bypass;
 };
 
 void refresh_label(HWND dlg, const slider_def & s, double v) {
@@ -128,7 +128,7 @@ void refresh_label(HWND dlg, const slider_def & s, double v) {
 
 void push_preset(dialog_state * st) {
     dsp_preset_impl preset;
-    declick_preset::make(st->params, preset);
+    declick_preset::make(st->params, preset, st->bypass);
     st->callback->on_preset_changed(preset);
 }
 
@@ -139,6 +139,7 @@ void load_controls(HWND dlg, dialog_state * st) {
                            (LPARAM)value_to_pos(k_sliders[i], v));
         refresh_label(dlg, k_sliders[i], v);
     }
+    CheckDlgButton(dlg, IDC_BYPASS, st->bypass ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dlg, IDC_CAUTIOUS, st->params.cautious ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dlg, IDC_DELTA, st->params.delta ? BST_CHECKED : BST_UNCHECKED);
 }
@@ -182,6 +183,7 @@ void create_tooltips(HWND dlg) {
                              k_sliders[i].valueId };
         for (int k = 0; k < 3; ++k) add_tooltip(tips, dlg, row[k], k_sliders[i].help);
     }
+    add_tooltip(tips, dlg, IDC_BYPASS, k_bypass_help);
     add_tooltip(tips, dlg, IDC_CAUTIOUS, k_cautious_help);
     add_tooltip(tips, dlg, IDC_DELTA, k_delta_help);
 }
@@ -226,6 +228,13 @@ INT_PTR CALLBACK dialog_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         if (st == NULL) break;
         switch (LOWORD(wp)) {
+        case IDC_BYPASS:
+            if (HIWORD(wp) == BN_CLICKED) {
+                st->bypass = (IsDlgButtonChecked(dlg, IDC_BYPASS) == BST_CHECKED);
+                push_preset(st);
+                return TRUE;
+            }
+            break;
         case IDC_CAUTIOUS:
             if (HIWORD(wp) == BN_CLICKED) {
                 st->params.cautious = (IsDlgButtonChecked(dlg, IDC_CAUTIOUS) == BST_CHECKED);
@@ -243,6 +252,7 @@ INT_PTR CALLBACK dialog_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         case IDC_DEFAULTS:
             if (HIWORD(wp) == BN_CLICKED) {
                 st->params = Params::defaults();
+                st->bypass = false;
                 load_controls(dlg, st);
                 push_preset(st);
                 return TRUE;
@@ -275,7 +285,8 @@ void declick_config_popup(const dsp_preset & data, HWND parent,
 
     dialog_state st;
     st.callback = &callback;
-    st.params = declick_preset::parse(data);
+    st.bypass = false;
+    st.params = declick_preset::parse(data, &st.bypass);
 
     const INT_PTR result = DialogBoxParam(core_api::get_my_instance(),
                                           MAKEINTRESOURCE(IDD_DECLICK),

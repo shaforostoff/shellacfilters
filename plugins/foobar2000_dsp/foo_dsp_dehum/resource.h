@@ -15,7 +15,6 @@
 #define IDC_SLIDER_HARMONICS        3004
 #define IDC_SLIDER_FREQUENCY        3005
 #define IDC_SLIDER_RUMBLE           3006
-#define IDC_SLIDER_DRYWET           3007
 
 #define IDC_VALUE_SENSITIVITY       3011
 #define IDC_VALUE_BANDWIDTH         3012
@@ -23,7 +22,6 @@
 #define IDC_VALUE_HARMONICS         3014
 #define IDC_VALUE_FREQUENCY         3015
 #define IDC_VALUE_RUMBLE            3016
-#define IDC_VALUE_DRYWET            3017
 
 #define IDC_LABEL_SENSITIVITY       3021
 #define IDC_LABEL_BANDWIDTH         3022
@@ -31,10 +29,9 @@
 #define IDC_LABEL_HARMONICS         3024
 #define IDC_LABEL_FREQUENCY         3025
 #define IDC_LABEL_RUMBLE            3026
-#define IDC_LABEL_DRYWET            3027
 
-#define IDC_HINT                    3020
 #define IDC_DEFAULTS                3030
 #define IDC_DELTA                   3040
+#define IDC_BYPASS                  3050
 
 #endif // FOO_DSP_DEHUM_RESOURCE_H

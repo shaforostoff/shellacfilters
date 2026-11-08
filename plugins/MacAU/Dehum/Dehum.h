@@ -79,7 +79,7 @@ static const float kDefaultValue_ParamC = 60.0f / 460.0f; //SrchTo -> 100 Hz
 static const float kDefaultValue_ParamD = 0.0;            //Harmncs -> 1
 static const float kDefaultValue_ParamE = 0.0;            //Freq -> auto
 static const float kDefaultValue_ParamF = 0.02f + (57.0f / 190.0f) * 0.98f;  //Rumble -> 67 Hz
-static const float kDefaultValue_ParamG = 1.0;            //Dry/Wet
+static const float kDefaultValue_ParamG = 1.0;            //Dry/Wet, retired: see the enum
 
 static CFStringRef kParameterAName = CFSTR("Sensitv");
 static CFStringRef kParameterBName = CFSTR("Bandwid");
@@ -87,7 +87,6 @@ static CFStringRef kParameterCName = CFSTR("SrchTo");
 static CFStringRef kParameterDName = CFSTR("Harmncs");
 static CFStringRef kParameterEName = CFSTR("Freq");
 static CFStringRef kParameterFName = CFSTR("Rumble");
-static CFStringRef kParameterGName = CFSTR("Dry/Wet");
 
 enum {
 	kParam_A =0,
@@ -96,9 +95,14 @@ enum {
 	kParam_D =3,
 	kParam_E =4,
 	kParam_F =5,
+	//Dry/Wet, retired: storage only. The notches are always fully applied, and
+	//the host's own bypass is the way to hear the input. The slot is kept, at
+	//1, so a state saved here opens fully wet in an older build and an older
+	//build's state still restores; it is not listed (GetParameterList), has no
+	//info, and nothing reads it.
 	kParam_G =6,
-	//Add your parameters here...
-	kNumberOfParameters=7
+	kParameterSlots=7,
+	kNumberOfParameters=6   //the ones a host sees
 };
 
 #pragma mark ____Dehum
@@ -124,6 +128,11 @@ public:
 	virtual	ComponentResult		GetParameterInfo(AudioUnitScope			inScope,
 												 AudioUnitParameterID	inParameterID,
 												 AudioUnitParameterInfo	&outParameterInfo);
+
+	//the six live IDs out of the seven indexed slots: see the enum above
+	virtual	ComponentResult		GetParameterList(AudioUnitScope			inScope,
+												 AudioUnitParameterID	*outParameterList,
+												 UInt32					&outNumParameters);
     
 	//`bool &` where the other 542 folders here say `Boolean &`. AudioUnitSDK
 	//spells it bool, and that is what scripts/build.sh builds against - so

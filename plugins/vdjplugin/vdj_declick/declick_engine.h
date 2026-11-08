@@ -46,22 +46,22 @@ public:
 
     // -- parameters ----------------------------------------------------------
 
-    // Sensitivity, Model order and Dry/Wet: the controls
+    // Sensitivity, Model order and Extra cautious: the controls
     // Params::restrictToControls() keeps. The ids are the ones they had when
     // there were seven sliders - 2..5 were Extent, Max repair, Depth and
-    // Passes - so positions VirtualDJ saved under them still land here.
+    // Passes, 7 Dry/Wet - so positions VirtualDJ saved under them still land
+    // here. 8 was a Warm start switch: the warm start is always on now. The
+    // retired ids stay unused so that nothing saved under them lands on
+    // another control.
     enum {
-        kSensitivity = 1, kOrder = 6, kDryWet = 7, kWarmStart = 8, kCautious = 9
+        kSensitivity = 1, kOrder = 6, kCautious = 9
     };
 
     void declareParameters(IVdjPlugin8 & host) {
         host.DeclareParameterSlider(&m_a, kSensitivity, "Sensitivity", "Sensitv", kDefA);
         host.DeclareParameterSlider(&m_f, kOrder,       "Model order", "Order",  kDefF);
-        host.DeclareParameterSlider(&m_g, kDryWet,      "Dry/Wet",    "Dry/Wet", kDefG);
         // Last, so the sliders keep the ids their saved positions are filed
-        // under. See declick_vdj_warm.h.
-        host.DeclareParameterSwitch(&m_warmOn, kWarmStart, "Warm start", "Warm", true);
-        // After Warm start for the same reason. See Params::cautious.
+        // under. See Params::cautious.
         host.DeclareParameterSwitch(&m_cautious, kCautious, "Extra cautious", "Cautious", false);
     }
 
@@ -70,8 +70,6 @@ public:
         switch (id) {
             case kSensitivity: snprintf(out, size, "%.0f %%", pinParameter(m_a) * 100.0); return true;
             case kOrder:       snprintf(out, size, "%d", p.order);                        return true;
-            case kDryWet:      snprintf(out, size, "%.0f %%", pinParameter(m_g) * 100.0); return true;
-            case kWarmStart:   snprintf(out, size, "%s", m_warmOn ? "on" : "off");        return true;
             case kCautious:    snprintf(out, size, "%s", m_cautious ? "on" : "off");      return true;
             default: return false;
         }
@@ -80,7 +78,7 @@ public:
     //! Sliders to core units: the core's own mapping, as the VST2 and AU
     //! ports'.
     declick::Params params() const {
-        const float s[declick::Params::kSliderCount] = { m_a, m_f, m_g };
+        const float s[declick::Params::kSliderCount] = { m_a, m_f };
         return declick::Params::fromSliders(s, m_cautious != 0);
     }
 
@@ -100,14 +98,13 @@ public:
 
     //! True if the pipeline was rebuilt, i.e. the audio is discontinuous here.
     bool update(double rate) {
-        m_warm.setEnabled(m_warmOn != 0);
         const declick::Params p = params();
         if (m_configured && rate == m_rate && p == m_active) return false;
 
         declick::Config next;
         next.compute(p, rate);
 
-        // Sensitivity and Dry/Wet need the same buffers, so they go in live and
+        // Sensitivity needs the same buffers, so it goes in live and
         // the audio does not break. Model order resizes the pipeline and
         // cannot.
         if (m_configured && rate == m_rate && next.structurallyEquals(m_cfg)
@@ -213,13 +210,11 @@ private:
     // 16 .. 256 slider's position for 128, which reads as 128 here too.
     static constexpr float kDefA = 0.9f;   // Sensitivity -> trigger at 2.85 sigma
     static constexpr float kDefF = 0.4677f; // Model order -> 128; 64 below, 256 above
-    static constexpr float kDefG = 1.0f;   // Dry/Wet
 
     // VirtualDJ writes straight through the pointers DeclareParameterSlider was
     // given, from whichever thread moved the control, so these are read once at
     // the top of each processing call and not again.
-    float m_a = kDefA, m_f = kDefF, m_g = kDefG;
-    int   m_warmOn = 1;
+    float m_a = kDefA, m_f = kDefF;
     int   m_cautious = 0;
 
     //! Two pairs: the live one, which m_chan points at, and the warm start's.

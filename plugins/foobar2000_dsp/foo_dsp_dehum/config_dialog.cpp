@@ -18,7 +18,7 @@ namespace {
 
 //! Each slider works in integer steps and maps onto its parameter through
 //! `lo + pos * step`. Keeping the mapping in a table lets one handler drive all
-//! seven of them.
+//! six of them.
 //!
 //! Two of the parameters have an off position rather than a range that reaches
 //! zero - Frequency is automatic at 0 and pinned from 10 Hz up, Rumble is off at
@@ -71,13 +71,14 @@ const slider_def k_sliders[] = {
       L"High-pass corner for broadband turntable rumble - a separate defect that happens to "
       L"share the band with hum. Set it to off to leave the low end alone. Higher removes more "
       L"rumble, and more of the bass along with it." },
-
-    { IDC_SLIDER_DRYWET,      IDC_LABEL_DRYWET,      IDC_VALUE_DRYWET,      1000,  0.0,   1.0, 3, L"",    NULL,
-      L"Blend of the processed signal against the original. 0 passes the input through "
-      L"untouched." },
 };
 
 const size_t k_count = sizeof(k_sliders) / sizeof(k_sliders[0]);
+
+const wchar_t * const k_bypass_help =
+    L"Passes the audio through untouched, for comparing against the cleaned audio. The "
+    L"hum it has found is kept, so it is cancelled again as soon as this is unticked. "
+    L"Saved with the preset.";
 
 const wchar_t * const k_delta_help =
     L"Outputs what the notches take out - the input minus the output - instead of the "
@@ -92,8 +93,7 @@ double get_param(const Params & p, size_t i) {
     case 2: return p.searchTo;
     case 3: return (double)p.harmonics;
     case 4: return p.frequency;
-    case 5: return p.rumbleHz;
-    default: return p.dryWet;
+    default: return p.rumbleHz;
     }
 }
 
@@ -104,8 +104,7 @@ void set_param(Params & p, size_t i, double v) {
     case 2: p.searchTo = (float)v; break;
     case 3: p.harmonics = (int)(v + 0.5); break;
     case 4: p.frequency = (float)v; break;
-    case 5: p.rumbleHz = (float)v; break;
-    default: p.dryWet = (float)v; break;
+    default: p.rumbleHz = (float)v; break;
     }
 }
 
@@ -136,6 +135,7 @@ int value_to_pos(const slider_def & s, double v) {
 struct dialog_state {
     dsp_preset_edit_callback * callback;
     Params                     params;
+    bool                       bypass;
 };
 
 void refresh_label(HWND dlg, const slider_def & s, double v) {
@@ -150,7 +150,7 @@ void refresh_label(HWND dlg, const slider_def & s, double v) {
 
 void push_preset(dialog_state * st) {
     dsp_preset_impl preset;
-    dehum_preset::make(st->params, preset);
+    dehum_preset::make(st->params, preset, st->bypass);
     st->callback->on_preset_changed(preset);
 }
 
@@ -161,6 +161,7 @@ void load_controls(HWND dlg, dialog_state * st) {
                            (LPARAM)value_to_pos(k_sliders[i], v));
         refresh_label(dlg, k_sliders[i], v);
     }
+    CheckDlgButton(dlg, IDC_BYPASS, st->bypass ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(dlg, IDC_DELTA, st->params.delta ? BST_CHECKED : BST_UNCHECKED);
 }
 
@@ -203,6 +204,7 @@ void create_tooltips(HWND dlg) {
                              k_sliders[i].valueId };
         for (int k = 0; k < 3; ++k) add_tooltip(tips, dlg, row[k], k_sliders[i].help);
     }
+    add_tooltip(tips, dlg, IDC_BYPASS, k_bypass_help);
     add_tooltip(tips, dlg, IDC_DELTA, k_delta_help);
 }
 
@@ -246,6 +248,13 @@ INT_PTR CALLBACK dialog_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         if (st == NULL) break;
         switch (LOWORD(wp)) {
+        case IDC_BYPASS:
+            if (HIWORD(wp) == BN_CLICKED) {
+                st->bypass = (IsDlgButtonChecked(dlg, IDC_BYPASS) == BST_CHECKED);
+                push_preset(st);
+                return TRUE;
+            }
+            break;
         case IDC_DELTA:
             if (HIWORD(wp) == BN_CLICKED) {
                 st->params.delta = (IsDlgButtonChecked(dlg, IDC_DELTA) == BST_CHECKED);
@@ -256,6 +265,7 @@ INT_PTR CALLBACK dialog_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         case IDC_DEFAULTS:
             if (HIWORD(wp) == BN_CLICKED) {
                 st->params = Params::defaults();
+                st->bypass = false;
                 load_controls(dlg, st);
                 push_preset(st);
                 return TRUE;
@@ -288,7 +298,8 @@ void dehum_config_popup(const dsp_preset & data, HWND parent,
 
     dialog_state st;
     st.callback = &callback;
-    st.params = dehum_preset::parse(data);
+    st.bypass = false;
+    st.params = dehum_preset::parse(data, &st.bypass);
 
     const INT_PTR result = DialogBoxParam(core_api::get_my_instance(),
                                           MAKEINTRESOURCE(IDD_DEHUM),

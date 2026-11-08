@@ -328,14 +328,21 @@ certificate is the only real fix; there is no equivalent of ad-hoc signing here.
 
 ## Controls
 
-Seven sliders each, mapped exactly as in the VST2 ports — a slider position has
+The sliders are mapped exactly as in the VST2 ports — a slider position has
 to mean the same thing in every port or the measurements in the foobar2000
 README stop describing any of them. `declick_vdj_verify` and `dehum_vdj_verify`
-pin the default positions against `Params::defaults()`. Declick has one switch
-besides, **Warm start** (on by default; see [below](#warm-start-declick)),
-declared after the sliders so that their saved positions keep their ids, and
-**Extra cautious** (off by default) after that: the AR repair alone, every
-later stage off. See the foobar2000 README, *Extra cautious*.
+pin the default positions against `Params::defaults()`. Declick now offers
+only **Sensitivity** (id 1) and **Model order** (id 6), the ids they had among
+the seven, and one switch, **Extra cautious** (id 9, off by default): the AR
+repair alone, every later stage off. See the foobar2000 README, *Extra
+cautious*. Dry/Wet (id 7) is gone and the repair is always fully wet;
+VirtualDJ's own effect switch is the bypass. The warm start (see
+[below](#warm-start-declick)) is always on; the switch it had at id 8 is gone.
+Dehum keeps its first six sliders, ids 1–6, and loses Dry/Wet (id 7) the same
+way: the notches are always fully applied. It never had a warm-start switch:
+it reads the opening of the song ahead instead (see below). The retired ids are
+left unused, so nothing saved under them lands on another control. The table
+below still lists the seven Declick sliders as they were when it was measured.
 
 ### Declick
 
@@ -347,7 +354,6 @@ later stage off. See the foobar2000 README, *Extra cautious*.
 | Depth | 0–1 | 1 | 1 replaces damaged samples outright; 0 subtracts the 45 % fraction that adds the least whole-file error, which caps every repair at −5.2 dB |
 | Passes | 1–3 | 2 | A second pass catches clicks the first uncovers; ~60 % more CPU |
 | Model order | 16–256 in eights | 128 | Higher changes clean records least; 64–128 catches more on heavily crackled ones. Settings saved by earlier versions reopen at a different order: the slider used to run 8–64. **Structural** |
-| Dry/Wet | 0–1 | 1 | 0 is a bypass, and an exact one — see *16 bit*, below |
 
 ### Dehum
 
@@ -359,7 +365,6 @@ later stage off. See the foobar2000 README, *Extra cautious*.
 | Harmonics | 1–8 | 1 | Only raise for a genuine mains buzz; on rumbly transfers the harmonics took 84 % of everything removed |
 | Frequency | off, then 10–500 Hz | off (automatic) | Pinning one turns the search off |
 | Rumble | off, then 10–200 Hz | 67 Hz | High-pass corner. Wind back towards 40 where the low end is worth keeping |
-| Dry/Wet | 0–1 | 1 | |
 
 Moving a slider does not break the audio, with two exceptions. Dehum has none at
 all: only the sample rate sizes anything in that core, so every control retunes
@@ -488,8 +493,9 @@ the opening per plug-in: about 7.8 MB at 44.1 kHz, made at the first buffer of
 a new sample rate with the rest of the pipeline. Keeping the pass in a third
 pair instead of a `WarmState` would have been 6 MB more. **Max repair** and
 **Model order** throw the pass away and learn it again, as they rebuild the
-pipeline. Switching **Warm start** off makes every restart cold, reads
-nothing, and stops a catch-up in progress.
+pipeline. There is no switch for it: the first seconds are not traded away.
+(`DeclickWarm::setEnabled(false)`, which the tests use, makes every restart
+cold, reads nothing, and stops a catch-up in progress.)
 
 ---
 
@@ -504,9 +510,9 @@ is the right answer when a wider signal is being narrowed; this is not that. The
 input was already 16 bit, so a sample Declick did not repair divides by 32768 and
 multiplies back exactly, and rounding returns the original `short`. Dithering
 would put half an LSB of noise across all of the audio to smooth the
-quantisation of the fraction of a percent that actually changed. `Dry/Wet` at 0
-is therefore an exactly bit-transparent bypass, which `declick_vdj_verify`
-checks sample for sample.
+quantisation of the fraction of a percent that actually changed. Every sample
+the detector leaves alone therefore comes back bit for bit, which
+`declick_vdj_verify` checks for every 16 bit value.
 
 ---
 
@@ -521,7 +527,7 @@ Three binaries, none of which needs VirtualDJ installed:
 | | |
 | --- | --- |
 | `vdj_host_verify` | The ABI. Loads each finished module the way VirtualDJ does - one `GetProcAddress`, the IID, the vtable - and requires its audio to match the same wrapper linked statically, to the bit. Also that a module declines the interface it does not implement, since VirtualDJ would otherwise call it through the wrong vtable |
-| `declick_vdj_verify` | The readahead claim — pipeline output bit-identical to the core straight through the song, at five block sizes; cache consistency under jumps; restart determinism; exact bypass; the slider mappings; the second-consumer work bound described above; and the warm start — the first play cold up to the swap and the core's warm start run from where it started after it, to the bit, from the top and from a cue 3 s in at another block size; no swap for a first play past the copy, one that would outrun it, or a restart while the worker is parked; a restart at the top the core's warm start to the bit and one at 15 s the core started there warm, a record shorter than the warm length, the switch, a new record mid-pass and a Model order move, none of it allocating on either thread |
+| `declick_vdj_verify` | The readahead claim — pipeline output bit-identical to the core straight through the song, at five block sizes; cache consistency under jumps; restart determinism; an exact 16 bit round trip; the slider mappings; the second-consumer work bound described above; and the warm start — the first play cold up to the swap and the core's warm start run from where it started after it, to the bit, from the top and from a cue 3 s in at another block size; no swap for a first play past the copy, one that would outrun it, or a restart while the worker is parked; a restart at the top the core's warm start to the bit and one at 15 s the core started there warm, a record shorter than the warm length, turning it off, a new record mid-pass and a Model order move, none of it allocating on either thread |
 | `dehum_vdj_verify` | The same pipeline checks for the zero-latency core; the scout finds the line at the right frequency inside its advertised budget; what it finds reaches `adopt()` and gets cancelled; the slider mappings |
 
 Neither re-tests the DSP. `declick_verify`, `dehum_verify` and the rest in

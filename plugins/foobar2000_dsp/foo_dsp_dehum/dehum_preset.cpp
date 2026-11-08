@@ -16,21 +16,23 @@ GUID guid() {
     return g;
 }
 
-void make(const Params & params, dsp_preset & out) {
+void make(const Params & params, dsp_preset & out, bool bypass) {
     Params p = params;
     p.sanitize();
 
     dsp_preset_builder builder;
     builder << (t_uint32)version;
     builder << p.sensitivity << p.bandwidth << p.searchTo << p.frequency
-            << p.rumbleHz << p.dryWet;
+            << p.rumbleHz << 1.0f;   // the retired Dry/Wet: fully wet
     builder << (t_uint32)p.harmonics;
     builder << (t_uint32)(p.delta ? 1 : 0);
+    builder << (t_uint32)(bypass ? 1 : 0);   // appended, no version bump
     builder.finish(guid(), out);
 }
 
-Params parse(const dsp_preset & in) {
+Params parse(const dsp_preset & in, bool * bypass) {
     Params p = Params::defaults();
+    bool bypassed = false;
     if (in.get_owner() == guid()) {
         try {
             dsp_preset_parser parser(in);
@@ -39,19 +41,30 @@ Params parse(const dsp_preset & in) {
             if (ver == 1u || ver == 2u) {
                 Params tmp = Params::defaults();
                 t_uint32 harmonics = 0, delta = 0;
+                float dryWet = 1.0f;   // read past: always fully wet now
                 parser >> tmp.sensitivity >> tmp.bandwidth >> tmp.searchTo
-                       >> tmp.frequency >> tmp.rumbleHz >> tmp.dryWet;
+                       >> tmp.frequency >> tmp.rumbleHz >> dryWet;
                 parser >> harmonics;
                 if (ver >= 2u) parser >> delta;   // absent in version 1
                 tmp.harmonics = (int)harmonics;
                 tmp.delta = (delta != 0);
                 p = tmp;
+                if (ver >= 2u) {
+                    // Absent in a version 2 preset from before Bypass: off.
+                    try {
+                        t_uint32 byp = 0;
+                        parser >> byp;
+                        bypassed = (byp != 0);
+                    } catch (...) {}
+                }
             }
         } catch (...) {
             p = Params::defaults();
+            bypassed = false;
         }
     }
     p.sanitize();
+    if (bypass) *bypass = bypassed;
     return p;
 }
 

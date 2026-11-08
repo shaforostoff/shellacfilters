@@ -342,9 +342,8 @@ void testReset(const std::vector<float> & inL, const std::vector<float> & inR) {
     check(peak < kSilenceFloor, "Reset() starts from silence, not the previous take", d);
 }
 
-//! Sample rate changes, hostile input, and the dry/wet bypass.
-void testRobustness(const std::vector<float> & inL, const std::vector<float> & inR,
-                    const declick::Config & cfg) {
+//! Sample rate changes and hostile input.
+void testRobustness(const std::vector<float> & inL, const std::vector<float> & inR) {
     {
         Declick fx((AudioUnit)0);
         start(fx, 96000.0);
@@ -386,44 +385,28 @@ void testRobustness(const std::vector<float> & inL, const std::vector<float> & i
         for (size_t i = okL.size() / 2; i < okL.size(); ++i) energy += (double)okL[i] * okL[i];
         check(energy > 1.0, "the stream recovers after hostile input");
     }
-    {
-        Declick fx((AudioUnit)0);
-        fx.SetParameter(kParam_G, 0.0f);         // Dry/Wet 0
-        start(fx, (double)kRate);
-        std::vector<float> aL, aR;
-        runBlocks(fx, inL, inR, aL, aR, oneBlockSize(512));
-        double w = 0.0, peak = 0.0;
-        for (int i = cfg.latency; i < kFrames; ++i) {
-            const double want = inL[(size_t)(i - cfg.latency)];
-            w = fmax(w, fabs((double)aL[(size_t)i] - want));
-            peak = fmax(peak, fabs(want));
-        }
-        const double ulp = ldexp(1.0, ilogb(peak) - 23);
-        char d[80]; snprintf(d, sizeof d, "worst %.3e = %.2f ULP", w, w / ulp);
-        check(w <= 2.0 * ulp, "Dry/Wet 0 is a bypass at the declared delay, to the dither", d);
-    }
 }
 
 //! What the plug-in tells the host about its own controls.
 void testParameterInfo() {
     Declick fx((AudioUnit)0);
 
-    // What a host enumerates: the three sliders, by the IDs they had when
-    // there were seven, and Extra cautious after them.
+    // What a host enumerates: the two sliders, by the IDs they had when
+    // there were seven, and Extra cautious at 7.
     UInt32 count = 99;
-    check(fx.GetParameterList(kAudioUnitScope_Global, NULL, count) == noErr && count == 4,
-          "the parameter list counts four");
+    check(fx.GetParameterList(kAudioUnitScope_Global, NULL, count) == noErr && count == 3,
+          "the parameter list counts three");
     AudioUnitParameterID ids[8] = { 99, 99, 99, 99, 99, 99, 99, 99 };
     fx.GetParameterList(kAudioUnitScope_Global, ids, count);
-    check(count == 4 && ids[0] == 0 && ids[1] == 5 && ids[2] == 6 && ids[3] == 7 && ids[4] == 99,
-          "and lists IDs 0, 5, 6 and 7");
+    check(count == 3 && ids[0] == 0 && ids[1] == 5 && ids[2] == 7 && ids[3] == 99,
+          "and lists IDs 0, 5 and 7");
     check(fx.Globals()->GetIndexedParameterCount() == 8,
           "eight indexed slots, so older saved states restore");
 
-    static const AudioUnitParameterID live[4] = { kParam_A, kParam_F, kParam_G, kParam_H };
-    static const char * names[4] = { "Sensitv", "Order", "Dry/Wet", "Extra cautious" };
+    static const AudioUnitParameterID live[3] = { kParam_A, kParam_F, kParam_H };
+    static const char * names[3] = { "Sensitv", "Order", "Extra cautious" };
     bool named = true, ranged = true, flagged = true, defaulted = true;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 3; ++i) {
         AudioUnitParameterInfo info;
         memset(&info, 0, sizeof info);
         if (fx.GetParameterInfo(kAudioUnitScope_Global, live[i], info) != noErr) {
@@ -438,7 +421,7 @@ void testParameterInfo() {
         // the constructor actually set
         if (info.defaultValue != fx.GetParameter(live[i])) defaulted = false;
     }
-    check(named, "the four parameters are named, in the VST's order");
+    check(named, "the three parameters are named, in the VST's order");
     check(ranged, "every parameter is 0..1");
     check(flagged, "every parameter is readable and writable");
     check(defaulted, "the advertised default is the one the constructor set");
@@ -446,23 +429,25 @@ void testParameterInfo() {
     AudioUnitParameterInfo info;
     memset(&info, 0, sizeof info);
     bool hidden = true;
-    for (AudioUnitParameterID id = 1; id <= 4; ++id) {
+    for (AudioUnitParameterID id = 1; id <= 6; ++id) {
+        if (id == 5) continue;
         if (fx.GetParameterInfo(kAudioUnitScope_Global, id, info) != kAudioUnitErr_InvalidParameter)
             hidden = false;
     }
-    check(hidden, "the storage-only slots 1..4 have no info");
+    check(hidden, "the storage-only slots 1..4 and 6 (Dry/Wet) have no info");
     check(fx.GetParameterInfo(kAudioUnitScope_Global, (AudioUnitParameterID)8, info)
           == kAudioUnitErr_InvalidParameter, "an out-of-range parameter is refused");
     check(fx.GetParameter(kParam_H) == 0.0f, "Extra cautious opens off");
 
-    // What a restored older state does: its Extent, MaxLen, Depth and Passes
-    // land in the slots and change nothing.
+    // What a restored older state does: its Extent, MaxLen, Depth, Passes and
+    // Dry/Wet land in the slots and change nothing.
     {
         Declick old((AudioUnit)0), ref((AudioUnit)0);
         old.SetParameter(1, 0.1f);
         old.SetParameter(2, 0.9f);
         old.SetParameter(3, 0.0f);
         old.SetParameter(4, 1.0f);
+        old.SetParameter(kParam_G, 0.0f);   // Dry/Wet 0, once a bypass
         start(old, (double)kRate);
         start(ref, (double)kRate);
         std::vector<float> inL, inR, aL, aR, rL, rR;
@@ -477,7 +462,7 @@ void testParameterInfo() {
         const double ulp = worstUlp(aL, want, &w);
         char d[80]; snprintf(d, sizeof d, "worst %.3e = %.2f ULP", w, ulp);
         check(aL.size() == rL.size() && ulp <= 4.0,
-              "an older state's Extent, MaxLen, Depth and Passes are ignored", d);
+              "an older state's Extent, MaxLen, Depth, Passes and Dry/Wet are ignored", d);
     }
     check(fx.GetParameterInfo(1 /* input scope */, 0, info)
           == kAudioUnitErr_InvalidParameter, "a non-global scope is refused");
@@ -509,7 +494,7 @@ int main() {
     testRepair(inL, inR, clickAt, cfg);
     testParameterMoves(inL, inR);
     testReset(inL, inR);
-    testRobustness(inL, inR, cfg);
+    testRobustness(inL, inR);
     testParameterInfo();
 
     if (g_failures == 0) { printf("\nOK\n"); return 0; }

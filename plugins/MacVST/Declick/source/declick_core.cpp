@@ -1853,6 +1853,7 @@ void Params::restrictToControls() {
     maxLengthMs = d.maxLengthMs;
     depth       = d.depth;
     passes      = d.passes;
+    dryWet      = d.dryWet;
     order       = snapOrder(order);
     sanitize();
 }
@@ -1863,7 +1864,6 @@ Params Params::fromSliders(const float s[kSliderCount], bool cautious) {
     Params p = defaults();
     p.sensitivity = v[0];
     p.order       = snapOrder(16 + 8 * (int)(v[1] * 30.999f));
-    p.dryWet      = v[2];
     p.cautious    = cautious;
     p.sanitize();
     return p;

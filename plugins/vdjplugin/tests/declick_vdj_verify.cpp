@@ -180,23 +180,21 @@ void testSliders() {
     StubHost host(cb);
     engine.declareParameters(host);
 
-    // Sensitivity, Model order and Dry/Wet keep the ids they had among seven
-    // sliders, so the positions VirtualDJ saved under them still land.
-    static const int ids[5] = { 1, 6, 7, 8, 9 };
-    check(cb.declared.size() == 5, "three sliders and two switches declared");
-    bool allSliders = cb.declared.size() == 5;
+    // Sensitivity and Model order keep the ids they had among seven sliders,
+    // so the positions VirtualDJ saved under them still land.
+    static const int ids[3] = { 1, 6, 9 };
+    check(cb.declared.size() == 3, "two sliders and a switch declared");
+    bool allSliders = cb.declared.size() == 3;
     for (size_t i = 0; allSliders && i < cb.declared.size(); ++i) {
-        const int type = (i < 3) ? VDJPARAM_SLIDER : VDJPARAM_SWITCH;
+        const int type = (i < 2) ? VDJPARAM_SLIDER : VDJPARAM_SWITCH;
         if (cb.declared[i].type != type) allSliders = false;
         if (cb.declared[i].id != ids[i]) allSliders = false;
     }
-    check(allSliders, "sliders with ids 1, 6, 7, then the Warm start switch at 8 and Extra cautious at 9");
-    check(cb.declared.size() == 5 && cb.declared[3].def == 1.0f
-          && cb.declared[3].id == vdj::DeclickEngine::kWarmStart,
-          "the warm start opens switched on");
-    check(cb.declared.size() == 5 && cb.declared[4].def == 0.0f
-          && cb.declared[4].id == vdj::DeclickEngine::kCautious,
+    check(allSliders, "sliders with ids 1 and 6, then Extra cautious at 9");
+    check(cb.declared.size() == 3 && cb.declared[2].def == 0.0f
+          && cb.declared[2].id == vdj::DeclickEngine::kCautious,
           "Extra cautious opens switched off");
+    check(engine.warmStart().enabled(), "the warm start is on, with no switch to turn it off");
 
     // The declared defaults are what VirtualDJ opens a fresh effect on, so they
     // have to be the same positions the members start at - and those have to
@@ -212,7 +210,7 @@ void testSliders() {
            (double)got.maxLengthMs, (double)want.maxLengthMs);
 
     bool strings = true;
-    for (int k = 0; k < 5; ++k) {
+    for (int k = 0; k < 3; ++k) {
         char text[64] = { 0 };
         if (!engine.parameterString(ids[k], text, (int)sizeof(text))) strings = false;
         if (text[0] == 0) strings = false;
@@ -221,6 +219,11 @@ void testSliders() {
     char retired[16];
     check(!engine.parameterString(2, retired, (int)sizeof(retired)),
           "the retired ids 2..5 are declined");
+    check(!engine.parameterString(7, retired, (int)sizeof(retired)),
+          "and so is 7, the retired Dry/Wet");
+    check(engine.params().dryWet == 1.0f, "which leaves the repair fully wet");
+    check(!engine.parameterString(8, retired, (int)sizeof(retired)),
+          "and so is 8, the retired Warm start");
     char scratch[16];
     check(!engine.parameterString(99, scratch, (int)sizeof(scratch)),
           "an unknown parameter id is declined");
@@ -314,48 +317,23 @@ void testJumps() {
           "a restart at the same position is reproducible");
 }
 
-//! Dry/Wet at the bottom is a bypass, and the 16 bit round trip has to be exact
-//! there: fromShorts divides by 32768, toShorts multiplies back and rounds, and
-//! anything but the original sample would mean the plug-in damages audio it is
-//! not even processing. Written through the pointer VirtualDJ was handed, which
-//! is also how VirtualDJ would do it.
-void testBypassIsExact() {
-    const size_t frames = (size_t)(3.0 * kRate);
-    std::vector<short> song = music(frames, kRate, 4242);
-    injectClicks(song, kRate, 40.0);
-    MemorySong src(song);
-
-    vdj::DeclickEngine engine;
-    StubCallbacks cb;
-    StubHost host(cb);
-    engine.declareParameters(host);
-
-    float * dryWet = NULL;
-    for (size_t i = 0; i < cb.declared.size(); ++i) {
-        if (cb.declared[i].id == vdj::DeclickEngine::kDryWet) {
-            dryWet = (float *)cb.declared[i].ptr;
-        }
+//! The 16 bit round trip has to be exact: fromShorts divides by 32768,
+//! toShorts multiplies back and rounds, and every sample the detector leaves
+//! alone has to come back as the short it was. Anything else would mean the
+//! plug-in damages audio it is not even processing. Every value, both channels.
+void testRoundTripIsExact() {
+    const size_t frames = 65536;
+    std::vector<short> in(frames * vdj::kChannels), out(frames * vdj::kChannels);
+    for (size_t i = 0; i < frames; ++i) {
+        in[i * vdj::kChannels + 0] = (short)(int)(i - 32768);
+        in[i * vdj::kChannels + 1] = (short)(int)(32767 - (int)i);
     }
-    check(dryWet != NULL, "Dry/Wet is reachable through its declared pointer");
-    if (dryWet == NULL) return;
-    *dryWet = 0.0f;
-
-    engine.setRate(kRate);
-    engine.update(kRate);
-    check(engine.params().dryWet == 0.0f, "the slider move was picked up");
-
-    vdj::BufferPipeline<vdj::DeclickEngine> pipe;
-    pipe.configure(engine, kRate);
-
+    std::vector<double> mid(frames * vdj::kChannels);
+    vdj::fromShorts(in.data(), mid.data(), frames);
+    vdj::toShorts(mid.data(), out.data(), frames);
     size_t bad = 0;
-    const int nb = 777;
-    for (size_t pos = 0; pos + nb <= frames; pos += nb) {
-        const short * p = pipe.serve(engine, src, (int)pos, nb);
-        for (size_t i = 0; i < (size_t)nb * vdj::kChannels; ++i) {
-            if (p[i] != song[pos * vdj::kChannels + i]) ++bad;
-        }
-    }
-    checkf(bad == 0, "bypass altered %.0f sample(s), expected %.0f",
+    for (size_t i = 0; i < in.size(); ++i) if (in[i] != out[i]) ++bad;
+    checkf(bad == 0, "the 16 bit round trip altered %.0f sample(s), expected %.0f",
            (double)bad, 0.0);
 }
 
@@ -681,19 +659,11 @@ void testWarmStart() {
                     rig.first(S), reference(shortSong, S, p, S, 0));
     }
 
-    // Off, through the switch the way VirtualDJ moves it: nothing is read, no
-    // pass runs, and a restart at the top is the cold stream.
+    // Off (the tests' own route; VirtualDJ has no switch for it): nothing is
+    // read, no pass runs, and a restart at the top is the cold stream.
     {
         WarmRig rig(T);
-        StubCallbacks cb;
-        StubHost host(cb);
-        rig.engine.declareParameters(host);
-        int * on = NULL;
-        for (size_t i = 0; i < cb.declared.size(); ++i) {
-            if (cb.declared[i].id == vdj::DeclickEngine::kWarmStart) on = (int *)cb.declared[i].ptr;
-        }
-        check(on != NULL && *on == 1, "the switch is reachable through its pointer, and on");
-        if (on != NULL) *on = 0;
+        rig.warm().setEnabled(false);
         rig.engine.update(kRate);
         rig.play(src, 0, L, nb);
         rig.play(src, 0, T, nb);
@@ -752,7 +722,7 @@ int main() {
     testSliders();
     testReadahead();
     testJumps();
-    testBypassIsExact();
+    testRoundTripIsExact();
     testSecondConsumer();
     testWarmStart();
     return finish("declick_vdj_verify");

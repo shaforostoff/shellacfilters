@@ -51,9 +51,12 @@ public:
 
     // -- parameters ----------------------------------------------------------
 
+    // Id 7 was Dry/Wet. It is gone - the notches are always fully applied,
+    // and VirtualDJ's own effect switch is the bypass - and the id is left
+    // unused, so nothing saved under it lands on another control.
     enum {
         kSensitivity = 1, kBandwidth, kSearchTo, kHarmonics, kFrequency,
-        kRumble, kDryWet
+        kRumble
     };
 
     void declareParameters(IVdjPlugin8 & host) {
@@ -63,7 +66,6 @@ public:
         host.DeclareParameterSlider(&m_d, kHarmonics,   "Harmonics",   "Harmncs", kDefD);
         host.DeclareParameterSlider(&m_e, kFrequency,   "Frequency",   "Freq",    kDefE);
         host.DeclareParameterSlider(&m_f, kRumble,      "Rumble",      "Rumble",  kDefF);
-        host.DeclareParameterSlider(&m_g, kDryWet,      "Dry/Wet",     "Dry/Wet", kDefG);
     }
 
     bool parameterString(int id, char * out, int size) const {
@@ -81,7 +83,6 @@ public:
                 if (p.rumbleHz > 0.0f) snprintf(out, size, "%.0f Hz", (double)p.rumbleHz);
                 else                   snprintf(out, size, "off");
                 return true;
-            case kDryWet:      snprintf(out, size, "%.0f %%", pinParameter(m_g) * 100.0); return true;
             default: return false;
         }
     }
@@ -97,7 +98,6 @@ public:
         p.harmonics   = 1 + (int)(pinParameter(m_d) * 7.999f);       // 1 .. 8
         p.frequency   = withOffPosition(pinParameter(m_e), 10.0f, 500.0f);  // 0 = auto
         p.rumbleHz    = withOffPosition(pinParameter(m_f), 10.0f, 200.0f);  // 0 = off
-        p.dryWet      = pinParameter(m_g);
         p.sanitize();
         return p;
     }
@@ -252,10 +252,9 @@ private:
     static constexpr float kDefD = 0.0f;                   // Harmonics -> 1
     static constexpr float kDefE = 0.0f;                   // Frequency -> auto
     static constexpr float kDefF = 0.02f + (57.0f / 190.0f) * 0.98f;  // Rumble -> 67 Hz
-    static constexpr float kDefG = 1.0f;                   // Dry/Wet
 
     float m_a = kDefA, m_b = kDefB, m_c = kDefC, m_d = kDefD;
-    float m_e = kDefE, m_f = kDefF, m_g = kDefG;
+    float m_e = kDefE, m_f = kDefF;
 
     dehum::Channel m_chan[kChannels];
     dehum::Config  m_cfg;
