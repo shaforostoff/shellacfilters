@@ -219,7 +219,7 @@ const int k_max_ticks = 20;
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.alignment = NSLayoutAttributeLeading;
     stack.spacing = 14.0;
-    stack.edgeInsets = NSEdgeInsetsMake(k_margin, k_margin, k_margin, k_margin);
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
     // The paragraph wraps to the width of the rows above it. Tying the two
     // widths together with a constraint is not enough: a wrapping label with no
     // preferred width asks for its whole text on one line, and wins, pulling
@@ -231,7 +231,20 @@ const int k_max_ticks = 20;
         [hint.widthAnchor constraintEqualToConstant:rowsWidth].active = YES;
     }
 
-    self.view = stack;
+    // The margin comes from a plain container, not the stack's edgeInsets: in
+    // foobar2000's window those were lost and the controls sat flush with
+    // its edges.
+    NSView * root = [[NSView alloc] initWithFrame:NSZeroRect];
+    [root addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor  constraintEqualToAnchor:root.leadingAnchor  constant:k_margin],
+        [stack.topAnchor      constraintEqualToAnchor:root.topAnchor      constant:k_margin],
+        [root.trailingAnchor  constraintEqualToAnchor:stack.trailingAnchor constant:k_margin],
+        [root.bottomAnchor    constraintEqualToAnchor:stack.bottomAnchor   constant:k_margin],
+    ]];
+    root.frame = NSMakeRect(0, 0, root.fittingSize.width, root.fittingSize.height);
+
+    self.view = root;
     [self loadControls];
 }
 
