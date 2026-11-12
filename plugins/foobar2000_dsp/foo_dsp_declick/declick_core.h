@@ -43,7 +43,10 @@ enum {
     kMaxOrder = 256,
     kBlock    = 512,     //!< analysis hop; also sets most of the latency
     kCarpetMax = 64,     //!< seconds the carpet key can look back; see Config::carpet
-    kShapeMax = 128      //!< the shape fit's longest half length; see Config::shape
+    kShapeMax = 128,     //!< the shape fit's longest half length; see Config::shape
+    //! The low pop stage, in low-rate samples: model order, frame, hop, the
+    //! longest gap, and candidates kept per frame. See Config::pop.
+    kPopP = 64, kPopN = 512, kPopH = 128, kPopLmax = 24, kPopCand = 128
 };
 
 //! User-facing controls, all normalised 0..1 except where noted.
@@ -519,6 +522,46 @@ struct Config {
     int    crackleFloorHist    = 259;     //!< floor values over crackleFloorWin
     int    crackleFloorLatency = 0;       //!< bodyDelay(crackleFloorN), if on
 
+    //! The low pop stage: isolated pops below ~1.2 kHz, smooth pulses of 1-6 ms
+    //! at the music's own level, which the repair cannot see (its model spans
+    //! 3 ms and whitens them away) and no per-bin cut can take (they are
+    //! shorter than a frame). It runs last, on the finished output, decimated
+    //! by popD to ~2.76 kHz, where such a pulse is a click again.
+    //! Every kPopH low-rate samples (~46 ms) a model of order kPopP is fitted to
+    //! the last kPopN (~186 ms): forward and backward covariance method,
+    //! refitted once without the rows whose residual stands out, since 23 ms of
+    //! bandoneon or piano below 1.2 kHz is a dozen partials that the
+    //! autocorrelation method on a window blurs (5-13 dB of prediction gain
+    //! against 6-17). For gaps of 4, 6, 10 and 16 low-rate samples at each
+    //! position (and 24 with popLong), the least-squares interpolation from
+    //! both sides gives the pulse that would have to be taken out, how much of
+    //! the residual's energy that explains (T, in sigmas of its chance value)
+    //! and what is left over the gap and the kPopP samples after it (Q, 1 when
+    //! all of it is explained). A pop is a pulse that explains everything: T
+    //! >= popT, Q <= popQ (or, from popBigT, a remainder under popKappa of
+    //! what is explained), as loud as the music around it (its RMS >= popAmp x
+    //! the frame's), and of one or two lobes (fewer than popLobes sign
+    //! changes). A note's attack fails on Q: what follows it is new, and no
+    //! short pulse taken out makes the model fit again. A gap of 24 fails on
+    //! loud music: the interpolation misses it, and the "pulse" is 10-20 ms of
+    //! the music itself; hence popLong off and the lobes. The pulse is then
+    //! subtracted, interpolated back up to the full rate; nothing above
+    //! ~1.2 kHz and nothing outside it changes.
+    //! Only under an open body or carpet key (popKey): a clean record is left
+    //! alone. It adds popLatency, ~93 ms at 44.1 and 48 kHz, and a sixth to
+    //! the core's time. For the measurements see docs/low-pops.md.
+    int    pop          = 1;
+    double popT         = 10.0;
+    double popQ         = 2.0;
+    double popAmp       = 0.8;
+    double popBigT      = 40.0;
+    double popKappa     = 0.6;
+    int    popKey       = 1;
+    int    popLobes     = 3;         //!< lobes a pulse may not reach; 0: any
+    int    popLong      = 0;         //!< 1: also gaps of 24 low-rate samples
+    int    popD         = 16;        //!< from the sample rate alone
+    int    popLatency   = 0;         //!< whole blocks, if on
+
     double rate         = 44100.0;   //!< the sample rate compute() was given
 
     int    pad          = 272;   //!< context needed either side of a block
@@ -553,6 +596,10 @@ struct Config {
     //! The body stage's delay for transform length n: 1.5 n - 1, in whole
     //! blocks. See compute().
     static int bodyDelay(int n);
+
+    //! The low pop stage's delay at decimation d, in whole blocks: from the
+    //! first sample a frame may change to the last one it reads. See compute().
+    static int popDelay(int d);
 
     //! The fine stage at transform length n, hop n/4, at `rate`: the voice
     //! guard's half window, 24 ms in frames; and how many frames the cut one
@@ -592,7 +639,8 @@ struct Config {
             && crackleFloor == o.crackleFloor && crackleFloorN == o.crackleFloorN
             && crackleFloorLo == o.crackleFloorLo && crackleFloorHi == o.crackleFloorHi
             && crackleFloorHist == o.crackleFloorHist && rate == o.rate
-            && shape == o.shape && shapeK == o.shapeK;
+            && shape == o.shape && shapeK == o.shapeK
+            && pop == o.pop && popD == o.popD;
     }
 };
 
@@ -898,6 +946,9 @@ public:
     //! See Config::crackleFloor.
     uint64_t crackleFloorFrames() const { return m_nCuts; }
 
+    //! Diagnostics for the low pop stage: pulses it took. See Config::pop.
+    uint64_t popFires() const { return m_pFires; }
+
     //! Diagnostics: total bytes this channel is holding. Nothing in the
     //! processing path adds to this - see the buffer envelope in Config.
     size_t heapBytes() const;
@@ -938,6 +989,12 @@ private:
     static double fanoOf(double s1, double s2, double n);
     //! A finished sample: into the crackle floor stage if it is on, else out.
     void finishSample(double y, double d);
+    //! A sample past the crackle floor stage: into the low pop stage if it is
+    //! on, else out. Out popLatency samples later. See Config::pop.
+    void popPush(double y, double d);
+    //! The low pop stage's frame is complete; its first sample is low-rate
+    //! sample j0 of the stream (negative while the lead-in zeros last).
+    void popFrame(int64_t j0);
     //! One finished sample and its dry counterpart, into the crackle floor
     //! stage; out crackleFloorLatency samples later. See Config::crackleFloor.
     void crackleFloorPush(double y, double d);
@@ -1284,6 +1341,26 @@ private:
     std::vector<double> m_nWarm;     //!< m_nTop: the floor a warm pass ended with
     std::vector<uint64_t> m_nAt;     //!< crackleFloorHist
     std::vector<double> m_nWf;     //!< m_nNb
+
+    //! The low pop stage; see Config::pop. Rings of the finished audio (m_pY),
+    //! its dry counterpart (m_pDry) and what the stage removes (m_pR), indexed
+    //! by its sample count m_pT. m_pFir: the decimating low-pass, 2 m_pHalf + 1
+    //! taps, also the interpolator. m_pLow: the last kPopN low-rate samples,
+    //! the first m_pFill of them in; m_pJ0: the stream's low-rate index of
+    //! m_pLow[0]. The rest is per-frame scratch, sized once. Held only while
+    //! the stage is on.
+    struct PopCand { int s, L; double T; double v[kPopLmax]; };
+    int    m_pD = 0, m_pHalf = 0;
+    size_t m_pMask = 0;
+    uint64_t m_pT = 0;
+    int    m_pFill = 0;
+    int64_t m_pJ0 = 0;
+    uint64_t m_pFires = 0;
+    std::vector<double> m_pY, m_pDry, m_pR, m_pFir, m_pLow;
+    std::vector<double> m_pF, m_pA, m_pB, m_pC, m_pE, m_pEb, m_pW, m_pRc, m_pG, m_pCh, m_pTmp;
+    std::vector<uint8_t> m_pBad;
+    std::vector<PopCand> m_pCand;
+    std::vector<int> m_pOrd;
 
     std::vector<double> m_madRing; //!< |forward residual| history
     int    m_madPos = 0;

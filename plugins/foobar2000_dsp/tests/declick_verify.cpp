@@ -740,7 +740,7 @@ void testRetune() {
 //! live, because it changes the latency.
 void allStagesOff(Config & c) {
     c.shape = 0; c.body = 0; c.fine = 0; c.micro = 0; c.mid = 0;
-    c.flank = 0; c.crackleFloor = 0; c.carpet = 0; c.carpetFano = 0;
+    c.flank = 0; c.crackleFloor = 0; c.carpet = 0; c.carpetFano = 0; c.pop = 0;
 }
 
 void testCautious() {

@@ -113,6 +113,16 @@ void usage() {
         "  --fano1 <x>        ... and where it is fully open (default 1.2)\n"
         "  --fano-first <s>   Before carpet-min, from this many seconds on, by the runs\n"
         "                     so far (default 0.5)\n"
+        "  --pop <0|1>        The low pop stage: isolated pulses below ~1.2 kHz,\n"
+        "                     taken out by interpolation at ~2.76 kHz (default 1)\n"
+        "  --pop-t <x>        Sigma the pulse must explain (default 10)\n"
+        "  --pop-q <x>        Residual left after it, 1 = all explained (default 2)\n"
+        "  --pop-amp <x>      Its RMS against the low band's around it (default 0.8)\n"
+        "  --pop-big-t <x>    From this many sigma, pop-kappa instead of pop-q (default 40)\n"
+        "  --pop-kappa <x>    ... the remainder as a share of what is explained (default 0.6)\n"
+        "  --pop-key <0|1>    Only under an open body or carpet key (default 1)\n"
+        "  --pop-lobes <n>    Sign changes a pulse may not reach (default 3, 0 any)\n"
+        "  --pop-long <0|1>   Also gaps of 24 low-rate samples, ~9 ms (default 0)\n"
         "  --crackle-floor <0|1>\n"
         "                     Lowers the floor dense crackle forms, a spectral denoiser\n"
         "                     on the output under the fine stage's key (default 1)\n"
@@ -208,6 +218,15 @@ const ConfigFlag kConfigFlags[] = {
     DBL("--crackle-floor-win",     crackleFloorWin),
     DBL("--crackle-floor-release", crackleFloorRelease),
     DBL("--crackle-floor-hi",      crackleFloorHi),
+    INT("--pop",                   pop),
+    DBL("--pop-t",                 popT),
+    DBL("--pop-q",                 popQ),
+    DBL("--pop-amp",               popAmp),
+    DBL("--pop-big-t",             popBigT),
+    DBL("--pop-kappa",             popKappa),
+    INT("--pop-key",               popKey),
+    INT("--pop-lobes",             popLobes),
+    INT("--pop-long",              popLong),
     INT("--flank",                 flank),
     DBL("--flank-pad-ms",          flankPadMs),
     DBL("--flank-hz",              flankHz),
@@ -373,7 +392,7 @@ int main(int argc, char ** argv) {
     }
 
     uint64_t repaired = 0, seen = 0, clamped = 0, reclamped = 0, flSpans = 0, flSkipped = 0;
-    uint64_t carpetOpen = 0, midCuts = 0, crackleFloorCuts = 0, shapeFits = 0;
+    uint64_t carpetOpen = 0, midCuts = 0, crackleFloorCuts = 0, shapeFits = 0, popFires = 0;
     for (unsigned c = 0; c < channels; ++c) {
         repaired += chans[c]->repairedSamples();
         seen += chans[c]->seenSamples();
@@ -385,6 +404,7 @@ int main(int argc, char ** argv) {
         midCuts += chans[c]->midFrames();
         crackleFloorCuts += chans[c]->crackleFloorFrames();
         shapeFits += chans[c]->shapeFits();
+        popFires += chans[c]->popFires();
     }
 
     if (delta) {
@@ -445,6 +465,10 @@ int main(int argc, char ** argv) {
         // The crackle floor stage: frames it cut something from.
         if (cfg.crackleFloor) {
             printf("  crackle floor: %llu frames cut\n", (unsigned long long)crackleFloorCuts);
+        }
+        // The low pop stage: pulses it took.
+        if (cfg.pop) {
+            printf("  low pops: %llu taken\n", (unsigned long long)popFires);
         }
     }
     return 0;

@@ -1908,6 +1908,16 @@ int Config::bodyDelay(int n) {
 
 // Frames per second at hop n/4, and from it the window as the prototype
 // computes it, operation for operation, so the two agree on its length.
+int Config::popDelay(int d) {
+    const int b = (int)kBlock;
+    // A frame is complete when its last low-rate sample is, half a filter after
+    // that sample's centre; the first sample it may change is half a filter
+    // before the first gap it decides, kPopN - kPopLmax - kPopP - kPopH in.
+    const int lo = (int)kPopN - (int)kPopLmax - (int)kPopP - (int)kPopH;
+    const int need = ((int)kPopN - 1 - lo) * d + 2 * (6 * d);
+    return b * ((need + b - 1) / b);
+}
+
 int Config::fineWindow(int n) const {
     const double fs = rate / (double)(n / 4);
     return (int)(24.0 * 1e-3 * fs);
@@ -1946,6 +1956,7 @@ void Config::compute(const Params & pIn, double sampleRate) {
         mid          = 0;
         flank        = 0;
         crackleFloor = 0;
+        pop          = 0;
         carpet       = 0;
         carpetFano   = 0;
     }
@@ -2021,7 +2032,14 @@ void Config::compute(const Params & pIn, double sampleRate) {
         crackleFloorQ = dmin(dmax(crackleFloorQ, 0.0), 1.0);
     }
     crackleFloorLatency = crackleFloor ? bodyDelay(crackleFloorN) : 0;
-    latency = pad + (int)kBlock + bodyLatency + flankStage + crackleFloorLatency;
+
+    // The low pop stage works at ~2.76 kHz at any rate: the whole decimation
+    // nearest it. Its filter is 12 popD + 1 taps, and it delays the finished
+    // output by whole blocks, as the stages before it do.
+    popD = (int)floor(sampleRate / 2756.25 + 0.5);
+    if (popD < 4 || popD > 512) pop = 0;
+    popLatency = pop ? popDelay(popD) : 0;
+    latency = pad + (int)kBlock + bodyLatency + flankStage + crackleFloorLatency + popLatency;
 
     // The carpet key's ring is a fixed array of kCarpetMax seconds.
     if (carpetWin < 1) carpetWin = 1;
@@ -2680,6 +2698,59 @@ void Channel::configure(const Config & cfg) {
         m_nWf.clear();
     }
 
+    // The low pop stage, sized from popD alone and held only while it is on.
+    if (cfg.pop) {
+        const int D = cfg.popD, half = 6 * D, taps = 2 * half + 1;
+        m_pD = D;
+        m_pHalf = half;
+        size_t ring = 1;
+        while (ring < (size_t)cfg.popLatency + (size_t)taps + (size_t)D + 1) ring <<= 1;
+        m_pMask = ring - 1;
+        m_pY.assign(ring, 0.0);
+        m_pDry.assign(ring, 0.0);
+        m_pR.assign(ring, 0.0);
+        m_pFir.assign((size_t)taps, 0.0);
+        {   // Kaiser-windowed sinc, beta 8, cut at 0.45 of the low rate
+            const double fc = 0.45 / (double)D, beta = 8.0, pi = 3.14159265358979323846;
+            double i0b = 1.0, sum = 0.0;
+            { double t = 1.0; for (int k = 1; k < 40; ++k) { t *= (beta / (2.0 * k)) * (beta / (2.0 * k)); i0b += t; } }
+            for (int k = 0; k < taps; ++k) {
+                const double m = (double)(k - half);
+                const double sinc = (k == half) ? 2.0 * fc : sin(2.0 * pi * fc * m) / (pi * m);
+                const double r = m / (double)half;
+                const double x = beta * sqrt(dmax(1.0 - r * r, 0.0));
+                double i0 = 1.0, t = 1.0;
+                for (int q = 1; q < 40; ++q) { t *= (x / (2.0 * q)) * (x / (2.0 * q)); i0 += t; }
+                m_pFir[(size_t)k] = sinc * i0 / i0b;
+                sum += m_pFir[(size_t)k];
+            }
+            for (int k = 0; k < taps; ++k) m_pFir[(size_t)k] /= sum;
+        }
+        const size_t P = (size_t)kPopP, N = (size_t)kPopN, L = (size_t)kPopLmax;
+        m_pLow.assign(N, 0.0);
+        m_pF.assign((P + 1) * (P + 1), 0.0);
+        m_pA.assign(P * P, 0.0);
+        m_pB.assign(2 * P + 1, 0.0);
+        m_pC.assign(P + 1, 0.0);
+        m_pE.assign(N, 0.0);
+        m_pEb.assign(N, 0.0);
+        m_pW.assign(N, 0.0);
+        m_pRc.assign(P + 1, 0.0);
+        m_pG.assign(L * L, 0.0);
+        m_pCh.assign(L * L + L, 0.0);
+        m_pTmp.assign(2 * N, 0.0);
+        m_pBad.assign(N, 0);
+        m_pCand.assign((size_t)kPopCand, PopCand());
+        m_pOrd.assign((size_t)kPopCand, 0);
+    } else {
+        m_pD = 0;
+        m_pHalf = 0;
+        m_pY.clear(); m_pDry.clear(); m_pR.clear(); m_pFir.clear(); m_pLow.clear();
+        m_pF.clear(); m_pA.clear(); m_pB.clear(); m_pC.clear(); m_pE.clear(); m_pEb.clear();
+        m_pW.clear(); m_pRc.clear(); m_pG.clear(); m_pCh.clear(); m_pTmp.clear();
+        m_pBad.clear(); m_pCand.clear(); m_pOrd.clear();
+    }
+
     // The output ring. Between one pull and the next a caller can push maxBlock
     // samples, which emit at most maxBlock + kBlock, on top of the up to kBlock
     // already waiting.
@@ -2728,8 +2799,14 @@ size_t Channel::heapBytes() const {
             + m_nP.capacity() + m_nPb.capacity() + m_nXRe.capacity() + m_nXIm.capacity()
             + m_nRing.capacity() + m_nSorted.capacity()
             + m_nFloor.capacity() + m_nSaved.capacity() + m_nWarm.capacity() + m_nAt.capacity()
-            + m_nG.capacity() + m_nWf.capacity() + m_nIn.capacity() + m_nOut.capacity())
+            + m_nG.capacity() + m_nWf.capacity() + m_nIn.capacity() + m_nOut.capacity()
+            + m_pY.capacity() + m_pDry.capacity() + m_pR.capacity() + m_pFir.capacity()
+            + m_pLow.capacity() + m_pF.capacity() + m_pA.capacity() + m_pB.capacity()
+            + m_pC.capacity() + m_pE.capacity() + m_pEb.capacity() + m_pW.capacity()
+            + m_pRc.capacity() + m_pG.capacity() + m_pCh.capacity() + m_pTmp.capacity())
              * sizeof(double)
+           + m_pBad.capacity() + m_pCand.capacity() * sizeof(PopCand)
+           + m_pOrd.capacity() * sizeof(int)
            + m_flag.capacity() + m_strong.capacity() + m_stS.capacity() + m_dRun.capacity()
            + m_runs.capacity() * sizeof(int)
            + (m_bRev.capacity() + m_bCount.capacity() + m_fRev.capacity()
@@ -2865,6 +2942,16 @@ void Channel::resetPath() {
     m_nHasSaved = false;
     m_nKeep = false;
     m_nCuts = 0;
+    std::fill(m_pY.begin(), m_pY.end(), 0.0);
+    std::fill(m_pDry.begin(), m_pDry.end(), 0.0);
+    std::fill(m_pR.begin(), m_pR.end(), 0.0);
+    std::fill(m_pLow.begin(), m_pLow.end(), 0.0);
+    m_pT = 0;
+    // The first frame decides the stream's first gaps: it starts with as many
+    // zeros as lie before the part of a frame that is decided.
+    m_pFill = (int)kPopN - (int)kPopLmax - (int)kPopP - (int)kPopH;
+    m_pJ0 = -(int64_t)m_pFill;
+    m_pFires = 0;
     std::fill(m_dRun.begin(), m_dRun.end(), (uint8_t)0);
     m_dCuts = 0;
     m_fNextHop = (uint64_t)m_fN;
@@ -4061,7 +4148,7 @@ void Channel::bodyPush(double y, double d, uint8_t strong) {
 
 void Channel::finishSample(double y, double d) {
     if (m_cfg.crackleFloor) crackleFloorPush(y, d);
-    else emitMixed(y, d);
+    else popPush(y, d);
 }
 
 //! Every sample comes out Config::crackleFloorLatency samples after it went in,
@@ -4079,7 +4166,295 @@ void Channel::crackleFloorPush(double y, double d) {
     const uint64_t D = (uint64_t)m_cfg.crackleFloorLatency;
     if (t >= D) {
         const size_t u = (size_t)(t - D) & m_nMask;
-        emitMixed(m_nY[u] - m_nR[u], m_nD[u]);
+        popPush(m_nY[u] - m_nR[u], m_nD[u]);
+    }
+}
+
+//! Every sample comes out Config::popLatency samples after it went in. A
+//! low-rate sample is the filter's output centred on every popD-th input, so
+//! it exists half a filter after that input; a frame is decided when its last
+//! one does. See Config::pop.
+void Channel::popPush(double y, double d) {
+    if (!m_cfg.pop) {
+        emitMixed(y, d);
+        return;
+    }
+    const uint64_t t = m_pT++;
+    const size_t mask = m_pMask;
+    const size_t i = (size_t)t & mask;
+    m_pY[i] = y;
+    m_pDry[i] = d;
+    m_pR[i] = 0.0;
+    const uint64_t half = (uint64_t)m_pHalf;
+    if (t >= half && (t - half) % (uint64_t)m_pD == 0) {
+        // Centred on t - half; before the stream's start the ring holds zeros.
+        const double * f = &m_pFir[0];
+        const double * ry = &m_pY[0];
+        const int taps = 2 * m_pHalf + 1;
+        const size_t first = (size_t)(t - 2 * half) & mask;   // may wrap below zero: masked
+        const size_t room = mask + 1 - first;
+        const int n1 = (room < (size_t)taps) ? (int)room : taps;
+        const double a = dot(f, ry + first, n1) + dot(f + n1, ry, taps - n1);
+        m_pLow[(size_t)m_pFill++] = a;
+        if (m_pFill == (int)kPopN) {
+            popFrame(m_pJ0);
+            memmove(&m_pLow[0], &m_pLow[(size_t)kPopH], sizeof(double) * (size_t)(kPopN - kPopH));
+            m_pFill = (int)kPopN - (int)kPopH;
+            m_pJ0 += (int64_t)kPopH;
+        }
+    }
+    const uint64_t D = (uint64_t)m_cfg.popLatency;
+    if (t >= D) {
+        const size_t u = (size_t)(t - D) & mask;
+        emitMixed(m_pY[u] - m_pR[u], m_pDry[u]);
+    }
+}
+
+//! One frame of the low pop stage: the model, the residual, and for every gap
+//! starting in the decided part - kPopH samples, ending kPopLmax + kPopP
+//! before the frame's end so that every gap has its kPopP samples after it -
+//! the pulse the two-sided interpolation would take, T and Q. Of the gaps that
+//! pass, the strongest is taken, then the strongest of those more than 20
+//! samples from any taken, and so on. See Config::pop.
+void Channel::popFrame(int64_t j0) {
+    if (m_cfg.popKey && !(dmax(m_bBeta, m_c.key) > 0.0)) return;
+    const int P = (int)kPopP, N = (int)kPopN, H = (int)kPopH, Lmax = (int)kPopLmax, P1 = P + 1;
+    double * s = &m_pLow[0];
+    double xr = 0.0;
+    for (int i = 0; i < N; ++i) xr += s[i] * s[i];
+    xr = sqrt(xr / (double)N);
+    if (!(xr >= 1e-7)) return;
+
+    // Forward covariance F[i][j] = sum over n = P .. N-1 of s[n-i] s[n-j]: the
+    // first row outright, the rest from the element up and left of each. The
+    // backward one is the same matrix read from its far corner.
+    double * F = &m_pF[0];
+    double * A = &m_pA[0];
+    double * b = &m_pB[0];
+    double * c = &m_pC[0];
+    double * e = &m_pE[0];
+    double * eb = &m_pEb[0];
+    double * tmp = &m_pTmp[0];
+    double * crev = &m_pB[0] + P;                   // the model reversed, behind b
+    uint8_t * bad = &m_pBad[0];
+    for (int j = 0; j <= P; ++j) {
+        const double a = dot(s + P, s + P - j, N - P);
+        F[j] = a;
+        F[j * P1] = a;
+    }
+    for (int i = 0; i < P; ++i) {
+        for (int j = i; j < P; ++j) {
+            const double v = F[i * P1 + j] + s[P - 1 - i] * s[P - 1 - j] - s[N - 1 - i] * s[N - 1 - j];
+            F[(i + 1) * P1 + j + 1] = v;
+            F[(j + 1) * P1 + i + 1] = v;
+        }
+    }
+    memset(bad, 0, (size_t)N);
+    double sig = 0.0;
+    // Fitted, then once more without the rows that stood out. Only the lower
+    // triangle is built: it is all the Cholesky reads.
+    for (int it = 0; it <= 1; ++it) {
+        for (int i = 0; i < P; ++i) {
+            for (int j = 0; j <= i; ++j)
+                A[i * P + j] = F[(i + 1) * P1 + j + 1] + F[(P - i - 1) * P1 + (P - j - 1)];
+            b[i] = -(F[(i + 1) * P1] + F[(P - i - 1) * P1 + P]);
+        }
+        // Each row left out takes its outer product back.
+        for (int m = P; m < N; ++m) {
+            if (!bad[m]) continue;
+            const double * xf = s + m - 1;          // forward row: s[m-1-i]
+            const double * xb = s + m - P + 1;      // backward row: s[m-P+1+i]
+            const double tf = s[m], tb = s[m - P];
+            for (int i = 0; i < P; ++i) {
+                const double fi = xf[-i], bi = xb[i];
+                b[i] += fi * tf + bi * tb;
+                double * row = A + i * P;
+                for (int j = 0; j <= i; ++j) row[j] -= fi * xf[-j] + bi * xb[j];
+            }
+        }
+        double tr = 0.0;
+        for (int i = 0; i < P; ++i) tr += A[i * P + i];
+        for (int i = 0; i < P; ++i) A[i * P + i] += 1e-6 * tr / (double)P + 1e-20;
+        bool ok = true;
+        for (int i = 0; i < P && ok; ++i) {
+            for (int j = 0; j <= i; ++j) {
+                const double a = A[i * P + j] - dot(A + i * P, A + j * P, j);
+                if (i == j) {
+                    if (!(a > 0.0)) { ok = false; break; }
+                    A[i * P + i] = sqrt(a);
+                } else {
+                    A[i * P + j] = a / A[j * P + j];
+                }
+            }
+        }
+        if (!ok) return;                            // no model: leave the frame alone
+        for (int i = 0; i < P; ++i) c[i + 1] = (b[i] - dot(A + i * P, c + 1, i)) / A[i * P + i];
+        for (int i = P - 1; i >= 0; --i) {
+            double a = c[i + 1];
+            for (int k = i + 1; k < P; ++k) a -= A[k * P + i] * c[k + 1];
+            c[i + 1] = a / A[i * P + i];
+        }
+        c[0] = 1.0;
+        for (int k = 0; k <= P; ++k) crev[k] = c[P - k];
+        for (int m = P; m < N; ++m) {
+            e[m] = dot(crev, s + m - P, P1);
+            eb[m] = dot(c, s + m - P, P1);
+        }
+        if (it == 1) break;
+        int nt = 0;
+        for (int m = P; m < N; ++m) { tmp[nt++] = fabs(e[m]); tmp[nt++] = fabs(eb[m]); }
+        std::nth_element(tmp, tmp + nt / 2, tmp + nt);
+        sig = tmp[nt / 2] / 0.6745 + 1e-12;
+        memset(bad, 0, (size_t)N);
+        int cnt = 0;
+        for (int m = P; m < N; ++m) {
+            if (!(fabs(e[m]) > 3.5 * sig || fabs(eb[m]) > 3.5 * sig)) continue;
+            for (int q = m - 2; q <= m + 2; ++q)
+                if (q >= P && q < N && !bad[q]) { bad[q] = 1; ++cnt; }
+        }
+        if (N - P - cnt < 3 * P) { memset(bad, 0, (size_t)N); break; }
+        if (cnt == 0) break;                        // nothing stood out: the fit stands
+    }
+    {
+        int nt = 0;
+        for (int m = P; m < N; ++m) tmp[nt++] = fabs(e[m]);
+        std::nth_element(tmp, tmp + nt / 2, tmp + nt);
+        sig = tmp[nt / 2] / 0.6745 + 1e-12;
+    }
+    const double is2 = 1.0 / (sig * sig);
+
+    // w = the residual filtered back through the model, and the model's own
+    // autocorrelation: a gap's normal equations are Toeplitz in the latter,
+    // with the former as their right side.
+    const int hi = N - Lmax - P, lo = hi - H;
+    double * w = &m_pW[0];
+    double * rc = &m_pRc[0];
+    for (int m = lo; m < hi + Lmax; ++m) w[m] = dot(c, e + m, P1);
+    for (int l = 0; l <= P; ++l) rc[l] = dot(c, c + l, P1 - l);
+    // e2[k]: the squared residual summed over lo .. k-1, for a gap's stretch.
+    double * e2 = eb;                               // the backward residual is done with
+    e2[lo] = 0.0;
+    for (int k = lo + 1; k < N; ++k) e2[k] = e2[k - 1] + e[k - 1] * e[k - 1];
+
+    static const int kLs[5] = { 4, 6, 10, 16, 24 };
+    const double Tmin = m_cfg.popT, Qmax = m_cfg.popQ, ampMin = m_cfg.popAmp;
+    const double Tbig = m_cfg.popBigT, kappa = m_cfg.popKappa;
+    const int lobesMax = m_cfg.popLobes;
+    const int nL = (m_cfg.popLong > 0) ? 5 : 4;
+    PopCand * cand = &m_pCand[0];
+    int nc = 0;
+    double * G = &m_pG[0];
+    double * C = &m_pCh[0];
+    double * z = C + Lmax * Lmax;
+    double v[kPopLmax];
+    for (int li = 0; li < nL; ++li) {
+        const int L = kLs[li];
+        // The inverse of the L x L Toeplitz matrix of rc, by Cholesky.
+        for (int i = 0; i < L; ++i) {
+            for (int j = 0; j <= i; ++j) {
+                double a = rc[i - j] + (i == j ? 1e-9 : 0.0);
+                for (int k = 0; k < j; ++k) a -= C[i * L + k] * C[j * L + k];
+                if (i == j) C[i * L + i] = sqrt(a > 1e-30 ? a : 1e-30);
+                else C[i * L + j] = a / C[j * L + j];
+            }
+        }
+        for (int col = 0; col < L; ++col) {
+            for (int i = 0; i < L; ++i) {
+                double a = (i == col) ? 1.0 : 0.0;
+                for (int k = 0; k < i; ++k) a -= C[i * L + k] * z[k];
+                z[i] = a / C[i * L + i];
+            }
+            for (int i = L - 1; i >= 0; --i) {
+                double a = z[i];
+                for (int k = i + 1; k < L; ++k) a -= C[k * L + i] * z[k];
+                z[i] = a / C[i * L + i];
+            }
+            for (int i = 0; i < L; ++i) G[i * L + col] = z[i];
+        }
+        const double rootL = sqrt(2.0 * (double)L);
+        for (int p0 = lo; p0 < hi; ++p0) {
+            double gain = 0.0, pe = 0.0;
+            for (int i = 0; i < L; ++i) {
+                const double a = dot(G + i * L, w + p0, L);
+                v[i] = a;
+                gain += a * w[p0 + i];
+                pe += a * a;
+            }
+            gain *= is2;
+            const double T = (gain - (double)L) / rootL;
+            if (!(T >= Tmin)) continue;
+            if (!(sqrt(pe / (double)L) >= ampMin * xr)) continue;
+            const double E0 = (e2[p0 + L + P] - e2[p0]) * is2;
+            const double q1 = (E0 - gain) / (double)P;
+            if (!(q1 <= Qmax || (T >= Tbig && (q1 - 1.0) * (double)P <= kappa * gain))) continue;
+            // A pop is one or two lobes. A pulse that swings more often is the
+            // interpolation missing the music, not something lying on it.
+            if (lobesMax > 0) {
+                double pk = 0.0;
+                for (int i = 0; i < L; ++i) pk = dmax(pk, fabs(v[i]));
+                const double small = 0.15 * pk;
+                int turns = 0, sign = 0;
+                for (int i = 0; i < L; ++i) {
+                    if (fabs(v[i]) < small) continue;
+                    const int sg = (v[i] > 0.0) ? 1 : -1;
+                    if (sign != 0 && sg != sign) ++turns;
+                    sign = sg;
+                }
+                if (turns >= lobesMax) continue;
+            }
+            int at = nc;
+            if (nc >= (int)kPopCand) {
+                // Full: the weakest held makes way if this one is stronger.
+                at = 0;
+                for (int q = 1; q < nc; ++q) if (cand[q].T < cand[at].T) at = q;
+                if (!(T > cand[at].T)) continue;
+            } else {
+                ++nc;
+            }
+            cand[at].s = p0;
+            cand[at].L = L;
+            cand[at].T = T;
+            memcpy(cand[at].v, v, sizeof(double) * (size_t)L);
+        }
+    }
+    if (nc == 0) return;
+
+    int * ord = &m_pOrd[0];
+    for (int q = 0; q < nc; ++q) ord[q] = q;
+    for (int q = 1; q < nc; ++q) {                  // by T, strongest first
+        const int o = ord[q];
+        int r = q - 1;
+        while (r >= 0 && cand[ord[r]].T < cand[o].T) { ord[r + 1] = ord[r]; --r; }
+        ord[r + 1] = o;
+    }
+    const size_t mask = m_pMask;
+    const double * f = &m_pFir[0];
+    const int taps = 2 * m_pHalf + 1;
+    const double up = (double)m_pD;
+    int kept = 0;
+    for (int q = 0; q < nc; ++q) {
+        const PopCand & cd = cand[ord[q]];
+        const double ctr = (double)cd.s + 0.5 * (double)cd.L;
+        bool clash = false;
+        for (int r = 0; r < kept; ++r) {
+            const PopCand & o = cand[ord[r]];
+            if (fabs(ctr - ((double)o.s + 0.5 * (double)o.L)) <= 20.0) { clash = true; break; }
+        }
+        if (clash) continue;
+        ord[kept++] = ord[q];
+        ++m_pFires;
+        for (int k = 0; k < cd.L; ++k) {
+            s[cd.s + k] -= cd.v[k];
+            // Low-rate sample j is centred on input j popD: the pulse goes
+            // back up through the same filter.
+            const int64_t centre = (j0 + (int64_t)(cd.s + k)) * (int64_t)m_pD;
+            const double a = cd.v[k] * up;
+            for (int n = 0; n < taps; ++n) {
+                const int64_t at = centre - (int64_t)m_pHalf + (int64_t)n;
+                if (at < 0) continue;
+                m_pR[(size_t)at & mask] += a * f[n];
+            }
+        }
     }
 }
 
