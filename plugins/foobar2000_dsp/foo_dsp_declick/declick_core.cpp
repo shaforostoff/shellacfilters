@@ -2039,7 +2039,27 @@ void Config::compute(const Params & pIn, double sampleRate) {
     popD = (int)floor(sampleRate / 2756.25 + 0.5);
     if (popD < 4 || popD > 512) pop = 0;
     popLatency = pop ? popDelay(popD) : 0;
-    latency = pad + (int)kBlock + bodyLatency + flankStage + crackleFloorLatency + popLatency;
+
+    // The low keep's filter, run cap and level window scale with the rate, as
+    // times: 127 taps a side, 4 ms and 10 ms. A run is weighed once the window
+    // after it is in, and its low band reaches half a filter back from its
+    // start, so a sample is final after their sum; whole blocks, as above.
+    lowKeepHalf = (int)floor(127.0 * sampleRate / 44100.0 + 0.5);
+    lowKeepCap  = (int)floor(0.004 * sampleRate + 0.5);
+    lowKeepWin  = (int)floor(0.010 * sampleRate + 0.5);
+    if (lowKeepHalf < 1) lowKeepHalf = 1;
+    if (lowKeepCap < 1) lowKeepCap = 1;
+    if (lowKeepWin < 1) lowKeepWin = 1;
+    if (!(lowKeepHz > 0.0) || lowKeepHz >= 0.25 * sampleRate) lowKeep = 0;
+    if (!(lowKeepP1 > lowKeepP0)) lowKeepP1 = lowKeepP0 + 1e-6;
+    lowKeepR0 = pow(10.0, lowKeepP0 / 20.0);
+    lowKeepR1 = pow(10.0, lowKeepP1 / 20.0);
+    {
+        const int b = (int)kBlock;
+        lowKeepLatency = lowKeep ? b * ((lowKeepHalf + lowKeepCap + lowKeepWin + b - 1) / b) : 0;
+    }
+    latency = pad + (int)kBlock + lowKeepLatency + bodyLatency + flankStage
+            + crackleFloorLatency + popLatency;
 
     // The carpet key's ring is a fixed array of kCarpetMax seconds.
     if (carpetWin < 1) carpetWin = 1;
@@ -2698,6 +2718,39 @@ void Channel::configure(const Config & cfg) {
         m_nWf.clear();
     }
 
+    // The low keep, sized from the rate alone and always held.
+    {
+        const int K = cfg.lowKeepHalf, taps = 2 * K + 1;
+        const int b = (int)kBlock;
+        const size_t D = (size_t)(b * ((K + cfg.lowKeepCap + cfg.lowKeepWin + b - 1) / b));
+        size_t ring = 1;
+        while (ring < D + (size_t)taps + 2 * (size_t)cfg.lowKeepWin + (size_t)cfg.lowKeepCap + 2) ring <<= 1;
+        m_kMask = ring - 1;
+        m_kY.assign(ring, 0.0);
+        m_kD.assign(ring, 0.0);
+        m_kRm.assign(ring, 0.0);
+        m_kAcc.assign(ring, 0.0);
+        m_kS.assign(ring, 0);
+        size_t pend = 1;
+        while (pend < (size_t)cfg.lowKeepWin + (size_t)cfg.lowKeepCap + 4) pend <<= 1;
+        m_kPMask = pend - 1;
+        m_kPend.assign(pend, KeepRun());
+        m_kFir.assign((size_t)taps, 0.0);
+        if (cfg.lowKeep) {   // Hann-windowed sinc, -6 dB at lowKeepHz, unit gain at DC
+            const double pi = 3.14159265358979323846;
+            const double fc = cfg.lowKeepHz / cfg.rate;
+            double sum = 0.0;
+            for (int k = 0; k < taps; ++k) {
+                const double m = (double)(k - K);
+                const double sinc = (k == K) ? 2.0 * fc : sin(2.0 * pi * fc * m) / (pi * m);
+                const double w = 0.5 - 0.5 * cos(2.0 * pi * (double)k / (double)(taps - 1));
+                m_kFir[(size_t)k] = sinc * w;
+                sum += m_kFir[(size_t)k];
+            }
+            for (int k = 0; k < taps; ++k) m_kFir[(size_t)k] /= sum;
+        }
+    }
+
     // The low pop stage, sized from popD alone and held only while it is on.
     if (cfg.pop) {
         const int D = cfg.popD, half = 6 * D, taps = 2 * half + 1;
@@ -2800,11 +2853,14 @@ size_t Channel::heapBytes() const {
             + m_nRing.capacity() + m_nSorted.capacity()
             + m_nFloor.capacity() + m_nSaved.capacity() + m_nWarm.capacity() + m_nAt.capacity()
             + m_nG.capacity() + m_nWf.capacity() + m_nIn.capacity() + m_nOut.capacity()
+            + m_kY.capacity() + m_kD.capacity() + m_kRm.capacity() + m_kAcc.capacity()
+            + m_kFir.capacity()
             + m_pY.capacity() + m_pDry.capacity() + m_pR.capacity() + m_pFir.capacity()
             + m_pLow.capacity() + m_pF.capacity() + m_pA.capacity() + m_pB.capacity()
             + m_pC.capacity() + m_pE.capacity() + m_pEb.capacity() + m_pW.capacity()
             + m_pRc.capacity() + m_pG.capacity() + m_pCh.capacity() + m_pTmp.capacity())
              * sizeof(double)
+           + m_kS.capacity() + m_kPend.capacity() * sizeof(KeepRun)
            + m_pBad.capacity() + m_pCand.capacity() * sizeof(PopCand)
            + m_pOrd.capacity() * sizeof(int)
            + m_flag.capacity() + m_strong.capacity() + m_stS.capacity() + m_dRun.capacity()
@@ -2942,6 +2998,15 @@ void Channel::resetPath() {
     m_nHasSaved = false;
     m_nKeep = false;
     m_nCuts = 0;
+    std::fill(m_kY.begin(), m_kY.end(), 0.0);
+    std::fill(m_kD.begin(), m_kD.end(), 0.0);
+    std::fill(m_kRm.begin(), m_kRm.end(), 0.0);
+    std::fill(m_kAcc.begin(), m_kAcc.end(), 0.0);
+    std::fill(m_kS.begin(), m_kS.end(), (uint8_t)0);
+    m_kT = 0;
+    m_kLen = 0;
+    m_kPeak = 0.0;
+    m_kHead = m_kTail = 0;
     std::fill(m_pY.begin(), m_pY.end(), 0.0);
     std::fill(m_pDry.begin(), m_pDry.end(), 0.0);
     std::fill(m_pR.begin(), m_pR.end(), 0.0);
@@ -4055,7 +4120,8 @@ void Channel::pushOne(double v) {
             m_bBeta = m_bBetaPrev;
             const double * acc = &m_flAcc[(size_t)m_pad];   // window index pad - kBlock
             for (int i = 0; i < blk; ++i)
-                bodyPush(m_stY[(size_t)i] + acc[i], m_stD[(size_t)i], m_stS[(size_t)i]);
+                keepPush(m_stY[(size_t)i] + acc[i], m_stD[(size_t)i] - m_stY[(size_t)i],
+                         m_stD[(size_t)i], m_stS[(size_t)i]);
             m_bBeta = beta;
         }
         for (int i = 0; i < blk; ++i) {
@@ -4067,8 +4133,9 @@ void Channel::pushOne(double v) {
         m_bBetaPrev = beta;
     } else if (back) {
         for (int i = 0; i < blk; ++i) {
-            bodyPush(m_win[(size_t)(m_pad + i)], m_dry[(size_t)(m_pad + i)],
-                     m_strong[(size_t)(m_pad + i)]);
+            keepPush(m_win[(size_t)(m_pad + i)],
+                     m_dry[(size_t)(m_pad + i)] - m_win[(size_t)(m_pad + i)],
+                     m_dry[(size_t)(m_pad + i)], m_strong[(size_t)(m_pad + i)]);
         }
     }
 
@@ -4098,6 +4165,86 @@ void Channel::emitMixed(double y, double d) {
         outPush(wet * (d - y));             // d - (wet * y + dry * d)
     } else {
         outPush(wet * y + (1.0 - wet) * d);
+    }
+}
+
+//! Every sample comes out Config::lowKeepLatency samples after it went in. A
+//! run is a stretch where r is not zero, cut at lowKeepCap; it waits in
+//! m_kPend until the lowKeepWin samples after it are in, and keepRun() then
+//! adds its low band to m_kAcc, half a filter either side of it. So a sample
+//! is final lowKeepHalf + lowKeepCap + lowKeepWin after it went in.
+void Channel::keepPush(double y, double r, double d, uint8_t strong) {
+    if (!m_cfg.lowKeep) {
+        bodyPush(y, d, strong);
+        return;
+    }
+    const uint64_t t = m_kT++;
+    const size_t mask = m_kMask;
+    const size_t i = (size_t)t & mask;
+    m_kY[i] = y;
+    m_kD[i] = d;
+    m_kRm[i] = r;
+    m_kS[i] = strong;
+    m_kAcc[(size_t)(t + (uint64_t)m_cfg.lowKeepHalf) & mask] = 0.0;   // first use of that slot
+
+    bool close = false;
+    if (r != 0.0) {
+        if (m_kLen == 0) { m_kStart = t; m_kPeak = 0.0; }
+        ++m_kLen;
+        const double a = fabs(r);
+        if (a > m_kPeak) m_kPeak = a;
+        close = (m_kLen >= m_cfg.lowKeepCap);
+    } else {
+        close = (m_kLen > 0);
+    }
+    if (close) {
+        KeepRun & q = m_kPend[m_kTail & m_kPMask];
+        q.a = m_kStart; q.len = m_kLen; q.pk = m_kPeak;
+        ++m_kTail;
+        m_kLen = 0;
+    }
+    const uint64_t W = (uint64_t)m_cfg.lowKeepWin;
+    while (m_kHead != m_kTail) {
+        const KeepRun & q = m_kPend[m_kHead & m_kPMask];
+        if (q.a + (uint64_t)q.len + W > t + 1) break;
+        keepRun(q.a, q.len, q.pk);
+        ++m_kHead;
+    }
+    const uint64_t D = (uint64_t)m_cfg.lowKeepLatency;
+    if (t >= D) {
+        const size_t u = (size_t)(t - D) & mask;
+        bodyPush(m_kY[u] + m_kAcc[u], m_kD[u], m_kS[u]);
+    }
+}
+
+void Channel::keepRun(uint64_t a, int len, double pk) {
+    const size_t mask = m_kMask, size = mask + 1;
+    const uint64_t W = (uint64_t)m_cfg.lowKeepWin;
+    const uint64_t lo = (a > W) ? a - W : 0;
+    const int n = (int)(a + (uint64_t)len + W - lo);
+    // The level of the repaired signal around the run.
+    const double * y = &m_kY[0];
+    const size_t first = (size_t)lo & mask;
+    const int n1 = (size - first < (size_t)n) ? (int)(size - first) : n;
+    const double e = dot(y + first, y + first, n1) + dot(y, y, n - n1);
+    const double ratio = pk / sqrt(e / (double)n + 1e-12);
+    double g = 1.0;
+    if (ratio >= m_cfg.lowKeepR1) return;
+    if (ratio > m_cfg.lowKeepR0)
+        g = 1.0 - (20.0 * log10(ratio) - m_cfg.lowKeepP0) / (m_cfg.lowKeepP1 - m_cfg.lowKeepP0);
+    const int K = m_cfg.lowKeepHalf, taps = 2 * K + 1;
+    const double * f = &m_kFir[0];
+    double * acc = &m_kAcc[0];
+    for (int s = 0; s < len; ++s) {
+        const double v = g * m_kRm[(size_t)(a + (uint64_t)s) & mask];
+        if (v == 0.0) continue;
+        // Slots before the stream's start wrap onto ones not yet in use,
+        // which are zeroed before they are.
+        const size_t at = (size_t)(a + (uint64_t)s - (uint64_t)K) & mask;
+        const int m1 = (size - at < (size_t)taps) ? (int)(size - at) : taps;
+        double * p = acc + at;
+        for (int k = 0; k < m1; ++k) p[k] += v * f[k];
+        for (int k = m1; k < taps; ++k) acc[k - m1] += v * f[k];
     }
 }
 

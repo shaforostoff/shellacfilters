@@ -658,7 +658,7 @@ int main() {
         // pipeline it is about to be told the real shape of. An object is ~5 kB:
         // the carpet key's two rings of kCarpetMax seconds and every stage's
         // vector handles; a pipeline would be hundreds.
-        requireUnder("constructing two Channels brings no buffers", 13u * 1024u);
+        requireUnder("constructing two Channels brings no buffers", 14u * 1024u);
 
         for (size_t c = 0; c < chan.size(); ++c) chan[c]->configure(cfg);
         pushChunks(chan, sig, 2 * R, sink);

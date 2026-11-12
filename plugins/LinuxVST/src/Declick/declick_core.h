@@ -70,7 +70,8 @@ struct Params {
     //! carpet and Poisson keys, which only gate them), so what is removed is
     //! the clicks the detector flags and the music is left as it is. More
     //! crackle stays: the carpet under the clicks, and the bodies and ringing
-    //! of the clicks that are repaired. Config::compute() applies it.
+    //! of the clicks that are repaired. Config::compute() applies it. The low
+    //! keep (Config::lowKeep) stays on: it takes nothing, it puts back.
     bool  cautious;
 
     static Params defaults() {
@@ -557,10 +558,42 @@ struct Config {
     double popBigT      = 40.0;
     double popKappa     = 0.6;
     int    popKey       = 1;
-    int    popLobes     = 3;         //!< lobes a pulse may not reach; 0: any
+    //! 2, from 3: against vinyl transfers of seven of the songs (docs/
+    //! stages-vinyl.md) the pulses with two sign changes carry 1% of the
+    //! energy of the pulses that are absent from the vinyl and 37% of that of
+    //! the ones that are in it too, i.e. music; and none of the pops heard.
+    int    popLobes     = 2;         //!< sign changes a pulse may not reach; 0: any
     int    popLong      = 0;         //!< 1: also gaps of 24 low-rate samples
     int    popD         = 16;        //!< from the sample rate alone
     int    popLatency   = 0;         //!< whole blocks, if on
+
+    //! The low keep: of what the repair takes out of a run, the part below
+    //! lowKeepHz goes back, unless the run is a big click. Measured against
+    //! vinyl transfers of the same recordings lined up to the shellac ones
+    //! (docs/stages-vinyl.md): above ~2 kHz all of what the repair removes is
+    //! absent from the vinyl, and below ~1 kHz almost none of it is, for the
+    //! 97% of runs that peak under 6 dB over the music around them. There the
+    //! removal is the interpolation's own error, which follows the music; it
+    //! is what carries the rhythm in a delta. Only clicks that stand 12 dB or
+    //! more over the music have a low band of their own.
+    //! A run is a stretch of samples the repair (or the shape fit) changed,
+    //! cut at lowKeepCap; its size is the peak of what was removed against the
+    //! RMS of the repaired signal lowKeepWin either side. From lowKeepP0 dB
+    //! down all of the low band goes back, from lowKeepP1 up none, linear in
+    //! dB between. The low band is a Hann-windowed sinc of 2 lowKeepHalf + 1
+    //! taps, so the output differs from the input lowKeepHalf samples either
+    //! side of a run, below lowKeepHz and by less than the repair alone did.
+    //! It sits between the repair and the body stage, is on in Extra cautious
+    //! too, and adds lowKeepLatency (whole blocks, ~23 ms at 44.1 kHz).
+    int    lowKeep      = 1;
+    double lowKeepHz    = 1200.0;
+    double lowKeepP0    = 6.0;
+    double lowKeepP1    = 12.0;
+    int    lowKeepHalf  = 127;       //!< from the sample rate alone
+    int    lowKeepCap   = 176;       //!< 4 ms
+    int    lowKeepWin   = 441;       //!< 10 ms
+    int    lowKeepLatency = 0;       //!< whole blocks, if on
+    double lowKeepR0    = 2.0, lowKeepR1 = 4.0;   //!< P0 and P1 as ratios
 
     double rate         = 44100.0;   //!< the sample rate compute() was given
 
@@ -640,7 +673,8 @@ struct Config {
             && crackleFloorLo == o.crackleFloorLo && crackleFloorHi == o.crackleFloorHi
             && crackleFloorHist == o.crackleFloorHist && rate == o.rate
             && shape == o.shape && shapeK == o.shapeK
-            && pop == o.pop && popD == o.popD;
+            && pop == o.pop && popD == o.popD
+            && lowKeep == o.lowKeep && lowKeepHz == o.lowKeepHz;
     }
 };
 
@@ -967,6 +1001,13 @@ private:
     template <class To, class From> static void copyWarm(To & to, const From & from);
     //! The dry/wet (or delta) mix of one finished sample, into the output ring.
     void emitMixed(double y, double d);
+    //! One repaired sample, what the repair took from it (before the flank
+    //! repair), its dry counterpart and its run flag: into the low keep if it
+    //! is on, else the body stage. See Config::lowKeep.
+    void keepPush(double y, double r, double d, uint8_t strong);
+    //! The run of `len` samples from stage sample `a`, peaking at `pk`, has
+    //! lowKeepWin samples after it: weigh it, and add its low band to m_kAcc.
+    void keepRun(uint64_t a, int len, double pk);
     //! One repaired sample and its dry counterpart, into the body stage, and
     //! whether it lies in a run the mid stage counts.
     void bodyPush(double y, double d, uint8_t strong);
@@ -1341,6 +1382,22 @@ private:
     std::vector<double> m_nWarm;     //!< m_nTop: the floor a warm pass ended with
     std::vector<uint64_t> m_nAt;     //!< crackleFloorHist
     std::vector<double> m_nWf;     //!< m_nNb
+
+    //! The low keep; see Config::lowKeep. Rings of the repaired audio (m_kY),
+    //! its dry counterpart (m_kD), what the repair removed (m_kRm), the run
+    //! flag (m_kS) and the low band going back (m_kAcc), indexed by its sample
+    //! count m_kT. m_kFir: the low-pass. The run being followed (m_kLen > 0)
+    //! and those waiting for the samples after them (m_kPend, a ring).
+    //! Always held, sized from the rate alone.
+    struct KeepRun { uint64_t a; int len; double pk; };
+    size_t m_kMask = 0, m_kPMask = 0;
+    uint64_t m_kT = 0, m_kStart = 0;
+    int    m_kLen = 0;
+    double m_kPeak = 0.0;
+    size_t m_kHead = 0, m_kTail = 0;
+    std::vector<double> m_kY, m_kD, m_kRm, m_kAcc, m_kFir;
+    std::vector<uint8_t> m_kS;
+    std::vector<KeepRun> m_kPend;
 
     //! The low pop stage; see Config::pop. Rings of the finished audio (m_pY),
     //! its dry counterpart (m_pDry) and what the stage removes (m_pR), indexed

@@ -260,7 +260,7 @@ Add *Declick (AR interpolation)* to the chain and press **Configure selected**.
 | --- | --- |
 | **Sensitivity** | The one to reach for. Raise it until the crackle goes, then back off as soon as the music starts to dull. Maps onto the trigger threshold in robust sigmas: 0 → 6.0σ, 1 → 2.5σ. Default **0.9** (2.85σ). Runs that barely cross the trigger are only partly repaired — half of what the model says is wrong at the trigger, rising to all of it 3.5σ above — so the default reaches small clicks without taking much from clean records; on clean records 0.7–0.8 takes less still. See [Dense crackle](#dense-crackle). |
 | **Model order** | **64**, **128** (default) or **256**. Higher orders model the music better, so they change clean records least, and remove isolated clicks better; but they also predict some short clicks well enough to miss them on heavily crackled transfers. 128 is the balance. 64 costs about 0.6× the CPU of 128 and gives up surprisingly little — the one for a slow machine; 256 costs about 2.1×. In the VST2, AU and VirtualDJ ports the slider reads as the old 16–256-in-eights one did, snapped to the nearest of the three (below 96 → 64, below 192 → 128), so positions saved by older builds keep their meaning. See [Choosing settings](#choosing-settings) and [Does more CPU help?](#does-more-cpu-help). |
-| **Extra cautious** | Off by default. On, Declick is the AR detect-and-interpolate repair and nothing else: the shape fit, the body, fine, micro and mid stages, the flank repair and the crackle floor are off, and so are the carpet and Poisson keys, which only gate them. Those stages work on the audio around the flagged samples, and on some records some of what they take is music; with this on, only the flagged samples change. More crackle stays (the carpet under the clicks, and the bodies and ringing of the clicks that are repaired). It also cuts the latency from ~140 ms to ~24 ms at 44.1 kHz and the CPU to about 0.4×. A checkbox in foobar2000, a switch in the VST2 (`Caution`), AU and VirtualDJ ports. See [Extra cautious](#extra-cautious-the-ar-repair-alone). |
+| **Extra cautious** | Off by default. On, Declick is the AR detect-and-interpolate repair and nothing else: the shape fit, the body, fine, micro and mid stages, the flank repair and the crackle floor are off, and so are the carpet and Poisson keys, which only gate them. Those stages work on the audio around the flagged samples, and on some records some of what they take is music; with this on, only the flagged samples change, and below 1.2 kHz most of them are given their low band back (the [low keep](#the-low-keep), which is on in both modes). More crackle stays (the carpet under the clicks, and the bodies and ringing of the clicks that are repaired). It also cuts the latency from ~257 ms to ~48 ms at 44.1 kHz and the CPU to about 0.4×. A checkbox in foobar2000, a switch in the VST2 (`Caution`), AU and VirtualDJ ports. See [Extra cautious](#extra-cautious-the-ar-repair-alone). |
 | **Bypass** | Passes the audio through untouched, for comparing against the repair. Ticking it first plays out what is already in the pipeline, processed, so nothing is skipped or repeated; unticking it starts the pipeline afresh (one latency's worth of audio is held back, as after a Model order move, with no warm start). Latency is 0 while it is on. Saved with the preset, appended after Extra cautious, so older builds still read it and ignore it. foobar2000 only: the other hosts have a bypass of their own. |
 | **Delta** | Delta monitoring, for testing: outputs input minus output, so you hear what the repair takes out. It should be crackle and clicks and nothing else; music heard in it is collateral damage, and the cue to lower Sensitivity. Saved with the preset, so untick it when done. foobar2000 only. |
 
@@ -279,6 +279,32 @@ shape fit and the crackle floor (−41 to −43 dB); on the .flac transfers it i
 spread over the crackle floor, the body, fine and mid stages (−44 to −47 dB).
 What is left is the AR repair's own. Total removal falls by 0.8–5.6 dB.
 With it off the output is bit-identical to before it existed.
+
+#### The low keep
+
+`Config::lowKeep`, `declick_cli --low-keep 0|1`; on by default and in Extra
+cautious too. Measured against vinyl transfers of seven of the recordings,
+lined up to the shellac ones to the sample (2026-11-12,
+[docs/stages-vinyl.md](../../docs/stages-vinyl.md)): above 2 kHz everything
+the AR repair removes is absent from the vinyl, and below 1 kHz almost none of
+it is, for the 97% of runs that peak under 6 dB over the music around them.
+There the removal is the interpolation's own error, which follows the music's
+level; it is the rhythm heard in a delta. Only clicks 12 dB or more over the
+music have a low band of their own.
+
+So of what the repair takes out of a run, the part below 1.2 kHz goes back: all
+of it for runs up to 6 dB over the music (peak of the removal against the RMS
+of the repaired signal 10 ms either side), none from 12 dB, linear in dB
+between. The low band is a 255-tap Hann-windowed sinc at 44.1 kHz, so the
+output differs from the input 2.9 ms either side of a run as well, below
+1.2 kHz, and by less than the repair alone changed it. It sits between the
+repair and the body stage and delays by whole blocks, 1024 samples at 44.1 kHz.
+
+On the seven songs Extra cautious takes 13–15 dB less below 1 kHz, and the
+default 2–3 dB less (there the low pop stage is most of the removal). From the
+clean controls: Malvon −35.1 → −35.8 dB, *Olga* −45.7 → −47.4, *El Marne*
+−29.5 → −31.1. `--low-keep 0` is bit-identical to the build before it. Cost:
++5% at the defaults, +8% in Extra cautious.
 
 Presets keep their layout. foobar2000 appends it after delta without
 changing the preset version, so an older build reads the preset as before and

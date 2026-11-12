@@ -345,8 +345,17 @@ void testStreaming() {
         // click, and the fit's 1-8 kHz shapes take a part of them. A floor of
         // 19 still catches a repair that has gone partial or stopped being
         // applied (at depth 0 it is 5 dB).
-        const double full = reduction(runChannel(dirty, p, sr));
-        printf("  injected click energy reduced by %.1f dB at the defaults\n", full);
+        // That is the repair's own figure, without the low keep. With it the
+        // part of these bursts below 1.2 kHz stays where the burst is under
+        // 12 dB over the tone: 18.9 dB.
+        const double kept = reduction(runChannel(dirty, p, sr));
+        printf("  injected click energy reduced by %.1f dB at the defaults\n", kept);
+        if (!(kept > 18.0)) {
+            printf("  FAIL  the defaults leave too much of each click\n");
+            ++g_failures;
+        }
+        const double full = reduction(runChannel(dirty, p, sr, [](Config & c) { c.lowKeep = 0; }));
+        printf("  ... and by %.1f dB without the low keep\n", full);
         if (!(full > 19.0)) {
             printf("  FAIL  the default repair leaves too much of each click\n");
             ++g_failures;
@@ -795,6 +804,66 @@ void testCautious() {
     (void)full;
 }
 
+//! The low keep puts back the low band of what small repairs took, and only
+//! that: what it changes is smooth, it takes less than the repair alone, a
+//! click far over the music is repaired as before, and it costs whole blocks.
+void testLowKeep() {
+    printf("low keep\n");
+    const double sr = 44100.0;
+    const size_t N = (size_t)(3.0 * sr);
+    std::vector<double> x(N);
+    Rng rng(77u);
+    for (size_t i = 0; i < N; ++i) {
+        const double t = (double)i / sr;
+        x[i] = 0.25 * sin(6.283185307 * 196.0 * t) + 0.15 * sin(6.283185307 * 587.0 * t)
+             + 0.01 * rng.centred();
+    }
+    std::vector<double> clean = x;
+    // Small clicks, about the level of the music, one-sided so that they have
+    // a low band; and one far over it, alone in the last second.
+    for (size_t i = 3000; i + 3 < 2 * N / 3; i += 401 + (rng.next() % 97)) {
+        x[i] += 0.20; x[i + 1] += 0.12; x[i + 2] += 0.05;
+    }
+    const size_t big = 5 * N / 6;
+    x[big] += 0.95; x[big + 1] += 0.6; x[big + 2] += 0.25;
+
+    Params p = Params::defaults();
+    p.cautious = true;
+    const std::vector<double> on = runChannel(x, p, sr);
+    const std::vector<double> off = runChannel(x, p, sr, [](Config & c) { c.lowKeep = 0; });
+
+    double d2 = 0.0, dd2 = 0.0, eOn = 0.0, eOff = 0.0, nearBig = 0.0;
+    for (size_t i = 2000; i + 2000 < N; ++i) {
+        const double d = on[i] - off[i], d1 = on[i - 1] - off[i - 1];
+        d2 += d * d;
+        dd2 += (d - d1) * (d - d1);
+        eOn += (x[i] - on[i]) * (x[i] - on[i]);
+        eOff += (x[i] - off[i]) * (x[i] - off[i]);
+        if (i + 400 > big && i < big + 400) nearBig = fmax(nearBig, fabs(d));
+    }
+    printf("  what it puts back: %.1f dB re the repair's removal; its first difference %.1f dB re itself\n",
+           10.0 * log10(d2 / eOff + 1e-300), 10.0 * log10(dd2 / (d2 + 1e-300) + 1e-300));
+    if (!(d2 > 0.0)) { printf("  FAIL  the low keep changed nothing\n"); ++g_failures; }
+    // Below 1.2 kHz at 44.1 kHz a first difference is 15 dB down or more.
+    if (!(dd2 < 0.05 * d2)) { printf("  FAIL  what it puts back is not a low band\n"); ++g_failures; }
+    printf("  removed with it %.1f dB re without\n", 10.0 * log10(eOn / eOff));
+    if (!(eOn < eOff)) { printf("  FAIL  it takes more than the repair alone\n"); ++g_failures; }
+    printf("  around a click 12 dB over the music: worst change %.3g\n", nearBig);
+    if (!(nearBig < 5e-3)) { printf("  FAIL  a big click's low band came back\n"); ++g_failures; }
+
+    Config a, b;
+    a.compute(p, sr);
+    b.lowKeep = 0;
+    b.compute(p, sr);
+    printf("  latency %d with it, %d without\n", a.latency, b.latency);
+    if (a.latency - b.latency != a.lowKeepLatency || a.lowKeepLatency <= 0
+        || a.lowKeepLatency % (int)kBlock != 0) {
+        printf("  FAIL  its delay is not whole blocks, or not in the latency\n");
+        ++g_failures;
+    }
+    (void)clean;
+}
+
 } // anonymous namespace
 
 int main() {
@@ -807,6 +876,7 @@ int main() {
     testEdges();
     testRetune();
     testCautious();
+    testLowKeep();
 
     if (g_failures == 0) { printf("\nOK\n"); return 0; }
     printf("\n%d failure(s)\n", g_failures);

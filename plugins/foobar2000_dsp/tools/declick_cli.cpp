@@ -121,8 +121,13 @@ void usage() {
         "  --pop-big-t <x>    From this many sigma, pop-kappa instead of pop-q (default 40)\n"
         "  --pop-kappa <x>    ... the remainder as a share of what is explained (default 0.6)\n"
         "  --pop-key <0|1>    Only under an open body or carpet key (default 1)\n"
-        "  --pop-lobes <n>    Sign changes a pulse may not reach (default 3, 0 any)\n"
+        "  --pop-lobes <n>    Sign changes a pulse may not reach (default 2, 0 any)\n"
         "  --pop-long <0|1>   Also gaps of 24 low-rate samples, ~9 ms (default 0)\n"
+        "  --low-keep <0|1>   The low keep: what a repair takes below low-keep-hz goes\n"
+        "                     back, unless the run is a big click (default 1)\n"
+        "  --low-keep-hz <Hz> Below this it goes back (default 1200)\n"
+        "  --low-keep-p0 <dB> Runs peaking this far over the music or less: all of it (default 6)\n"
+        "  --low-keep-p1 <dB> ... and from this far over it, none (default 12)\n"
         "  --crackle-floor <0|1>\n"
         "                     Lowers the floor dense crackle forms, a spectral denoiser\n"
         "                     on the output under the fine stage's key (default 1)\n"
@@ -227,6 +232,10 @@ const ConfigFlag kConfigFlags[] = {
     INT("--pop-key",               popKey),
     INT("--pop-lobes",             popLobes),
     INT("--pop-long",              popLong),
+    INT("--low-keep",              lowKeep),
+    DBL("--low-keep-hz",           lowKeepHz),
+    DBL("--low-keep-p0",           lowKeepP0),
+    DBL("--low-keep-p1",           lowKeepP1),
     INT("--flank",                 flank),
     DBL("--flank-pad-ms",          flankPadMs),
     DBL("--flank-hz",              flankHz),
