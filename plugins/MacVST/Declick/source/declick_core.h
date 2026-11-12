@@ -564,6 +564,22 @@ struct Config {
     //! the ones that are in it too, i.e. music; and none of the pops heard.
     int    popLobes     = 2;         //!< sign changes a pulse may not reach; 0: any
     int    popLong      = 0;         //!< 1: also gaps of 24 low-rate samples
+    //! The busy frame. A pulse is judged by a model of the 186 ms around it,
+    //! and where the music itself starts something in that stretch the model
+    //! describes none of it: its residual stands out all over the frame, and
+    //! a "pulse" found there is a piece of an attack. So a pulse is not taken
+    //! if more than popBusy samples of the frame's residual are over 3.5
+    //! sigma outside the stretch the pulse itself disturbs (its gap, kPopP
+    //! after it, 4 either side); negative, or popBusyT 0: no such test. Against the vinyl
+    //! transfers (docs/stages-vinyl.md, the stage's own figures traced per
+    //! pulse) this is what tells the two apart best: the pulses that are in
+    //! the vinyl too have 5 such samples at the median, the ones that are not
+    //! have 1, and the ten pops heard have 0-2. At 3 it keeps 87% of the
+    //! energy of the latter and 46% of that of the former. A pulse of popBusyT
+    //! sigma or more is exempt: a pop that large rings on past its gap and
+    //! makes the frame busy by itself.
+    int    popBusy      = 3;
+    double popBusyT     = 100.0;
     int    popD         = 16;        //!< from the sample rate alone
     int    popLatency   = 0;         //!< whole blocks, if on
 

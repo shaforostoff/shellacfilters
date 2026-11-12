@@ -864,6 +864,61 @@ void testLowKeep() {
     (void)clean;
 }
 
+//! The low pop stage's busy frame: a smooth 2 ms pulse on steady low notes is
+//! taken, with the test or without, to the bit; the same pulse where a new
+//! note starts every 60 ms is left alone, where without the test it goes.
+//! Without the exemption for large pulses: on so little noise these are large.
+void testPopBusy() {
+    printf("low pop stage, the busy frame\n");
+    const double sr = 44100.0;
+    const size_t N = (size_t)(4.0 * sr);
+    const double w = 6.283185307 / sr;
+    std::vector<double> steady(N), busy(N), pulse(N, 0.0);
+    Rng rng(4242u);
+    static const double kNotes[6] = { 196.0, 262.0, 330.0, 247.0, 294.0, 392.0 };
+    const size_t step = (size_t)(0.060 * sr);
+    for (size_t i = 0; i < N; ++i) {
+        const double n = 0.004 * rng.centred();
+        steady[i] = 0.20 * sin(w * 196.0 * (double)i) + 0.12 * sin(w * 330.0 * (double)i)
+                  + 0.08 * sin(w * 523.0 * (double)i) + n;
+        // A note of 60 ms, starting at full level: its start is something no
+        // model of what came before describes.
+        const size_t k = i / step, at = i % step;
+        const double f = kNotes[k % 6];
+        const double env = exp(-(double)at / (0.030 * sr));
+        busy[i] = 0.35 * env * (sin(w * f * (double)at) + 0.5 * sin(w * 2.0 * f * (double)at)) + n;
+    }
+    // One pulse every 0.4 s, 2 ms of a raised cosine, mid-note in `busy`.
+    const int len = (int)(0.002 * sr);
+    std::vector<size_t> at;
+    for (size_t p = (size_t)(0.5 * sr); p + (size_t)len < N - (size_t)(0.5 * sr); p += (size_t)(0.4 * sr)) {
+        const size_t q = p / step * step + step / 2;
+        at.push_back(q);
+        for (int j = 0; j < len; ++j)
+            pulse[q + (size_t)j] += 0.30 * 0.5 * (1.0 - cos(6.283185307 * ((double)j + 0.5) / (double)len));
+    }
+    Params p = Params::defaults();
+    const auto taken = [&](const std::vector<double> & music, bool test) {
+        std::vector<double> x(N);
+        for (size_t i = 0; i < N; ++i) x[i] = music[i] + pulse[i];
+        const std::vector<double> y = test
+            ? runChannel(x, p, sr, [](Config & c) { c.popKey = 0; c.popBusyT = 1e12; })
+            : runChannel(x, p, sr, [](Config & c) { c.popKey = 0; c.popBusyT = 0.0; });
+        // The share of the pulses' energy that went: projection of what was
+        // removed on the pulses.
+        double num = 0.0, den = 0.0;
+        for (size_t i = 0; i < N; ++i) { num += (x[i] - y[i]) * pulse[i]; den += pulse[i] * pulse[i]; }
+        return num / den;
+    };
+    const double sOn = taken(steady, true), sOff = taken(steady, false);
+    const double bOn = taken(busy, true), bOff = taken(busy, false);
+    printf("  share of the pulses taken: steady notes %.2f (%.2f without the test), "
+           "a new note every 60 ms %.2f (%.2f)\n", sOn, sOff, bOn, bOff);
+    if (!(sOn > 0.8)) { printf("  FAIL  pulses on steady notes are left\n"); ++g_failures; }
+    if (sOn != sOff) { printf("  FAIL  the test changes a quiet frame\n"); ++g_failures; }
+    if (!(bOn < 0.5 * bOff + 0.05)) { printf("  FAIL  pulses among attacks are still taken\n"); ++g_failures; }
+}
+
 } // anonymous namespace
 
 int main() {
@@ -877,6 +932,7 @@ int main() {
     testRetune();
     testCautious();
     testLowKeep();
+    testPopBusy();
 
     if (g_failures == 0) { printf("\nOK\n"); return 0; }
     printf("\n%d failure(s)\n", g_failures);

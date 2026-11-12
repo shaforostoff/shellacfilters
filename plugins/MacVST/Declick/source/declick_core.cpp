@@ -4483,6 +4483,20 @@ void Channel::popFrame(int64_t j0) {
     e2[lo] = 0.0;
     for (int k = lo + 1; k < N; ++k) e2[k] = e2[k - 1] + e[k - 1] * e[k - 1];
 
+    // The busy frame: tmp[m] counts the residual's samples over 3.5 sigma
+    // before m, so that a pulse can ask how many lie outside its own stretch.
+    const int busyMax = m_cfg.popBusy;
+    const double busyT = m_cfg.popBusyT;
+    if (busyMax >= 0) {
+        const double lim = 3.5 * sig;
+        double n = 0.0;
+        for (int m = P; m < N; ++m) {
+            tmp[m] = n;
+            if (fabs(e[m]) > lim) n += 1.0;
+        }
+        tmp[N] = n;
+    }
+
     static const int kLs[5] = { 4, 6, 10, 16, 24 };
     const double Tmin = m_cfg.popT, Qmax = m_cfg.popQ, ampMin = m_cfg.popAmp;
     const double Tbig = m_cfg.popBigT, kappa = m_cfg.popKappa;
@@ -4534,6 +4548,11 @@ void Channel::popFrame(int64_t j0) {
             const double E0 = (e2[p0 + L + P] - e2[p0]) * is2;
             const double q1 = (E0 - gain) / (double)P;
             if (!(q1 <= Qmax || (T >= Tbig && (q1 - 1.0) * (double)P <= kappa * gain))) continue;
+            if (busyMax >= 0 && T < busyT) {
+                const int a = (p0 - 4 > P) ? p0 - 4 : P;
+                const int b2 = (p0 + L + P + 4 < N) ? p0 + L + P + 4 : N;
+                if (tmp[N] - (tmp[b2] - tmp[a]) > (double)busyMax) continue;
+            }
             // A pop is one or two lobes. A pulse that swings more often is the
             // interpolation missing the music, not something lying on it.
             if (lobesMax > 0) {

@@ -123,6 +123,9 @@ void usage() {
         "  --pop-key <0|1>    Only under an open body or carpet key (default 1)\n"
         "  --pop-lobes <n>    Sign changes a pulse may not reach (default 2, 0 any)\n"
         "  --pop-long <0|1>   Also gaps of 24 low-rate samples, ~9 ms (default 0)\n"
+        "  --pop-busy <n>     Residual samples over 3.5 sigma elsewhere in the frame\n"
+        "                     a pulse may have (default 3)\n"
+        "  --pop-busy-t <x>   ... unless it explains this many sigma (default 100; 0: no test)\n"
         "  --low-keep <0|1>   The low keep: what a repair takes below low-keep-hz goes\n"
         "                     back, unless the run is a big click (default 1)\n"
         "  --low-keep-hz <Hz> Below this it goes back (default 1200)\n"
@@ -232,6 +235,8 @@ const ConfigFlag kConfigFlags[] = {
     INT("--pop-key",               popKey),
     INT("--pop-lobes",             popLobes),
     INT("--pop-long",              popLong),
+    INT("--pop-busy",              popBusy),
+    DBL("--pop-busy-t",            popBusyT),
     INT("--low-keep",              lowKeep),
     DBL("--low-keep-hz",           lowKeepHz),
     DBL("--low-keep-p0",           lowKeepP0),
