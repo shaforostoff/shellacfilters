@@ -168,6 +168,27 @@ add_test(NAME paraeq_verify COMMAND paraeq_verify)
 set_target_properties(paraeq_verify PROPERTIES FOLDER "tests")
 
 # ---------------------------------------------------------------------------
+# Room calibration for the Reverb cut band, against synthetic rooms: the
+# suggestion has to land on a resonance the test put there, through a
+# microphone on its own drifting clock, seconds behind the output. No SDK.
+
+add_executable(paraeq_calibrate_verify
+    paraeq_calibrate_verify.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_calibrate.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_core.cpp"
+)
+
+target_include_directories(paraeq_calibrate_verify PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq")
+
+if(MSVC)
+    target_compile_options(paraeq_calibrate_verify PRIVATE /W4)
+endif()
+
+add_test(NAME paraeq_calibrate_verify COMMAND paraeq_calibrate_verify)
+set_target_properties(paraeq_calibrate_verify PROPERTIES FOLDER "tests")
+
+# ---------------------------------------------------------------------------
 # The WinVST port of the declicker, against the core it shares with this tree.
 #
 # It compiles the WinVST folder's OWN copy of declick_core.cpp, deliberately:

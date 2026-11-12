@@ -26,5 +26,16 @@
 
 #define IDC_HINT                    4020
 #define IDC_DEFAULTS                4030
+#define IDC_CALIBRATE               4031
+
+//! Room calibration for the Reverb cut band. calibrate_dialog.cpp.
+#define IDD_PARAEQ_CALIBRATE        402
+#define IDC_CAL_DEVICE              4101
+#define IDC_CAL_START               4102
+#define IDC_CAL_STATUS              4103
+#define IDC_CAL_PLOT                4104
+#define IDC_CAL_RESULT              4105
+#define IDC_CAL_APPLY               4106
+#define IDC_CAL_CHOICE              4107
 
 #endif // FOO_DSP_PARAEQ_RESOURCE_H

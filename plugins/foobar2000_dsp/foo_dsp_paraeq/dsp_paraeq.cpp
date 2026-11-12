@@ -16,6 +16,7 @@
 
 #include "stdafx.h"
 
+#include "paraeq_calibrate.h"
 #include "paraeq_core.h"
 #include "paraeq_preset.h"
 
@@ -119,6 +120,11 @@ public:
             }
             if (c < channels) m_chan[c]->process(data + c, frames, channels);
         }
+
+        // While the calibration window is open it needs what this equaliser
+        // sends on, as sent; closed, this is one relaxed load.
+        if (paraeq_calib::tap::active())
+            paraeq_calib::tap::push(data, frames, channels, rate);
         return true;
     }
 

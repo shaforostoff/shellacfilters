@@ -79,6 +79,25 @@ bool build_editor(HWND dlg, dialog_state * st)
 }
 
 
+//! What the calibration window's Apply does: the suggestion onto the Reverb
+//! cut band, everything else left where it was, and the chain told at once so
+//! the change is heard while the window is still open.
+void apply_calibration(void * ctx, double frequency, double q, double gainDb)
+{
+    dialog_state * st = (dialog_state *)ctx;
+    if (!st->editor) return;
+    Params p = st->editor->params();
+    p.lmfFrequency = (float)frequency;
+    p.lmfQ         = (float)q;
+    p.lmfGain      = (float)gainDb;
+    p.sanitize();
+    st->editor->setParams(p);
+    dsp_preset_impl preset;
+    paraeq_preset::make(p, preset);
+    st->callback->on_preset_changed(preset);
+}
+
+
 INT_PTR CALLBACK dialog_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     dialog_state * st = (dialog_state *)GetWindowLongPtr(dlg, GWLP_USERDATA);
@@ -102,6 +121,13 @@ INT_PTR CALLBACK dialog_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 dsp_preset_impl preset;
                 paraeq_preset::make(Params::defaults(), preset);
                 st->callback->on_preset_changed(preset);
+                SetFocus(st->editor->wnd());
+                return TRUE;
+            }
+            break;
+        case IDC_CALIBRATE:
+            if (HIWORD(wp) == BN_CLICKED && st->editor) {
+                paraeq_calibrate_popup(dlg, apply_calibration, st);
                 SetFocus(st->editor->wnd());
                 return TRUE;
             }

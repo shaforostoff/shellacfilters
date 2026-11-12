@@ -3301,6 +3301,38 @@ something at forty pixels tall, and everything in the footer has a key and a
 context-menu item as well. Below roughly 200 × 90 the layout editor will not
 shrink it any further.
 
+### Calibrating Reverb cut to the room (Windows)
+
+A room that rings at one frequency makes every record sound wetter than it is.
+**Calibrate…** in the configuration dialog measures which frequency that is,
+with any recording device Windows knows: a USB microphone, or a phone streaming
+its microphone through a virtual input device.
+
+1. Start playback with Parametric EQ in the active DSP chain, at listening
+   level.
+2. Open **Calibrate…**, pick the microphone and press **Start**.
+3. Walk slowly through the middle of the room for a minute or two, holding the
+   microphone at ear height.
+4. When a suggestion appears, **Apply to Reverb cut** sets the band's
+   frequency, Q and gain; judge the gain by ear.
+
+While the window is open the equaliser keeps the last 20 seconds of its own
+output, because foobar2000 runs its DSP chain up to ten seconds ahead of what
+is heard. Every two seconds of microphone signal is looked for in that history,
+so the delay through the output buffer, the device and a phone's network does
+not have to be known, and blocks that are not found — talking, a pause, a
+network hiccup — are dropped. The blocks that are found give the room's power
+response, microphone over output, averaged over the walk. Only its shape is
+used, since neither a phone microphone nor the loudspeakers are flat: a broad
+trend is taken out and the largest bump left between 200 Hz and 3 kHz is the
+suggestion, with its width at half height as the Q. The plot shows the
+response (blue), its trend (grey) and the response with the suggested cut
+(green).
+
+Because the output is measured after the equaliser, a cut already on the band
+does not hide the bump, and calibrating again gives the same answer. Other DSPs
+after Parametric EQ in the chain are measured as part of the room.
+
 ### Putting the equaliser in the layout
 
 It is a **Default UI element**, so it can live in the main window beside the

@@ -49,6 +49,12 @@ void core_remove();
 //! Blocking modal configuration dialog. Main thread only.
 void paraeq_config_popup(const dsp_preset & data, HWND parent,
                          dsp_preset_edit_callback & callback);
+
+//! Blocking modal room calibration for the Reverb cut band, opened from the
+//! configuration dialog. `apply` is called with the suggested frequency, Q
+//! and gain when the user takes them. calibrate_dialog.cpp. Main thread only.
+typedef void (*paraeq_calibrate_apply)(void * ctx, double frequency, double q, double gainDb);
+void paraeq_calibrate_popup(HWND parent, paraeq_calibrate_apply apply, void * ctx);
 #else
 //! The macOS configuration view: a wrapped NSViewController holding the curve
 //! editor, for foobar2000 to put in a window of its own. config_view_mac.mm.

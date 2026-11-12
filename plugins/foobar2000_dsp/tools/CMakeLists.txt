@@ -49,3 +49,28 @@ if(MSVC)
 endif()
 
 set_target_properties(dehum_cli PROPERTIES FOLDER "tools")
+
+# The ParaEQ room calibration over real hardware: plays through one device,
+# records another, and runs the same analyser and WASAPI capture as the
+# foobar2000 window. Windows only.
+if(WIN32)
+    add_executable(paraeq_calib_loopback
+        paraeq_calib_loopback.cpp
+        wav_io.h
+        "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_calibrate.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_core.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/wasapi_capture.cpp"
+    )
+
+    target_include_directories(paraeq_calib_loopback PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq")
+
+    target_link_libraries(paraeq_calib_loopback PRIVATE ole32)
+
+    if(MSVC)
+        target_compile_options(paraeq_calib_loopback PRIVATE /W4)
+    endif()
+
+    set_target_properties(paraeq_calib_loopback PROPERTIES FOLDER "tools")
+endif()
