@@ -342,6 +342,8 @@ int main(int argc, char ** argv) {
     cfg.compute(params, (double)audio.sampleRate);
     apply(true);
 
+    // Configure to drain, file I/O left out: what a host pays.
+    const auto tDsp = std::chrono::steady_clock::now();
     std::vector<std::unique_ptr<declick::Channel> > chans;
     for (unsigned c = 0; c < channels; ++c) {
         std::unique_ptr<declick::Channel> ch(new declick::Channel());
@@ -413,6 +415,9 @@ int main(int argc, char ** argv) {
         avail = chans[0]->available();
     }
 
+    const double dspMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tDsp).count();
+
     uint64_t repaired = 0, seen = 0, clamped = 0, reclamped = 0, flSpans = 0, flSkipped = 0;
     uint64_t carpetOpen = 0, midCuts = 0, crackleFloorCuts = 0, shapeFits = 0, popFires = 0;
     for (unsigned c = 0; c < channels; ++c) {
@@ -450,6 +455,8 @@ int main(int argc, char ** argv) {
                params.maxLengthMs, cfg.passes, cfg.passes == 1 ? "" : "es", cfg.order);
         printf("  depth %.3f, wmax %.3f\n", params.depth, cfg.wienerMax);
         printf("  kernels %s\n", declick::kernelName());
+        printf("  dsp %.1f ms, %.1fx real time\n", dspMs,
+               dspMs > 0.0 ? 1000.0 * (double)frames / (double)audio.sampleRate / dspMs : 0.0);
         printf("  latency %d samples (%.1f ms)\n", cfg.latency,
                1000.0 * cfg.latency / (double)audio.sampleRate);
         if (warmFrames > 0) {

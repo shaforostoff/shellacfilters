@@ -1093,7 +1093,7 @@ private:
     //! m_in, before the first pass. Returns how many it took.
     void shapeBuild();
     int  shapeFit(int to);
-    void shapeBand(double v);
+    void shapeBand(int end);
     //! The median of the noise ring's first `have` entries; see the .cpp.
     double ringMedian(size_t have);
     //! Repairs bursts that start in [from, to); a burst may run on to `reach`.
@@ -1141,7 +1141,8 @@ private:
     //! delta. Equal to m_dry when the shape fit is off.
     AlignedBuf m_in;
     //! The shape fit. Parallel to m_win: the input's 3-8 kHz power, from four
-    //! biquads (m_shB coefficients, m_shZ state) as it is pushed. m_shQ: the
+    //! biquads (m_shB coefficients, m_shZ state) over m_in, worked out up to
+    //! window index m_shAt and the rest before each block. m_shQ: the
     //! three shapes, 2 shapeK + 1 each; m_shG: them through the model, with
     //! `order` more each; m_shMi: the inverse of their Gram matrix. The rest
     //! is per-block scratch.
@@ -1150,7 +1151,8 @@ private:
     double m_shB[20] = {};
     double m_shZ[8] = {};
     double m_shMi[9] = {};
-    double m_shSigHint = 0.0;     //!< the last block's residual median; see shapeFit()
+    int    m_shAt = 0;
+    double m_shSigHint = 0.0;    //!< the last block's residual median; see shapeFit()
     uint64_t m_shFits = 0;
     //! m_win with every repair in full, whatever its Config::softMin gain:
     //! what repairRun() solves against. Solved against m_win, a run's context
