@@ -53,13 +53,29 @@ static std::vector<float> makeMusic(double fs, double sec, uint64_t seed)
             const double dur = 0.15 + rng.uni() * 0.6;
             const double amp = 0.05 + 0.08 * rng.uni();
             const size_t a = (size_t)(t * fs), b = std::min(n, (size_t)((t + dur * 2.0) * fs));
+            // Harmonics as rotating phasors 1/h long, and the envelope as two decays,
+            // stepped per sample: a sin and two exps per sample made this the
+            // test's main cost, three times the analyser's in a 32-bit build.
+            int harmonics = 0;
+            double rc[10], rs[10], pc[10], ps[10];
+            for (int h = 1; h <= 10 && f0 * h <= fs * 0.45; ++h, ++harmonics) {
+                rc[h - 1] = cos(2.0 * kPi * f0 * h / fs);
+                rs[h - 1] = sin(2.0 * kPi * f0 * h / fs);
+                pc[h - 1] = 1.0 / h;
+                ps[h - 1] = 0.0;
+            }
+            const double attackStep = exp(-200.0 / fs), decayStep = exp(-2.0 / (dur * fs));
+            double attack = 1.0, decay = 1.0;
             for (size_t i = a; i < b; ++i) {
-                const double tt = (double)(i - a) / fs;
-                const double env = (1.0 - exp(-tt * 200.0)) * exp(-tt / dur * 2.0);
+                const double env = (1.0 - attack) * decay;
+                attack *= attackStep;
+                decay *= decayStep;
                 double s = 0.0;
-                for (int h = 1; h <= 10; ++h) {
-                    if (f0 * h > fs * 0.45) break;
-                    s += sin(2.0 * kPi * f0 * h * tt) / h;
+                for (int h = 0; h < harmonics; ++h) {
+                    s += ps[h];
+                    const double c = pc[h] * rc[h] - ps[h] * rs[h];
+                    ps[h] = pc[h] * rs[h] + ps[h] * rc[h];
+                    pc[h] = c;
                 }
                 out[i] += (float)(amp * env * s);
             }
@@ -69,6 +85,7 @@ static std::vector<float> makeMusic(double fs, double sec, uint64_t seed)
     // Bursts and a floor of noise, both roughly pink.
     double b0 = 0, b1 = 0, b2 = 0;
     double burst = 0.0;
+    const double burstStep = exp(-1.0 / (0.05 * fs));
     for (size_t i = 0; i < n; ++i) {
         const double w = rng.sym();
         b0 = 0.99765 * b0 + w * 0.0990460;
@@ -76,7 +93,7 @@ static std::vector<float> makeMusic(double fs, double sec, uint64_t seed)
         b2 = 0.57000 * b2 + w * 1.0526913;
         const double pink = (b0 + b1 + b2 + w * 0.1848) * 0.2;
         if (rng.uni() < 3.0 / fs) burst = 0.4;
-        burst *= exp(-1.0 / (0.05 * fs));
+        burst *= burstStep;
         out[i] += (float)(pink * (0.01 + burst));
     }
     return out;
