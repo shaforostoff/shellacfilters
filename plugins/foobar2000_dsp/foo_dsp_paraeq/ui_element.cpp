@@ -34,6 +34,7 @@
 
 #include "paraeq_editor.h"
 #include "paraeq_preset.h"
+#include "tone_watch.h"
 
 #include <memory>
 #include <vector>
@@ -99,9 +100,11 @@ public:
         m_editor.create(parent, rc, 0, m_params);
         m_editor.setSampleRate(g_sampleRate);
         g_live.push_back(this);
+        paraeq_tone_watch::subscribe(this, &paraeq_element_instance::toneChanged);
     }
 
     ~paraeq_element_instance() {
+        paraeq_tone_watch::unsubscribe(this);
         for (size_t i = 0; i < g_live.size(); ++i) {
             if (g_live[i] == this) { g_live.erase(g_live.begin() + i); break; }
         }
@@ -187,6 +190,13 @@ public:
         return (HFONT)m_callback->query_font_ex(ui_font_default);
     }
 
+    bool editorToneAvailable() override { return true; }
+    bool editorToneEnabled() override { return paraeq_tone_watch::enabled(); }
+    void editorToneEnable(bool on) override { paraeq_tone_watch::setEnabled(on); }
+    void editorToneHints(const Params & p, paraeq_editor::ToneHints & out) override {
+        paraeq_tone_watch::hints(p, g_sampleRate, out);
+    }
+
     bool editorLayoutEditMode() override {
         return m_callback.is_valid() && m_callback->is_edit_mode_enabled();
     }
@@ -205,6 +215,10 @@ public:
     }
 
     void onSampleRate(double rate) { m_editor.setSampleRate(rate); }
+
+    static void toneChanged(void * ctx) {
+        static_cast<paraeq_element_instance *>(ctx)->m_editor.refreshTone();
+    }
 
     void bumpFocus() {
         const HWND wnd = m_editor.wnd();

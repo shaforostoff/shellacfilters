@@ -74,6 +74,22 @@ enum Color {
     kColorSelection
 };
 
+//! Suggested settings for the playing track, which the editor draws as grey
+//! dots beside the handles they belong to. Worked out by the host - only a
+//! foobar2000 host knows what is playing - and handed over as plain numbers,
+//! so the VST build of this editor needs nothing more than it did.
+//!
+//! Indexed bass, brilliance, hiss: the low shelf, the high-mid bell and the
+//! high shelf.
+struct ToneHints {
+    enum { kCount = 3 };
+    bool    show[kCount]   = { false, false, false };
+    float   gainDb[kCount] = { 0, 0, 0 };
+    //! What the footer says beside the checkbox: the measurement, or why there
+    //! is none.
+    wchar_t status[128]    = { 0 };
+};
+
 //! What the editor needs from whoever put it on screen. Both implementations
 //! are a dozen lines; everything else the editor does for itself.
 class Host {
@@ -107,6 +123,19 @@ public:
     //! element means move it or replace it, and an equaliser that changed its
     //! own settings while the layout was being rearranged would be a trap.
     virtual bool editorLayoutEditMode() { return false; }
+
+    //! Whether this host can offer track tone at all. The footer shows the
+    //! checkbox only when it can; a VST host has no track to measure.
+    virtual bool editorToneAvailable() { return false; }
+    virtual bool editorToneEnabled() { return false; }
+    virtual void editorToneEnable(bool on) { (void)on; }
+
+    //! Hints for the playing track, given the settings `p` the editor is about
+    //! to draw - the suggestion depends on what the other bands are doing.
+    //! Called on a repaint after the settings or refreshTone() changed things.
+    virtual void editorToneHints(const paraeq::Params & p, ToneHints & out) {
+        (void)p; out = ToneHints();
+    }
 
 protected:
     ~Host() {}
@@ -144,6 +173,10 @@ public:
     //! Whether the equaliser is in the chain has changed.
     void refreshEngaged();
 
+    //! The host's tone hints changed: a new track was measured, or the feature
+    //! was switched.
+    void refreshTone();
+
     //! Rate to draw the curve for. Only the top of the plot can tell the
     //! difference, but that is where the hiss shelf lives.
     void setSampleRate(double rate);
@@ -172,7 +205,7 @@ private:
         //! because hit testing needs the same rectangles and doing it there
         //! would mean a device context and a text measurement on every mouse
         //! move just to decide whether the pointer is over one.
-        RECT button[4];
+        RECT button[5];
 
         //! How wide each band's two names come out in the host's font. Measured
         //! in layout() for the same reason the button rectangles are: the curve
@@ -193,6 +226,8 @@ private:
     void   paintCurve(HDC dc);
     void   paintStrip(HDC dc);
     void   paintFoot(HDC dc);
+    void   paintTone(HDC dc);
+    void   ensureTone();
     void   theme();             //!< resolve colours and font from the host
     void   releaseBuffer();
 
@@ -278,6 +313,13 @@ private:
     bool  m_engaged  = true;
     int   m_footHot  = -1;
     int   m_wheelRest = 0;      //!< wheel delta short of a whole notch
+
+    // Track tone: the hints last asked for and what they were asked for, so a
+    // repaint only asks again when the settings, the rate or the track moved.
+    ToneHints      m_tone;
+    paraeq::Params m_toneParams;
+    double         m_toneRate  = 0.0;
+    bool           m_toneStale = true;
 
     bool  m_pushDirty = false;
     bool  m_pushTimer = false;

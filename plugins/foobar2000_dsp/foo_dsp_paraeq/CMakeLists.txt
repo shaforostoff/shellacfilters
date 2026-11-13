@@ -11,10 +11,12 @@ fb2k_component(foo_dsp_paraeq "Parametric EQ"
         paraeq_calibrate.cpp
         paraeq_core.cpp
         paraeq_preset.cpp
+        paraeq_tone.cpp
 
         paraeq_calibrate.h
         paraeq_core.h
         paraeq_preset.h
+        paraeq_tone.h
         resource.h
         stdafx.h
         version.h
@@ -26,10 +28,12 @@ fb2k_component(foo_dsp_paraeq "Parametric EQ"
         config_dialog.cpp
         paraeq_editor.cpp
         ui_element.cpp
+        tone_watch.cpp
         wasapi_capture.cpp
         foo_dsp_paraeq.rc
 
         paraeq_editor.h
+        tone_watch.h
         wasapi_capture.h
 
     # The same editor in Cocoa, for the DSP's configuration window and the

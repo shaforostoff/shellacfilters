@@ -74,3 +74,20 @@ if(WIN32)
 
     set_target_properties(paraeq_calib_loopback PROPERTIES FOLDER "tools")
 endif()
+
+# The library scan behind paraeq_tone::reference(): reads f32le PCM from stdin.
+#   ffmpeg -i track.flac -f f32le -ac 2 - | paraeq_tone_cli 44100 2
+add_executable(paraeq_tone_cli
+    paraeq_tone_cli.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_tone.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_core.cpp"
+)
+
+target_include_directories(paraeq_tone_cli PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq")
+
+if(MSVC)
+    target_compile_options(paraeq_tone_cli PRIVATE /W4)
+endif()
+
+set_target_properties(paraeq_tone_cli PROPERTIES FOLDER "tools")

@@ -204,12 +204,17 @@ const UINT kPushIntervalMs = 25;
 enum { kTimerPush = 1 };
 
 // Footer buttons, left to right. The engage button only appears when the
-// equaliser is not in the DSP chain, and then it comes first.
-enum { kBtnEngage = 0, kBtnBypass, kBtnFlatten, kBtnReset, kBtnCount };
+// equaliser is not in the DSP chain, and then it comes first. Track tone is a
+// checkbox rather than a button and only appears where the host can measure a
+// track - see Host::editorToneAvailable().
+enum { kBtnEngage = 0, kBtnBypass, kBtnFlatten, kBtnReset, kBtnTone, kBtnCount };
 
 const wchar_t * const kBtnText[kBtnCount] = {
-    L"Add to DSP chain", L"Bypass", L"Flatten", L"Reset"
+    L"Add to DSP chain", L"Bypass", L"Flatten", L"Reset", L"Track tone"
 };
+
+//! The band each tone hint belongs to: bass, brilliance, hiss.
+const int kToneBand[ToneHints::kCount] = { kLF, kHMF, kHF };
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -387,6 +392,66 @@ void Editor::refreshEngaged()
     // along, so the footer has to be laid out again rather than just redrawn.
     layout();
     if (m_wnd) InvalidateRect(m_wnd, NULL, FALSE);
+}
+
+
+void Editor::refreshTone()
+{
+    m_toneStale = true;
+    if (m_wnd) InvalidateRect(m_wnd, NULL, FALSE);
+}
+
+
+void Editor::ensureTone()
+{
+    if (!m_toneStale && m_toneParams == m_params && m_toneRate == m_sampleRate) return;
+    m_toneStale  = false;
+    m_toneParams = m_params;
+    m_toneRate   = m_sampleRate;
+    m_tone = ToneHints();
+    if (m_host.editorToneAvailable() && m_host.editorToneEnabled()) {
+        m_host.editorToneHints(m_params, m_tone);
+    }
+}
+
+
+void Editor::paintTone(HDC dc)
+{
+    ensureTone();
+    const RECT & rc = m_layout.curve;
+    if (IsRectEmpty(&rc) || !m_engaged || m_params.bypass) return;
+
+    // Grey dots where the library's median would put each band, joined to the
+    // handle by a dotted line so it is plain which knob a dot belongs to. They
+    // are not hit-tested and cannot be dragged: a suggestion, not a control.
+    const COLORREF col = blend(m_colBack, m_colText, 0.38);
+    const HPEN line = CreatePen(PS_DOT, 1, col);
+    const HPEN none = (HPEN)GetStockObject(NULL_PEN);
+    const HBRUSH fill = CreateSolidBrush(col);
+    if (line == NULL || fill == NULL) {
+        if (line) DeleteObject(line);
+        if (fill) DeleteObject(fill);
+        return;
+    }
+    const int saved = SaveDC(dc);
+    IntersectClipRect(dc, rc.left, rc.top, rc.right, rc.bottom);
+    SetBkMode(dc, TRANSPARENT);
+    const int rad = MulDiv(4, m_dpi, 96);
+    for (int m = 0; m < ToneHints::kCount; m++) {
+        if (!m_tone.show[m]) continue;
+        const int b = kToneBand[m];
+        const int x = handleX(b);
+        const int y = clampi(yOfDb(m_tone.gainDb[m]), rc.top + rad, rc.bottom - rad - 1);
+        SelectObject(dc, line);
+        MoveToEx(dc, x, handleY(b), NULL);
+        LineTo(dc, x, y);
+        SelectObject(dc, none);
+        SelectObject(dc, fill);
+        Ellipse(dc, x - rad, y - rad, x + rad + 1, y + rad + 1);
+    }
+    RestoreDC(dc, saved);
+    DeleteObject(line);
+    DeleteObject(fill);
 }
 
 
@@ -611,10 +676,13 @@ void Editor::layout()
 
         for (int b = 0; b < kBtnCount; b++) {
             if (b == kBtnEngage && m_engaged) continue;
+            if (b == kBtnTone && !m_host.editorToneAvailable()) continue;
 
             SIZE sz = { 0, 0 };
             GetTextExtentPoint32W(dc, kBtnText[b], (int)wcslen(kBtnText[b]), &sz);
-            const int w = sz.cx + padX * 2;
+            // The checkbox carries its box in front of the label and no frame.
+            const int w = (b == kBtnTone) ? sz.cy + gap + sz.cx + padX
+                                          : sz.cx + padX * 2;
             // Out of room: the rest are left empty rather than squeezed.
             // Everything down here has a key and a context menu item too.
             if (x + w > m_layout.foot.right) break;
@@ -943,6 +1011,10 @@ void Editor::paintCurve(HDC dc)
         }
     }
 
+    // The tone hints under the handles, so a handle sitting on its own hint
+    // stays the thing to grab.
+    paintTone(dc);
+
     // Handles last, on top of the curve they describe.
     const int r  = MulDiv(4, m_dpi, 96);
     const int rs = handleRadius();
@@ -1162,6 +1234,25 @@ void Editor::paintFoot(HDC dc)
         const RECT & r = m_layout.button[b];
         if (IsRectEmpty(&r)) continue;
 
+        if (b == kBtnTone) {
+            const bool hot = (b == m_footHot);
+            const int  box = clampi(m_layout.rowH - MulDiv(4, m_dpi, 96), 8, 40);
+            const int  cy  = (r.top + r.bottom) / 2;
+            RECT br = { r.left + MulDiv(2, m_dpi, 96), cy - box / 2, 0, 0 };
+            br.right = br.left + box; br.bottom = br.top + box;
+            if (hot) fillRect(dc, br, m_colFill);
+            frameRect(dc, br, hot ? m_colDim : m_colGrid);
+            if (m_host.editorToneEnabled()) {
+                RECT tick = br;
+                InflateRect(&tick, -MulDiv(3, m_dpi, 96), -MulDiv(3, m_dpi, 96));
+                fillRect(dc, tick, m_colSel);
+            }
+            RECT tr = { br.right + MulDiv(4, m_dpi, 96), r.top, r.right, r.bottom };
+            drawText(dc, tr, kBtnText[b], DT_LEFT | DT_VCENTER, m_colText);
+            if (r.right > rightmost) rightmost = r.right;
+            continue;
+        }
+
         const bool on  = (b == kBtnBypass && m_params.bypass);
         const bool hot = (b == m_footHot);
         if (on)       fillRect(dc, r, blend(m_colBack, m_colSel, 0.35));
@@ -1173,10 +1264,12 @@ void Editor::paintFoot(HDC dc)
         if (r.right > rightmost) rightmost = r.right;
     }
 
-    if (!m_engaged) {
-        RECT r = { rightmost + MulDiv(8, m_dpi, 96), rc.top, rc.right, rc.bottom };
-        if (r.right > r.left) {
+    RECT r = { rightmost + MulDiv(8, m_dpi, 96), rc.top, rc.right, rc.bottom };
+    if (r.right > r.left) {
+        if (!m_engaged) {
             drawText(dc, r, L"not in the DSP chain", DT_LEFT | DT_VCENTER, m_colDim);
+        } else if (m_host.editorToneEnabled() && m_tone.status[0] != 0) {
+            drawText(dc, r, m_tone.status, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS, m_colDim);
         }
     }
 }
@@ -1398,6 +1491,11 @@ void Editor::onMouseDown(POINT pt, bool doubleClick)
         case kBtnBypass:
             m_params.bypass = !m_params.bypass;
             break;
+        case kBtnTone:
+            // A view setting, not an equaliser one: nothing is pushed.
+            m_host.editorToneEnable(!m_host.editorToneEnabled());
+            refreshTone();
+            return;
         case kBtnFlatten:
             // Gains to zero and nothing else. Where the bands sit and how wide
             // they are is a setting for the box of records; what they are doing
