@@ -38,11 +38,18 @@ fb2k_component(foo_dsp_paraeq "Parametric EQ"
         paraeq_editor_mac.mm
         config_view_mac.mm
         ui_element_mac.mm
+        calibrate_window_mac.mm
+        coreaudio_capture.cpp
 
         paraeq_editor_mac.h
+        calibrate_window_mac.h
+        coreaudio_capture.h
 )
 
-# The calibration window's microphone input is WASAPI, which is COM.
+# The calibration window's microphone input is WASAPI, which is COM, on Windows.
 if(WIN32)
     target_link_libraries(foo_dsp_paraeq PRIVATE ole32)
+else()
+    # On macOS it is a HAL IOProc, and AVFoundation asks for the permission.
+    target_link_libraries(foo_dsp_paraeq PRIVATE "-framework CoreAudio" "-framework AVFoundation")
 endif()

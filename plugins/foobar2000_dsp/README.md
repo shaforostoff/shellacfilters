@@ -3301,12 +3301,13 @@ something at forty pixels tall, and everything in the footer has a key and a
 context-menu item as well. Below roughly 200 × 90 the layout editor will not
 shrink it any further.
 
-### Calibrating Reverb cut to the room (Windows)
+### Calibrating Reverb cut to the room
 
 A room that rings at one frequency makes every record sound wetter than it is.
-**Calibrate…** in the configuration dialog measures which frequency that is,
-with any recording device Windows knows: a USB microphone, or a phone streaming
-its microphone through a virtual input device.
+**Calibrate…** in the configuration dialog (on a Mac, the button under the
+curve in the configuration window) measures which frequency that is, with any
+recording device the system knows: a USB microphone, or a phone streaming its
+microphone through a virtual input device.
 
 1. Start playback with Parametric EQ in the active DSP chain, at listening
    level.
@@ -3332,6 +3333,13 @@ response (blue), its trend (grey) and the response with the suggested cut
 Because the output is measured after the equaliser, a cut already on the band
 does not hide the bump, and calibrating again gives the same answer. Other DSPs
 after Parametric EQ in the chain are measured as part of the room.
+
+On a Mac, the first **Start** asks for permission to use the microphone, on
+foobar2000's behalf. Without it macOS hands over silence rather than an error,
+so if the answer was no, the window says so: allow foobar2000 under System
+Settings → Privacy & Security → Microphone and restart it. The calibration
+window is a window of its own there, not a modal dialog, so the curve stays in
+view while a suggestion is applied; it closes with the configuration window.
 
 ### Putting the equaliser in the layout
 
