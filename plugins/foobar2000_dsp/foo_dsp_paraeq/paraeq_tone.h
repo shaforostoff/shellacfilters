@@ -97,7 +97,8 @@ struct Deviation {
 };
 
 //! The library medians, measured by tools/paraeq_tone_cli over C:\TangoTunes:
-//! tango, vals and milonga dated before 1954. See paraeq_tone.cpp.
+//! tango, vals and milonga dated before 1954 from TangoTunes albums. See
+//! paraeq_tone.cpp.
 const Profile & reference();
 
 //! The library's 10th and 90th percentiles, as offsets from its median: a

@@ -182,7 +182,7 @@ static initquit_factory_t<quit_watch> g_quit_watch_factory;
 void appendDb(pfc::string8 & s, const char * name, float db) {
     char buf[48];
     snprintf(buf, sizeof(buf), "%s %+.1f", name, db);
-    if (!s.is_empty()) s << "   ";
+    if (!s.is_empty()) s << "  ";
     s << buf;
 }
 
@@ -207,10 +207,10 @@ void hints(const paraeq::Params & p, double sampleRate, paraeq_editor::ToneHints
     case kReady: {
         const paraeq_tone::Deviation d = paraeq_tone::deviation(g_profile);
         const paraeq_tone::Suggestion s = paraeq_tone::suggest(d, p, sampleRate);
-        appendDb(text, "bass",       d.db[paraeq_tone::kBass]);
-        appendDb(text, "brilliance", d.db[paraeq_tone::kBrilliance]);
-        appendDb(text, "hiss",       d.db[paraeq_tone::kHiss]);
-        text << " dB vs library";
+        appendDb(text, "LF",  d.db[paraeq_tone::kBass]);
+        appendDb(text, "HMF", d.db[paraeq_tone::kBrilliance]);
+        appendDb(text, "HF",  d.db[paraeq_tone::kHiss]);
+        text << " dB";
         for (int m = 0; m < paraeq_tone::kMeasures; m++) {
             out.show[m]   = s.valid && s.show[m];
             out.gainDb[m] = s.gainDb[m];

@@ -132,22 +132,25 @@ Profile Analyzer::finish()
 // The reference
 // ---------------------------------------------------------------------------
 
-// Measured by tools/paraeq_tone_cli over C:\TangoTunes on 2026-11-10: every
-// file tagged tango, vals or milonga and dated before 1954, less the
-// "(decrackle)" copies - 1953 tracks. TangoTunes and Todos (tangotimetravel)
-// transfers together. On the 126 recordings the library has from both, Todos
-// carries 3.8 dB less bass (lower on 121) and 3.4 dB less hiss, with the same
-// brilliance; dehumming first moves bass by 0.2 dB on the median track, so the
-// bass gap is the transfer, not hum. The spread is the 10th and 90th
-// percentiles, which flag each band on one track in five.
+// Measured by tools/paraeq_tone_cli over C:\TangoTunes on 2026-11-13: every
+// file tagged tango, vals or milonga, dated before 1954 and with "TangoTunes"
+// in its album, less the "(decrackle)" copies - 1250 tracks. Those transfers
+// are the tone the user wants; the Todos (tangotimetravel) ones, which the user
+// plays with more bass, are left out. Over the 704 other tracks the medians sit
+// 2.1 dB lower in bass, 0.5 dB in brilliance and 0.9 dB in hiss. On the 126
+// recordings the library has from both, Todos carries 3.8 dB less bass and
+// 3.4 dB less hiss, with the same brilliance; dehumming first moves bass by
+// 0.2 dB on the median track, so the bass gap is the transfer, not hum. The
+// spread is the 10th and 90th percentiles of the same 1250 tracks, which flag
+// each band on one track in five.
 const Profile & reference()
 {
     static const Profile ref = [] {
         Profile p;
         p.valid = true;
-        p.db[kBass]       = -7.54f;
-        p.db[kBrilliance] = -14.92f;
-        p.db[kHiss]       = -30.93f;
+        p.db[kBass]       = -6.80f;
+        p.db[kBrilliance] = -14.75f;
+        p.db[kHiss]       = -30.70f;
         p.frames = 0;
         return p;
     }();
@@ -157,8 +160,8 @@ const Profile & reference()
 const Spread & spread()
 {
     static const Spread s = {
-        { -4.05f, -3.29f, -5.99f },
-        {  3.75f,  3.66f,  4.97f },
+        { -3.73f, -2.95f, -4.75f },
+        {  3.46f,  3.12f,  5.17f },
     };
     return s;
 }
