@@ -1412,6 +1412,7 @@ private:
     double m_kPeak = 0.0;
     size_t m_kHead = 0, m_kTail = 0;
     std::vector<double> m_kY, m_kD, m_kRm, m_kAcc, m_kFir;
+    std::vector<double> m_kHpP, m_kHpN, m_kV;   //!< m_kFir padded for the flank kernel; one run's values
     std::vector<uint8_t> m_kS;
     std::vector<KeepRun> m_kPend;
 
@@ -1426,6 +1427,7 @@ private:
     int    m_pD = 0, m_pHalf = 0;
     size_t m_pMask = 0;
     uint64_t m_pT = 0;
+    uint64_t m_pNext = 0;          //!< the next m_pT a low-rate sample is centred popHalf before
     int    m_pFill = 0;
     int64_t m_pJ0 = 0;
     uint64_t m_pFires = 0;

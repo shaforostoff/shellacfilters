@@ -315,15 +315,46 @@ void shapeCorrBase(const double * G, int Lg, int L, const double * e,
     }
 }
 
+//! Four samples at a time: where their bands overlap, one pass adds all four
+//! to each output, in the order one sample at a time would, so the sums are
+//! the same to the bit and acc is loaded and stored once where it was four
+//! times. Before the fourth's band starts and after the first's ends, the
+//! other three go one at a time, also in order. On the M1 the low keep at
+//! 96 kHz, which is all this, went from 82 ms a minute to 62.
 void flankAddBase(double * acc, const double * hpP, const double *, int Hh,
                   const double * d, int t0, int m, int xEnd) {
-    for (int j = 0; j < m; ++j) {
+    auto one = [&](int j) {
         const double dj = d[j];
-        if (dj == 0.0) continue;
         const int t = t0 + j;
         const int b = (t + Hh > xEnd) ? (xEnd - t) : Hh;
         for (int u = -Hh; u <= b; ++u) acc[t + u] += hpP[u] * dj;
+    };
+    const int taps = 2 * Hh + 1;
+    const double * h = hpP - Hh;                    // h[0 .. taps)
+    int q[4];
+    int nq = 0;
+    for (int j = 0; j < m; ++j) {
+        if (d[j] == 0.0) continue;
+        q[nq] = j;
+        if (++nq < 4) continue;
+        nq = 0;
+        const int d1 = q[1] - q[0], d2 = q[2] - q[0], d3 = q[3] - q[0];
+        if (d3 >= taps || t0 + q[3] + Hh > xEnd) {
+            for (int k = 0; k < 4; ++k) one(q[k]);
+            continue;
+        }
+        const double v0 = d[q[0]], v1 = d[q[1]], v2 = d[q[2]], v3 = d[q[3]];
+        double * p = acc + t0 + q[0] - Hh;
+        for (int u = 0; u < d3; ++u) p[u] += h[u] * v0;
+        for (int u = d1; u < d3; ++u) p[u] += h[u - d1] * v1;
+        for (int u = d2; u < d3; ++u) p[u] += h[u - d2] * v2;
+        for (int u = d3; u < taps; ++u)
+            p[u] = (((p[u] + h[u] * v0) + h[u - d1] * v1) + h[u - d2] * v2) + h[u - d3] * v3;
+        for (int u = taps; u < taps + d1; ++u) p[u] += h[u - d1] * v1;
+        for (int u = taps; u < taps + d2; ++u) p[u] += h[u - d2] * v2;
+        for (int u = taps; u < taps + d3; ++u) p[u] += h[u - d3] * v3;
     }
+    for (int k = 0; k < nq; ++k) one(q[k]);
 }
 
 void autocorrBase(const double * x, int n, double * r, int maxLag) {
@@ -2749,6 +2780,12 @@ void Channel::configure(const Config & cfg) {
             }
             for (int k = 0; k < taps; ++k) m_kFir[(size_t)k] /= sum;
         }
+        // The same taps padded for the flank kernel; see FlankAddFn.
+        m_kHpP.assign((size_t)(taps + 2 * kFlankPad), -0.0);
+        m_kHpN.assign((size_t)(taps + 2 * kFlankPad), 0.0);
+        std::copy(m_kFir.begin(), m_kFir.end(), m_kHpP.begin() + kFlankPad);
+        std::copy(m_kFir.begin(), m_kFir.end(), m_kHpN.begin() + kFlankPad);
+        m_kV.assign((size_t)cfg.lowKeepCap, 0.0);
     }
 
     // The low pop stage, sized from popD alone and held only while it is on.
@@ -2789,7 +2826,7 @@ void Channel::configure(const Config & cfg) {
         m_pEb.assign(N, 0.0);
         m_pW.assign(N, 0.0);
         m_pRc.assign(P + 1, 0.0);
-        m_pG.assign(L * L, 0.0);
+        m_pG.assign(2 * L * L + 2 * (size_t)kPopH, 0.0);   // G, C^-1, the gain pre-filter
         m_pCh.assign(L * L + L, 0.0);
         m_pTmp.assign(2 * N, 0.0);
         m_pBad.assign(N, 0);
@@ -2854,7 +2891,7 @@ size_t Channel::heapBytes() const {
             + m_nFloor.capacity() + m_nSaved.capacity() + m_nWarm.capacity() + m_nAt.capacity()
             + m_nG.capacity() + m_nWf.capacity() + m_nIn.capacity() + m_nOut.capacity()
             + m_kY.capacity() + m_kD.capacity() + m_kRm.capacity() + m_kAcc.capacity()
-            + m_kFir.capacity()
+            + m_kFir.capacity() + m_kHpP.capacity() + m_kHpN.capacity() + m_kV.capacity()
             + m_pY.capacity() + m_pDry.capacity() + m_pR.capacity() + m_pFir.capacity()
             + m_pLow.capacity() + m_pF.capacity() + m_pA.capacity() + m_pB.capacity()
             + m_pC.capacity() + m_pE.capacity() + m_pEb.capacity() + m_pW.capacity()
@@ -3012,6 +3049,7 @@ void Channel::resetPath() {
     std::fill(m_pR.begin(), m_pR.end(), 0.0);
     std::fill(m_pLow.begin(), m_pLow.end(), 0.0);
     m_pT = 0;
+    m_pNext = (uint64_t)m_pHalf;
     // The first frame decides the stream's first gaps: it starts with as many
     // zeros as lie before the part of a frame that is decided.
     m_pFill = (int)kPopN - (int)kPopLmax - (int)kPopP - (int)kPopH;
@@ -4235,16 +4273,27 @@ void Channel::keepRun(uint64_t a, int len, double pk) {
     const int K = m_cfg.lowKeepHalf, taps = 2 * K + 1;
     const double * f = &m_kFir[0];
     double * acc = &m_kAcc[0];
+    // The low band goes in through the flank repair's kernel: the same sum,
+    // acc[t + u] += f[K + u] v, sample by sample. Slots before the stream's
+    // start wrap onto ones not yet in use, which are zeroed before they are;
+    // a run whose band wraps round the end of the ring goes one sample at a
+    // time, as the kernel wants acc in one piece.
+    const size_t at = (size_t)(a - (uint64_t)K) & mask;
+    double * v = &m_kV[0];
+    for (int s = 0; s < len; ++s) v[s] = g * m_kRm[(size_t)(a + (uint64_t)s) & mask];
+    if (size - at >= (size_t)(len + taps - 1)) {
+        const size_t tap0 = (size_t)(kFlankPad + K);
+        g_kernels->flankAdd(acc, &m_kHpP[tap0], &m_kHpN[tap0], K, v, (int)at + K, len,
+                            (int)(size - 1));
+        return;
+    }
     for (int s = 0; s < len; ++s) {
-        const double v = g * m_kRm[(size_t)(a + (uint64_t)s) & mask];
-        if (v == 0.0) continue;
-        // Slots before the stream's start wrap onto ones not yet in use,
-        // which are zeroed before they are.
-        const size_t at = (size_t)(a + (uint64_t)s - (uint64_t)K) & mask;
-        const int m1 = (size - at < (size_t)taps) ? (int)(size - at) : taps;
-        double * p = acc + at;
-        for (int k = 0; k < m1; ++k) p[k] += v * f[k];
-        for (int k = m1; k < taps; ++k) acc[k - m1] += v * f[k];
+        if (v[s] == 0.0) continue;
+        const size_t as = (size_t)(a + (uint64_t)s - (uint64_t)K) & mask;
+        const int m1 = (size - as < (size_t)taps) ? (int)(size - as) : taps;
+        double * p = acc + as;
+        for (int k = 0; k < m1; ++k) p[k] += v[s] * f[k];
+        for (int k = m1; k < taps; ++k) acc[k - m1] += v[s] * f[k];
     }
 }
 
@@ -4333,7 +4382,8 @@ void Channel::popPush(double y, double d) {
     m_pDry[i] = d;
     m_pR[i] = 0.0;
     const uint64_t half = (uint64_t)m_pHalf;
-    if (t >= half && (t - half) % (uint64_t)m_pD == 0) {
+    if (t == m_pNext) {         // t >= half and t - half a multiple of popD
+        m_pNext += (uint64_t)m_pD;
         // Centred on t - half; before the stream's start the ring holds zeros.
         const double * f = &m_pFir[0];
         const double * ry = &m_pY[0];
@@ -4406,35 +4456,102 @@ void Channel::popFrame(int64_t j0) {
                 A[i * P + j] = F[(i + 1) * P1 + j + 1] + F[(P - i - 1) * P1 + (P - j - 1)];
             b[i] = -(F[(i + 1) * P1] + F[(P - i - 1) * P1 + P]);
         }
-        // Each row left out takes its outer product back.
-        for (int m = P; m < N; ++m) {
-            if (!bad[m]) continue;
-            const double * xf = s + m - 1;          // forward row: s[m-1-i]
-            const double * xb = s + m - P + 1;      // backward row: s[m-P+1+i]
-            const double tf = s[m], tb = s[m - P];
-            for (int i = 0; i < P; ++i) {
-                const double fi = xf[-i], bi = xb[i];
-                b[i] += fi * tf + bi * tb;
-                double * row = A + i * P;
-                for (int j = 0; j <= i; ++j) row[j] -= fi * xf[-j] + bi * xb[j];
+        // Each row left out takes its outer product back. The forward row runs
+        // down s; read from s reversed (tmp, free until the medians below) it
+        // runs up, and the row update is a loop the compiler vectorises.
+        // Rows go four at a time, each element of A loaded and stored once for
+        // the four and taking their terms in row order, as one at a time would.
+        if (it == 1) {
+            double * rs = tmp;
+            for (int k = 0; k < N; ++k) rs[k] = s[N - 1 - k];
+            int rows[kPopN];
+            int nr = 0;
+            for (int m = P; m < N; ++m) if (bad[m]) rows[nr++] = m;
+            int q = 0;
+            for (; q + 4 <= nr; q += 4) {
+                const double * xf[4];
+                const double * xb[4];
+                double tf[4], tb[4];
+                for (int u = 0; u < 4; ++u) {
+                    const int m = rows[q + u];
+                    xf[u] = rs + N - m;                 // forward row: s[m-1-i]
+                    xb[u] = s + m - P + 1;              // backward row: s[m-P+1+i]
+                    tf[u] = s[m];
+                    tb[u] = s[m - P];
+                }
+                const double * __restrict f0 = xf[0], * __restrict f1 = xf[1];
+                const double * __restrict f2 = xf[2], * __restrict f3 = xf[3];
+                const double * __restrict g0 = xb[0], * __restrict g1 = xb[1];
+                const double * __restrict g2 = xb[2], * __restrict g3 = xb[3];
+                for (int i = 0; i < P; ++i) {
+                    const double a0 = f0[i], a1 = f1[i], a2 = f2[i], a3 = f3[i];
+                    const double c0 = g0[i], c1 = g1[i], c2 = g2[i], c3 = g3[i];
+                    b[i] += a0 * tf[0] + c0 * tb[0];
+                    b[i] += a1 * tf[1] + c1 * tb[1];
+                    b[i] += a2 * tf[2] + c2 * tb[2];
+                    b[i] += a3 * tf[3] + c3 * tb[3];
+                    double * __restrict row = A + i * P;
+                    for (int j = 0; j <= i; ++j) {
+                        double r = row[j];
+                        r -= a0 * f0[j] + c0 * g0[j];
+                        r -= a1 * f1[j] + c1 * g1[j];
+                        r -= a2 * f2[j] + c2 * g2[j];
+                        r -= a3 * f3[j] + c3 * g3[j];
+                        row[j] = r;
+                    }
+                }
+            }
+            for (; q < nr; ++q) {
+                const int m = rows[q];
+                const double * xf = rs + N - m;
+                const double * xb = s + m - P + 1;
+                const double tf = s[m], tb = s[m - P];
+                for (int i = 0; i < P; ++i) {
+                    const double fi = xf[i], bi = xb[i];
+                    b[i] += fi * tf + bi * tb;
+                    double * row = A + i * P;
+                    for (int j = 0; j <= i; ++j) row[j] -= fi * xf[j] + bi * xb[j];
+                }
             }
         }
         double tr = 0.0;
         for (int i = 0; i < P; ++i) tr += A[i * P + i];
         for (int i = 0; i < P; ++i) A[i * P + i] += 1e-6 * tr / (double)P + 1e-20;
-        bool ok = true;
-        for (int i = 0; i < P && ok; ++i) {
-            for (int j = 0; j <= i; ++j) {
-                const double a = A[i * P + j] - dot(A + i * P, A + j * P, j);
-                if (i == j) {
-                    if (!(a > 0.0)) { ok = false; break; }
-                    A[i * P + i] = sqrt(a);
-                } else {
-                    A[i * P + j] = a / A[j * P + j];
+        // Cholesky, four rows at a time. Left of their diagonal block the four
+        // rows read only rows already finished, so they are four independent
+        // chains where one row alone is a single one (each element waits on
+        // the one before it); every element is the same expression as row by
+        // row, so the factor is the same to the bit.
+        static_assert(kPopP % 4 == 0, "the Cholesky takes rows in fours");
+        for (int i0 = 0; i0 < P; i0 += 4) {
+            double * r0 = A + i0 * P;
+            double * r1 = r0 + P;
+            double * r2 = r1 + P;
+            double * r3 = r2 + P;
+            for (int j = 0; j < i0; ++j) {
+                const double * rj = A + j * P;
+                const double a0 = r0[j] - dot(r0, rj, j);
+                const double a1 = r1[j] - dot(r1, rj, j);
+                const double a2 = r2[j] - dot(r2, rj, j);
+                const double a3 = r3[j] - dot(r3, rj, j);
+                const double dj = rj[j];
+                r0[j] = a0 / dj;
+                r1[j] = a1 / dj;
+                r2[j] = a2 / dj;
+                r3[j] = a3 / dj;
+            }
+            for (int i = i0; i < i0 + 4; ++i) {
+                for (int j = i0; j <= i; ++j) {
+                    const double a = A[i * P + j] - dot(A + i * P, A + j * P, j);
+                    if (i == j) {
+                        if (!(a > 0.0)) return;     // no model: leave the frame alone
+                        A[i * P + i] = sqrt(a);
+                    } else {
+                        A[i * P + j] = a / A[j * P + j];
+                    }
                 }
             }
         }
-        if (!ok) return;                            // no model: leave the frame alone
         for (int i = 0; i < P; ++i) c[i + 1] = (b[i] - dot(A + i * P, c + 1, i)) / A[i * P + i];
         for (int i = P - 1; i >= 0; --i) {
             double a = c[i + 1];
@@ -4505,6 +4622,9 @@ void Channel::popFrame(int64_t j0) {
     PopCand * cand = &m_pCand[0];
     int nc = 0;
     double * G = &m_pG[0];
+    double * Ci = G + Lmax * Lmax;
+    double * gz = Ci + Lmax * Lmax;
+    double * zi = gz + H;
     double * C = &m_pCh[0];
     double * z = C + Lmax * Lmax;
     double v[kPopLmax];
@@ -4525,6 +4645,7 @@ void Channel::popFrame(int64_t j0) {
                 for (int k = 0; k < i; ++k) a -= C[i * L + k] * z[k];
                 z[i] = a / C[i * L + i];
             }
+            for (int i = 0; i < L; ++i) Ci[i * L + col] = z[i];
             for (int i = L - 1; i >= 0; --i) {
                 double a = z[i];
                 for (int k = i + 1; k < L; ++k) a -= C[k * L + i] * z[k];
@@ -4533,7 +4654,26 @@ void Channel::popFrame(int64_t j0) {
             for (int i = 0; i < L; ++i) G[i * L + col] = z[i];
         }
         const double rootL = sqrt(2.0 * (double)L);
+        // The pre-filter: w^T G w is also |C^-1 w|^2, which for all H
+        // positions at once is L short filters across them, and vectorises.
+        // It rounds differently, so it only drops a position whose gain falls
+        // 1% short of what T >= Tmin needs; the rest are weighed exactly as
+        // before, and what is taken is the same to the bit.
+        {
+            for (int p = 0; p < H; ++p) gz[p] = 0.0;
+            for (int i = 0; i < L; ++i) {
+                for (int p = 0; p < H; ++p) zi[p] = 0.0;
+                for (int k = 0; k <= i; ++k) {
+                    const double cik = Ci[i * L + k];
+                    const double * wk = w + lo + k;
+                    for (int p = 0; p < H; ++p) zi[p] += cik * wk[p];
+                }
+                for (int p = 0; p < H; ++p) gz[p] += zi[p] * zi[p];
+            }
+        }
+        const double gainMin = 0.99 * ((double)L + Tmin * rootL) / is2;
         for (int p0 = lo; p0 < hi; ++p0) {
+            if (!(gz[p0 - lo] >= gainMin)) continue;
             double gain = 0.0, pe = 0.0;
             for (int i = 0; i < L; ++i) {
                 const double a = dot(G + i * L, w + p0, L);
