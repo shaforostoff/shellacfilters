@@ -147,6 +147,11 @@ void usage() {
         "                     Quantile of a bin's power that is its floor (default 0.1)\n"
         "  --crackle-floor-win <s>\n"
         "                     Seconds of history the floor is taken over (default 6)\n"
+        "  --crackle-floor-ref0 <Hz>, --crackle-floor-ref1 <Hz>\n"
+        "                     Below ref0 the floor is held to its median over ref0..ref1\n"
+        "                     (default 2000, 3000; ref1 0: no cap)\n"
+        "  --crackle-floor-tilt <dB>\n"
+        "                     ... plus this much an octave below that band (default 2)\n"
         "  --crackle-floor-release <s>\n"
         "                     Time constant the cut comes back with (default 0.06)\n"
         "  --warm-start <s>   Before the stream, run the core over its first s seconds\n"
@@ -226,6 +231,9 @@ const ConfigFlag kConfigFlags[] = {
     DBL("--crackle-floor-win",     crackleFloorWin),
     DBL("--crackle-floor-release", crackleFloorRelease),
     DBL("--crackle-floor-hi",      crackleFloorHi),
+    DBL("--crackle-floor-ref0",    crackleFloorRef0),
+    DBL("--crackle-floor-ref1",    crackleFloorRef1),
+    DBL("--crackle-floor-tilt",    crackleFloorTilt),
     INT("--pop",                   pop),
     DBL("--pop-t",                 popT),
     DBL("--pop-q",                 popQ),

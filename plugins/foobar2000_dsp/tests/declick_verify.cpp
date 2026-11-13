@@ -919,6 +919,57 @@ void testPopBusy() {
     if (!(bOn < 0.5 * bOff + 0.05)) { printf("  FAIL  pulses among attacks are still taken\n"); ++g_failures; }
 }
 
+//! The crackle floor's cap: music that never stops at 1-1.9 kHz, 12 dB over a
+//! level noise, makes the stage's floor there its own; with the cap the floor
+//! is the noise's, read at 2-3 kHz, and the music is left. Noise alone is cut
+//! as it was.
+void testFloorCap() {
+    printf("crackle floor stage, the cap below 2 kHz\n");
+    const double sr = 44100.0;
+    const size_t N = (size_t)(8.0 * sr);
+    const double w = 6.283185307 / sr;
+    std::vector<double> noise(N), music(N, 0.0);
+    Rng rng(909u);
+    for (size_t i = 0; i < N; ++i) noise[i] = 0.004 * rng.centred();
+    // Dense small clicks: what opens the stage's key.
+    for (size_t i = 500; i + 2 < N; i += 90 + (rng.next() % 120)) {
+        const double a = (rng.next() & 1u) ? 0.05 : -0.05;
+        noise[i] += a; noise[i + 1] -= 0.6 * a;
+    }
+    // 120 partials 7.5 Hz apart: a band of noise that is always there.
+    for (int k = 0; k < 120; ++k) {
+        const double f = 1000.0 + 7.5 * (double)k + 3.0 * rng.centred();
+        const double ph = 6.283185307 * (rng.centred() + 0.5);
+        for (size_t i = 0; i < N; ++i) music[i] += 0.0011 * sin(w * f * (double)i + ph);
+    }
+    Params p = Params::defaults();
+    const auto stage = [&](const std::vector<double> & x, bool cap, double * share) {
+        const std::vector<double> none = runChannel(x, p, sr, [](Config & c) { c.crackleFloor = 0; });
+        const std::vector<double> y = cap
+            ? runChannel(x, p, sr)
+            : runChannel(x, p, sr, [](Config & c) { c.crackleFloorRef1 = 0.0; });
+        double e = 0.0, num = 0.0, den = 0.0;
+        for (size_t i = (size_t)(2.0 * sr); i + (size_t)sr < N; ++i) {
+            const double r = none[i] - y[i];
+            e += r * r; num += r * music[i]; den += music[i] * music[i];
+        }
+        if (share) *share = num / den;
+        return e;
+    };
+    std::vector<double> x(N);
+    for (size_t i = 0; i < N; ++i) x[i] = noise[i] + music[i];
+    double mOn = 0.0, mOff = 0.0;
+    stage(x, true, &mOn);
+    stage(x, false, &mOff);
+    const double nOn = stage(noise, true, 0), nOff = stage(noise, false, 0);
+    printf("  share of the music the stage takes: %.3f with the cap, %.3f without\n", mOn, mOff);
+    printf("  noise alone: what the stage takes with the cap, %.2f dB re without\n",
+           10.0 * log10(nOn / (nOff + 1e-300) + 1e-300));
+    if (!(nOff > 0.0 && mOff > 0.05)) { printf("  FAIL  the stage did not run, or took no music without the cap\n"); ++g_failures; }
+    if (!(mOn < 0.4 * mOff)) { printf("  FAIL  the cap leaves the music's floor in\n"); ++g_failures; }
+    if (!(nOn > 0.8 * nOff && nOn < 1.05 * nOff)) { printf("  FAIL  the cap changes what is taken from noise alone\n"); ++g_failures; }
+}
+
 } // anonymous namespace
 
 int main() {
@@ -933,6 +984,7 @@ int main() {
     testCautious();
     testLowKeep();
     testPopBusy();
+    testFloorCap();
 
     if (g_failures == 0) { printf("\nOK\n"); return 0; }
     printf("\n%d failure(s)\n", g_failures);
