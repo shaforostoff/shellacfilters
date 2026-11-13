@@ -704,20 +704,26 @@ void analyseSpectra(const double * sxx, const double * syy, Shape & r)
 
     // Narrow bumps, tallest first, one per third of an octave; then the
     // tallest broad one if it out-tops them, in the last place if need be.
+    // Narrow bumps too small to suggest do not stand in front of a broad hump
+    // that is tall enough: the hump comes first and they follow it (a Köln
+    // milonga: 356 and 511 Hz at +2.3 dB on a 504 Hz Q 0.7 hump of +9.6 dB).
     r.peaks = 0;
     r.broadTaller = false;
     if (cands.empty()) return;
     const Cand * broad = nullptr;
     for (const Cand & c : cands) if (c.broad && (!broad || c.pk.heightDb > broad->pk.heightDb)) broad = &c;
+    const bool narrowWeak = cands.front().broad || cands.front().pk.heightDb < kMinSuggestDb;
+    const bool broadFirst = broad && narrowWeak && broad->pk.heightDb >= kMinSuggestDb;
     const bool showBroad = broad && (cands.front().broad || broad->pk.heightDb > cands.front().pk.heightDb);
-    const int narrowSlots = showBroad ? kMaxPeaks - 1 : kMaxPeaks;
+    if (broadFirst) r.peak[r.peaks++] = broad->pk;
+    const int narrowSlots = showBroad && !broadFirst ? kMaxPeaks - 1 : kMaxPeaks;
     for (const Cand & c : cands) {
         if (c.broad || r.peaks >= narrowSlots) continue;
         bool dup = false;
-        for (int k = 0; k < r.peaks; ++k) if (near(c.pk, r.peak[k], 1.0 / 3.0)) dup = true;
+        for (int k = 0; k < r.peaks; ++k) if (r.peak[k].q >= kNarrowQ && near(c.pk, r.peak[k], 1.0 / 3.0)) dup = true;
         if (!dup) r.peak[r.peaks++] = c.pk;
     }
-    if (showBroad) {
+    if (showBroad && !broadFirst) {
         r.broadTaller = r.peaks > 0;
         r.peak[r.peaks++] = broad->pk;
     }

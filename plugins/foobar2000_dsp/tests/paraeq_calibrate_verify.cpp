@@ -370,6 +370,22 @@ int main()
         ckTrue("unsure", !r.sure);
     }
     {
+        // A mode too small to suggest on a tall broad hump, as the Köln
+        // milonga looked: the hump is the first option and the result ready.
+        Room room;
+        room.resonance = true;
+        room.freq = 550.0; room.q = 0.7; room.gainDb = 9.0;
+        room.second = true;
+        room.freq2 = 350.0; room.q2 = 3.0; room.gainDb2 = 1.5;
+        const Result r = run(room, sec, 7, &ms);
+        print("350 Hz +1.5 on a 550 Hz Q 0.7 +9 hump", r, ms);
+        printOptions(r);
+        ckTrue("ready", r.ready());
+        ckTrue("the hump first", r.options > 0 && r.option[0].q < 1.4);
+        ckTrue("the hump within 1/3 octave of 550 Hz", r.options > 0 && fabs(log2(r.option[0].frequency / 550.0)) < 1.0 / 3.0);
+        ckTrue("the hump's gain -5 dB or deeper", r.options > 0 && r.option[0].gainDb <= -5.0);
+    }
+    {
         // One end of the room rings at 300 Hz, the other at 1 kHz: the halves
         // of the walk disagree.
         Room room;
