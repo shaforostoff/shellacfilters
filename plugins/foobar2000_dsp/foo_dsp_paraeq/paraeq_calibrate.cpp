@@ -78,30 +78,55 @@ const double kNarrowQ    = 1.4;
 
 double fitQ(int i) { return kFitQMin * pow(2.0, i / 6.0); }
 
-//! Analog peaking EQ, dB, `oct` octaves from its centre.
-double bellDb(double oct, double q, double gainDb)
+//! The largest grid offset bellShape is asked for: the wide fit's window and
+//! centre search, plus the smoothing either side.
+const int kShapeReach = kFitSpan + kFitShift + kSmoothSpan;
+
+//! Tables for bellShape, the same for every call. pow, cos and log10 are slow
+//! in a 32-bit build, where the C runtime does them without the x64 one's
+//! SSE2 code, and the shapes were a block's main cost there.
+struct ShapeTables {
+    double w2[2 * kShapeReach + 1];          //!< (2^(i/grid))^2, i from -reach
+    double smooth[2 * kSmoothSpan + 1];      //!< Hann weight times bin density
+    double smoothSum = 0.0;
+    ShapeTables()
+    {
+        for (int i = -kShapeReach; i <= kShapeReach; ++i) {
+            const double w = pow(2.0, (double)i / kGridPerOctave);
+            w2[i + kShapeReach] = w * w;
+        }
+        for (int k = -kSmoothSpan; k <= kSmoothSpan; ++k) {
+            const double w = (0.5 + 0.5 * cos(kPi * k / (kSmoothSpan + 1))) * pow(2.0, (double)k / kGridPerOctave);
+            smooth[k + kSmoothSpan] = w;
+            smoothSum += w;
+        }
+    }
+};
+const ShapeTables & shapeTables()
 {
-    const double w = pow(2.0, oct);
-    const double A = pow(10.0, gainDb / 40.0);
-    const double d = (1.0 - w * w) * (1.0 - w * w);
-    const double num = d + (w * A / q) * (w * A / q);
-    const double den = d + (w / (A * q)) * (w / (A * q));
-    return 10.0 * log10(num / den);
+    static const ShapeTables t;
+    return t;
 }
 
 //! Smoothed bell shape over grid offsets [-D, D], divided by its gain so
-//! that the fit's coefficient is the gain in dB.
+//! that the fit's coefficient is the gain in dB. The bell is the analog
+//! peaking EQ, whose power gain at w = f / fc is
+//! (d + (wA/q)^2) / (d + (w/(Aq))^2) with d = (1 - w^2)^2 and A = 10^(dB/40).
 void bellShape(double q, double gainDb, int D, std::vector<double> & out)
 {
+    const ShapeTables & t = shapeTables();
+    const double A = pow(10.0, gainDb / 40.0);
+    const double up = (A / q) * (A / q), down = 1.0 / ((A * q) * (A * q));
     out.resize((size_t)(2 * D + 1));
     for (int d = -D; d <= D; ++d) {
-        double s = 0.0, sw = 0.0;
-        for (int k = -kSmoothSpan; k <= kSmoothSpan; ++k) {
-            const double w = (0.5 + 0.5 * cos(kPi * k / (kSmoothSpan + 1))) * pow(2.0, (double)k / kGridPerOctave);
-            s  += w * pow(10.0, bellDb((double)(d + k) / kGridPerOctave, q, gainDb) / 10.0);
-            sw += w;
+        const double * w2 = t.w2 + kShapeReach + d - kSmoothSpan;
+        double s = 0.0;
+        for (int k = 0; k <= 2 * kSmoothSpan; ++k) {
+            const double x = w2[k];
+            const double dd = (1.0 - x) * (1.0 - x);
+            s += t.smooth[k] * ((dd + x * up) / (dd + x * down));
         }
-        out[(size_t)(d + D)] = 10.0 * log10(s / sw) / gainDb;
+        out[(size_t)(d + D)] = 10.0 * log10(s / t.smoothSum) / gainDb;
     }
 }
 
@@ -145,6 +170,18 @@ bool fitBell(const std::vector<double> & resp, int jc, int cLo, int cHi, BellFit
 
     // Twice: the shape of a bell changes a little with its gain, so the
     // second pass uses the first pass's gain, over Q near the first answer.
+    // The quadratic's part of the normal equations is the same for every
+    // centre and Q; only the row and column of the bell change.
+    double poly[3][5] = {};
+    for (int j = lo; j <= hi; ++j) {
+        const double u = (double)(j - jc) / kGridPerOctave;
+        const double x[3] = { 1.0, u, u * u };
+        for (int p = 0; p < 3; ++p) {
+            for (int k = 0; k < 3; ++k) poly[p][k] += x[p] * x[k];
+            poly[p][4] += x[p] * resp[(size_t)j];
+        }
+    }
+
     double g0 = 6.0;
     int qLo = qMin, qHi = kFitQSteps;
     for (int pass = 0; pass < 2; ++pass) {
@@ -153,15 +190,26 @@ bool fitBell(const std::vector<double> & resp, int jc, int cLo, int cHi, BellFit
             const double q = fitQ(qi);
             bellShape(q, g0, D, shape);
             for (int c = std::max(cLo, jc - kFitShift); c <= std::min(cHi, jc + kFitShift); ++c) {
-                double a[4][5] = {};
+                double s0 = 0.0, s1 = 0.0, s2 = 0.0, ss = 0.0, sr = 0.0;
                 for (int j = lo; j <= hi; ++j) {
                     const double u = (double)(j - jc) / kGridPerOctave;
-                    const double x[4] = { 1.0, u, u * u, shape[(size_t)(j - c + D)] };
-                    for (int p = 0; p < 4; ++p) {
-                        for (int k = 0; k < 4; ++k) a[p][k] += x[p] * x[k];
-                        a[p][4] += x[p] * resp[(size_t)j];
-                    }
+                    const double s = shape[(size_t)(j - c + D)];
+                    s0 += s;
+                    s1 += u * s;
+                    s2 += u * u * s;
+                    ss += s * s;
+                    sr += s * resp[(size_t)j];
                 }
+                double a[4][5];
+                for (int p = 0; p < 3; ++p) {
+                    for (int k = 0; k < 3; ++k) a[p][k] = poly[p][k];
+                    a[p][4] = poly[p][4];
+                }
+                a[0][3] = a[3][0] = s0;
+                a[1][3] = a[3][1] = s1;
+                a[2][3] = a[3][2] = s2;
+                a[3][3] = ss;
+                a[3][4] = sr;
                 if (!solve4(a)) continue;
                 const double g = a[3][4];
                 if (!(g > 0.0)) continue;
@@ -395,7 +443,9 @@ void Analyzer::analyseBlock()
     // part. One transform gives both spectra.
     double * re = m_re.data();
     double * im = m_im.data();
-    for (size_t i = 0; i < N; ++i) re[i] = m_hist[(m_histPos + i) % N];
+    for (size_t i = m_histPos; i < N; ++i) *re++ = m_hist[i];
+    for (size_t i = 0; i < m_histPos; ++i) *re++ = m_hist[i];
+    re = m_re.data();
     std::fill(re + N, re + M, 0.0);
     for (size_t i = 0; i < (size_t)kBlock; ++i) im[i] = y[i];
     std::fill(im + kBlock, im + M, 0.0);
@@ -556,28 +606,72 @@ bool near(const Peak & a, const Peak & b, double octaves)
     return fabs(log2(a.frequency / b.frequency)) < octaves;
 }
 
+//! The response grid's frequencies, each one's smoothing weights over the
+//! bins, and the trends' Hann kernels: all fixed, so worked out once rather
+//! than with a log2 and a cos per bin three times a block.
+struct GridTables {
+    int n = 0;
+    std::vector<double> frequency;
+    std::vector<int> k0;                     //!< first bin of each grid point
+    std::vector<size_t> w0;                  //!< where its weights start
+    std::vector<double> weight;              //!< bins k0.. of every point, in turn
+    std::vector<double> wideKernel, localKernel;   //!< offsets -span..span
+    GridTables()
+    {
+        n = (int)floor(log2(kGridHiHz / kGridLoHz) * kGridPerOctave) + 1;
+        frequency.resize((size_t)n);
+        k0.resize((size_t)n + 1);
+        w0.resize((size_t)n + 1);
+        // A sixth of an octave, Hann-weighted in log frequency, power averaged.
+        const double binHz = kRate / kFrame;
+        const double halfOct = 1.0 / 6.0;
+        for (int j = 0; j < n; ++j) {
+            const double f = kGridLoHz * pow(2.0, (double)j / kGridPerOctave);
+            const int a = std::max(1, (int)ceil(f * pow(2.0, -halfOct) / binHz));
+            const int b = std::min(kBins - 1, (int)floor(f * pow(2.0, halfOct) / binHz));
+            frequency[(size_t)j] = f;
+            k0[(size_t)j] = a;
+            w0[(size_t)j] = weight.size();
+            for (int k = a; k <= b; ++k) {
+                const double v = log2(k * binHz / f) / halfOct;
+                weight.push_back(0.5 + 0.5 * cos(kPi * v));
+            }
+        }
+        w0[(size_t)n] = weight.size();
+        kernel(2 * kGridPerOctave, wideKernel);
+        kernel(kLocalSpan, localKernel);
+    }
+    static void kernel(int span, std::vector<double> & out)
+    {
+        out.resize((size_t)(2 * span + 1));
+        for (int d = -span; d <= span; ++d)
+            out[(size_t)(d + span)] = 0.5 + 0.5 * cos(kPi * (double)d / (span + 1));
+    }
+};
+const GridTables & gridTables()
+{
+    static const GridTables t;
+    return t;
+}
+
 void analyseSpectra(const double * sxx, const double * syy, Shape & r)
 {
-    const int n = (int)floor(log2(kGridHiHz / kGridLoHz) * kGridPerOctave) + 1;
-    r.frequency.resize((size_t)n);
+    const GridTables & g = gridTables();
+    const int n = g.n;
+    r.frequency = g.frequency;
     r.responseDb.resize((size_t)n);
     r.trendDb.resize((size_t)n);
 
-    // A sixth of an octave, Hann-weighted in log frequency, power averaged.
-    const double binHz = kRate / kFrame;
-    const double halfOct = 1.0 / 6.0;
     for (int j = 0; j < n; ++j) {
-        const double f = kGridLoHz * pow(2.0, (double)j / kGridPerOctave);
-        const int k0 = std::max(1, (int)ceil(f * pow(2.0, -halfOct) / binHz));
-        const int k1 = std::min(kBins - 1, (int)floor(f * pow(2.0, halfOct) / binHz));
+        const int k0 = g.k0[(size_t)j];
+        const size_t w0 = g.w0[(size_t)j], w1 = g.w0[(size_t)j + 1];
         double sx = 0.0, sy = 0.0;
-        for (int k = k0; k <= k1; ++k) {
-            const double v = log2(k * binHz / f) / halfOct;
-            const double w = 0.5 + 0.5 * cos(kPi * v);
+        for (size_t i = w0; i < w1; ++i) {
+            const int k = k0 + (int)(i - w0);
+            const double w = g.weight[i];
             sx += w * sxx[k];
             sy += w * syy[k];
         }
-        r.frequency[(size_t)j] = f;
         r.responseDb[(size_t)j] = toDb(sy) - toDb(sx);
     }
 
@@ -585,13 +679,14 @@ void analyseSpectra(const double * sxx, const double * syy, Shape & r)
     // weighted down so that the one being looked for does not lift its own
     // baseline. It finds the bumps and is drawn; their size comes from the fit.
     auto robustTrend = [&](int span, std::vector<double> & trend) {
+        const std::vector<double> & kern = span == kLocalSpan ? g.localKernel : g.wideKernel;
         std::vector<double> wt((size_t)n, 1.0);
         trend.resize((size_t)n);
         for (int pass = 0; pass < 4; ++pass) {
             for (int j = 0; j < n; ++j) {
                 double s = 0.0, sw = 0.0;
                 for (int i = std::max(0, j - span); i <= std::min(n - 1, j + span); ++i) {
-                    const double k = 0.5 + 0.5 * cos(kPi * (double)(i - j) / (span + 1));
+                    const double k = kern[(size_t)(i - j + span)];
                     s  += k * wt[(size_t)i] * r.responseDb[(size_t)i];
                     sw += k * wt[(size_t)i];
                 }
