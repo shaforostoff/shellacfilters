@@ -2733,6 +2733,26 @@ void Channel::configure(const Config & cfg) {
             const double s = hasHi ? dmin(dmax(log2(dmax(f, 1.0) / hiFade) / 0.5, 0.0), 1.0) : 0.0;
             m_nWf[(size_t)b] = in * (1.0 - s);
         }
+        // The floor's cap: the reference band among the followed bins, and
+        // below it the tilt from the band's middle.
+        m_nRefA = m_nRefB = 0;
+        m_nCap.assign(nt, 0.0);
+        if (cfg.crackleFloorRef1 > cfg.crackleFloorRef0 && cfg.crackleFloorRef0 > 0.0) {
+            int a = (int)ceil(cfg.crackleFloorRef0 / binHz) - m_nM0;
+            int b = (int)ceil(cfg.crackleFloorRef1 / binHz) - m_nM0;
+            if (a < 0) a = 0;
+            if (b > m_nTop) b = m_nTop;
+            if (b > a) {
+                m_nRefA = a;
+                m_nRefB = b;
+                const double mid = sqrt(cfg.crackleFloorRef0 * cfg.crackleFloorRef1);
+                for (int i = 0; i < a; ++i) {
+                    const double f = dmax((double)(m_nM0 + i) * binHz, 1.0);
+                    m_nCap[(size_t)i] = pow(10.0, 0.1 * cfg.crackleFloorTilt * log2(mid / f));
+                }
+            }
+        }
+        m_nRefTmp.assign((size_t)(m_nRefB - m_nRefA), 0.0);
         m_nNorm = hannTable(N, false, H, &m_nWin[0]);
         fftTables(M, N, M + 1, &m_nStRe[0], &m_nStIm[0], &m_nRev[0], &m_nTwRe[0], &m_nTwIm[0]);
         m_nRel = (cfg.crackleFloorRelease > 0.0) ? exp(-(double)H / cfg.rate / cfg.crackleFloorRelease) : 0.0;
@@ -2747,6 +2767,8 @@ void Channel::configure(const Config & cfg) {
         m_nRing.clear(); m_nSorted.clear(); m_nFloor.clear(); m_nSaved.clear(); m_nWarm.clear(); m_nG.clear();
         m_nAt.clear();
         m_nWf.clear();
+        m_nRefA = m_nRefB = 0;
+        m_nCap.clear(); m_nRefTmp.clear();
     }
 
     // The low keep, sized from the rate alone and always held.
@@ -4951,6 +4973,19 @@ void Channel::crackleFloorHop(uint64_t start) {
             }
             ring[pos] = in;
             m_nFloor[(size_t)b] = srt[rank];
+        }
+        // The cap below the reference band: the band's median floor, tilted.
+        if (m_nRefB > m_nRefA) {
+            const int nr = m_nRefB - m_nRefA;
+            double * tmp = &m_nRefTmp[0];
+            memcpy(tmp, &m_nFloor[(size_t)m_nRefA], (size_t)nr * sizeof(double));
+            std::nth_element(tmp, tmp + nr / 2, tmp + nr);
+            const double ref = tmp[nr / 2];
+            const double * cap = &m_nCap[0];
+            for (int b = g0; b < m_nRefA; ++b) {
+                const double c = ref * cap[b];
+                if (m_nFloor[(size_t)b] > c) m_nFloor[(size_t)b] = c;
+            }
         }
         m_nAt[(size_t)pos] = m_nTaken;
         m_nPos = (pos + 1 < W) ? pos + 1 : 0;

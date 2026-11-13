@@ -522,6 +522,24 @@ struct Config {
     int    crackleFloorN       = 1024;    //!< from the sample rate alone
     int    crackleFloorHist    = 259;     //!< floor values over crackleFloorWin
     int    crackleFloorLatency = 0;       //!< bodyDelay(crackleFloorN), if on
+    //! The floor's cap below crackleFloorRef0. A bin's quantile is the
+    //! crackle's floor only where the music falls under the crackle a tenth
+    //! of the time. From 2 kHz up it does. Below, on most records it does
+    //! not: the quantile there is the quiet music, the same in a vinyl
+    //! transfer of the recording that has no crackle, 4-6 dB over the noise
+    //! itself, and what the stage then cut at 1-2 kHz was in the vinyl too -
+    //! heard as the music's rhythm in what the stage removed
+    //! (docs/stages-vinyl.md, "The crackle floor's cap"). The noise is close
+    //! to level across 1-3 kHz, a little higher towards the low end. So each
+    //! time the floor is taken, a bin below crackleFloorRef0 is held to the
+    //! median of the floor over crackleFloorRef0 .. crackleFloorRef1 plus
+    //! crackleFloorTilt dB an octave below the middle of that band. A record
+    //! whose crackle does stand over the music down there has its floor under
+    //! the cap already and is cut as before. crackleFloorRef1 <=
+    //! crackleFloorRef0: no cap.
+    double crackleFloorRef0    = 2000.0;
+    double crackleFloorRef1    = 3000.0;
+    double crackleFloorTilt    = 2.0;     //!< dB an octave
 
     //! The low pop stage: isolated pops below ~1.2 kHz, smooth pulses of 1-6 ms
     //! at the music's own level, which the repair cannot see (its model spans
@@ -688,6 +706,8 @@ struct Config {
             && crackleFloor == o.crackleFloor && crackleFloorN == o.crackleFloorN
             && crackleFloorLo == o.crackleFloorLo && crackleFloorHi == o.crackleFloorHi
             && crackleFloorHist == o.crackleFloorHist && rate == o.rate
+            && crackleFloorRef0 == o.crackleFloorRef0 && crackleFloorRef1 == o.crackleFloorRef1
+            && crackleFloorTilt == o.crackleFloorTilt
             && shape == o.shape && shapeK == o.shapeK
             && pop == o.pop && popD == o.popD
             && lowKeep == o.lowKeep && lowKeepHz == o.lowKeepHz;
@@ -1398,6 +1418,11 @@ private:
     std::vector<double> m_nWarm;     //!< m_nTop: the floor a warm pass ended with
     std::vector<uint64_t> m_nAt;     //!< crackleFloorHist
     std::vector<double> m_nWf;     //!< m_nNb
+    //! The floor's cap; see Config::crackleFloorRef0. The reference band's
+    //! bins m_nRefA .. m_nRefB - 1 (none: no cap), each lower bin's cap as a
+    //! factor on the reference, and room for the median.
+    int    m_nRefA = 0, m_nRefB = 0;
+    std::vector<double> m_nCap, m_nRefTmp;
 
     //! The low keep; see Config::lowKeep. Rings of the repaired audio (m_kY),
     //! its dry counterpart (m_kD), what the repair removed (m_kRm), the run
