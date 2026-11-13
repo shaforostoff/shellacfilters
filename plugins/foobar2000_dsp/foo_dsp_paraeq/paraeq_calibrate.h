@@ -122,6 +122,21 @@ const int kMinBlocks = 10;
 //! loop and through a simulated room score 30 to 130.
 const double kMinConfidence = 15.0;
 
+//! A phone in a hall with several loudspeakers hears each block blurred:
+//! arrivals tens of milliseconds apart, its own processing, clipping. A
+//! recording of a milonga, against the very file the DJ played, peaked at the
+//! right delay in most blocks, but at 7 to 11, never 15. So weaker peaks
+//! vote: kMinVotes of them at or above kVoteConfidence, within kTrackSec of
+//! each other, fix the delay, and then a block whose peak within kTrackSec
+//! of it reaches kTrackConfidence is taken. Chance peaks land anywhere in
+//! many seconds of lags, so they do not agree; and over a window of a
+//! thousand lags, chance seldom reaches 5.
+const double kVoteConfidence  = 7.0;
+const double kTrackConfidence = 6.0;
+const double kTrackSec        = 0.06;   //!< walking about, and clocks drifting
+const int    kMinVotes        = 3;
+const int    kMaxVotes        = 32;     //!< the latest; a seek or a new buffer moves the delay
+
 //! A microphone block quieter than this is not searched at all: it is a
 //! stalled or muted input, not a room.
 const double kMinMicDb = -80.0;
@@ -186,6 +201,8 @@ struct Result {
     int    matched     = 0;      //!< of which found in the output
     double lagSec      = -1.0;   //!< last match: output written to heard
     double confidence  = 0.0;    //!< last block's search peak over RMS
+    double lockedLagSec = -1.0;  //!< the delay the blocks agree on, -1 before they do
+    int    agreeing    = 0;      //!< recent blocks that agree on it
     double micDb       = -200.0; //!< last block, RMS dBFS
     double outDb       = -200.0;
     bool   micClipped  = false;  //!< last block reached full scale
@@ -261,6 +278,7 @@ private:
 
     std::vector<float> m_mic;    //!< the block being collected
     float m_micPeak = 0.0f;
+    std::vector<long> m_votes;   //!< delays, in samples, of blocks that voted
 
     Fft m_corrFft, m_frameFft;
     std::vector<double> m_re, m_im;

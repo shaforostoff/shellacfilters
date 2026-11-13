@@ -350,6 +350,26 @@ int main()
         ckTrue("all options at or below 3 kHz", allInRange(r));
     }
     {
+        // A narrow mode on a broad midrange hump, as a hall measured with a
+        // phone looked: the mode is the first option, the hump still offered.
+        Room room;
+        room.resonance = true;
+        room.freq = 600.0; room.q = 0.7; room.gainDb = 9.0;
+        room.second = true;
+        room.freq2 = 320.0; room.q2 = 4.0; room.gainDb2 = 5.0;
+        const Result r = run(room, sec, 7, &ms);
+        print("320 Hz +5 on a 600 Hz Q 0.7 +9 hump", r, ms);
+        printOptions(r);
+        ckTrue("ready", r.ready());
+        ckTrue("the mode first", r.options > 0 && fabs(log2(r.option[0].frequency / 320.0)) < 1.0 / 12.0);
+        ckTrue("the mode's Q 2.5 or more", r.options > 0 && r.option[0].q >= 2.5);
+        ckTrue("the mode's gain -3 to -7 dB", r.options > 0 && r.option[0].gainDb <= -3.0 && r.option[0].gainDb >= -7.0);
+        bool hump = false;
+        for (int i = 0; i < r.options; ++i) if (r.option[i].q < 1.4) hump = true;
+        ckTrue("the hump offered too", hump);
+        ckTrue("unsure", !r.sure);
+    }
+    {
         // One end of the room rings at 300 Hz, the other at 1 kHz: the halves
         // of the walk disagree.
         Room room;

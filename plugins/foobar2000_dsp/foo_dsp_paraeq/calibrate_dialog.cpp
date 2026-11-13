@@ -276,10 +276,21 @@ void update_text(HWND dlg, cal_state * st)
         status += format(L" Microphone: %.0f Hz, %u ch", s.micRate, s.micChannels);
         if (r.blocks > 0) status += format(L", %.0f dBFS%s.", r.micDb, r.micClipped ? L" - CLIPPING, turn it down" : L"");
         else status += L".";
-        status += format(L"\r\nFound in the output: %d of %d blocks (%.0f s)", r.matched, r.blocks,
+        // First whether the microphone is lined up with the output at all;
+        // nothing else means anything until it is.
+        if (r.lockedLagSec >= 0.0)
+            status += format(L"\r\nAligned: delay %.2f s, %d recent blocks agree.", r.lockedLagSec, r.agreeing);
+        else if (r.matched > 0)
+            status += L"\r\nAligning: a match, waiting for more to agree.";
+        else if (r.blocks >= 8)
+            status += L"\r\nNOT ALIGNED: the microphone does not hear this output. Is foobar2000 the one "
+                      L"playing, through Parametric EQ, and loud enough at the microphone?";
+        else if (r.blocks > 0)
+            status += L"\r\nAligning: listening for the output in the microphone...";
+        status += format(L"\r\nMeasured: %d of %d blocks (%.0f s)", r.matched, r.blocks,
                          r.matched * (double)paraeq_calib::kBlock / paraeq_calib::kRate);
-        if (r.lagSec >= 0.0) status += format(L", delay %.2f s.", r.lagSec);
-        else if (r.blocks > 0) status += L"; the last one was not - music too quiet, talking, or a pause?";
+        if (r.lagSec < 0.0 && r.blocks > 0 && r.lockedLagSec >= 0.0)
+            status += L"; the last one was not - music too quiet, talking, or a pause?";
         else status += L".";
     } else if (r.blocks > 0) {
         status += format(L"\r\nStopped. Measured %d of %d blocks.", r.matched, r.blocks);

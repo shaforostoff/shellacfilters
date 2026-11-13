@@ -67,6 +67,15 @@ const int kSmoothSpan = kGridPerOctave / 6;   //!< the measurement's smoothing
 const int kFitQSteps  = 21;
 const double kFitQMin = 0.7;
 
+//! A narrow bump sitting on a broad one - a mode on top of a hall's or a
+//! loudspeaker's midrange hump - is looked for again against a trend two
+//! thirds of an octave either side, and fitted over an octave either side
+//! with Q from 1.4 (index 6), where a broader bell is the quadratic's job.
+const int kLocalSpan     = 2 * kGridPerOctave / 3;
+const int kNarrowFitSpan = kGridPerOctave;
+const int kNarrowQIndex  = 6;
+const double kNarrowQ    = 1.4;
+
 double fitQ(int i) { return kFitQMin * pow(2.0, i / 6.0); }
 
 //! Analog peaking EQ, dB, `oct` octaves from its centre.
@@ -123,19 +132,21 @@ struct BellFit {
 
 //! The best bell near grid index `jc`, centred no lower than `cLo` and no
 //! higher than `cHi` - the band's range, which a suggestion never leaves.
-//! False if no positive bell fits.
-bool fitBell(const std::vector<double> & resp, int jc, int cLo, int cHi, BellFit & best)
+//! False if no positive bell fits. `span` is the fit window either side and
+//! `qMin` the lowest Q index tried.
+bool fitBell(const std::vector<double> & resp, int jc, int cLo, int cHi, BellFit & best,
+             int span = kFitSpan, int qMin = 0)
 {
     const int n = (int)resp.size();
-    const int lo = std::max(0, jc - kFitSpan), hi = std::min(n - 1, jc + kFitSpan);
-    const int D = kFitSpan + kFitShift;
+    const int lo = std::max(0, jc - span), hi = std::min(n - 1, jc + span);
+    const int D = span + kFitShift;
     std::vector<double> shape;
     best = BellFit();
 
     // Twice: the shape of a bell changes a little with its gain, so the
     // second pass uses the first pass's gain, over Q near the first answer.
     double g0 = 6.0;
-    int qLo = 0, qHi = kFitQSteps;
+    int qLo = qMin, qHi = kFitQSteps;
     for (int pass = 0; pass < 2; ++pass) {
         BellFit found;
         for (int qi = qLo; qi <= qHi; ++qi) {
@@ -167,7 +178,7 @@ bool fitBell(const std::vector<double> & resp, int jc, int cLo, int cHi, BellFit
         best = found;
         g0 = std::max(1.0, std::min(20.0, found.gainDb));
         const int qi = (int)floor(6.0 * log2(found.q / kFitQMin) + 0.5);
-        qLo = std::max(0, qi - 3);
+        qLo = std::max(qMin, qi - 3);
         qHi = std::min(kFitQSteps, qi + 3);
     }
     return true;
@@ -311,6 +322,7 @@ void Analyzer::resetMeasurement()
     m_result = Result();
     m_mic.clear();
     m_micPeak = 0.0f;
+    m_votes.clear();
     m_micRs.reset(0.0);
 }
 
@@ -445,8 +457,44 @@ void Analyzer::analyseBlock()
         ++cnt;
     }
     if (cnt < 100 || !(ss > 0.0)) return;
-    r.confidence = bestAbs / sqrt(ss / (double)cnt);
-    if (r.confidence < kMinConfidence) return;
+    const double rms = sqrt(ss / (double)cnt);
+    r.confidence = bestAbs / rms;
+
+    // A fair peak votes for its delay. Until the votes agree only a clear
+    // peak is taken; after, the block is taken at its peak near that delay.
+    const long lagOf = (long)(N - kBlock) - (long)best;
+    if (r.confidence >= kVoteConfidence) {
+        m_votes.push_back(lagOf);
+        if (m_votes.size() > (size_t)kMaxVotes) m_votes.erase(m_votes.begin());
+    }
+    // Once the votes agree, a peak elsewhere is not believed however tall:
+    // music repeats itself, and a phrase seconds away can out-score a blurred
+    // copy of the right one.
+    const long win = (long)(kTrackSec * kRate);
+    int most = 0;
+    long agreed = 0;
+    for (long v : m_votes) {
+        int c = 0;
+        long sum = 0;
+        for (long w : m_votes) if (labs(w - v) <= win) { ++c; sum += w; }
+        if (c > most) { most = c; agreed = sum / c; }
+    }
+    r.agreeing = most;
+    r.lockedLagSec = most >= kMinVotes ? (double)agreed / kRate : -1.0;
+    if (most < kMinVotes) {
+        if (r.confidence < kMinConfidence) return;
+    } else {
+        const long centre = (long)(N - kBlock) - agreed;
+        const long a = std::max((long)dLo, centre - win), b = std::min((long)dHi, centre + win);
+        if (a > b) return;
+        double nearAbs = -1.0;
+        for (long d = a; d <= b; ++d) {
+            const double v = fabs(re[(size_t)d]);
+            if (v > nearAbs) { nearAbs = v; best = (size_t)d; }
+        }
+        r.confidence = nearAbs / rms;
+        if (r.confidence < kTrackConfidence) return;
+    }
 
     r.lagSec = (double)(N - (best + (size_t)kBlock)) / kRate;
 
@@ -500,6 +548,7 @@ struct Shape {
     std::vector<double> frequency, responseDb, trendDb;
     int  peaks = 0;
     Peak peak[kMaxPeaks];
+    bool broadTaller = false;   //!< the last peak is broad and out-tops the narrow ones
 };
 
 bool near(const Peak & a, const Peak & b, double octaves)
@@ -535,23 +584,28 @@ void analyseSpectra(const double * sxx, const double * syy, Shape & r)
     // The trend: Hann smoothing two octaves either side, re-run with bumps
     // weighted down so that the one being looked for does not lift its own
     // baseline. It finds the bumps and is drawn; their size comes from the fit.
-    std::vector<double> wt((size_t)n, 1.0);
-    const int span = 2 * kGridPerOctave;
-    for (int pass = 0; pass < 4; ++pass) {
-        for (int j = 0; j < n; ++j) {
-            double s = 0.0, sw = 0.0;
-            for (int i = std::max(0, j - span); i <= std::min(n - 1, j + span); ++i) {
-                const double k = 0.5 + 0.5 * cos(kPi * (double)(i - j) / (span + 1));
-                s  += k * wt[(size_t)i] * r.responseDb[(size_t)i];
-                sw += k * wt[(size_t)i];
+    auto robustTrend = [&](int span, std::vector<double> & trend) {
+        std::vector<double> wt((size_t)n, 1.0);
+        trend.resize((size_t)n);
+        for (int pass = 0; pass < 4; ++pass) {
+            for (int j = 0; j < n; ++j) {
+                double s = 0.0, sw = 0.0;
+                for (int i = std::max(0, j - span); i <= std::min(n - 1, j + span); ++i) {
+                    const double k = 0.5 + 0.5 * cos(kPi * (double)(i - j) / (span + 1));
+                    s  += k * wt[(size_t)i] * r.responseDb[(size_t)i];
+                    sw += k * wt[(size_t)i];
+                }
+                trend[(size_t)j] = s / sw;
             }
-            r.trendDb[(size_t)j] = s / sw;
+            for (int i = 0; i < n; ++i) {
+                const double e = std::max(0.0, r.responseDb[(size_t)i] - trend[(size_t)i]);
+                wt[(size_t)i] = 1.0 / (1.0 + e * e);
+            }
         }
-        for (int i = 0; i < n; ++i) {
-            const double e = std::max(0.0, r.responseDb[(size_t)i] - r.trendDb[(size_t)i]);
-            wt[(size_t)i] = 1.0 / (1.0 + e * e);
-        }
-    }
+    };
+    robustTrend(2 * kGridPerOctave, r.trendDb);
+    std::vector<double> localTrend;
+    robustTrend(kLocalSpan, localTrend);
 
     double off = 0.0;
     int cnt = 0;
@@ -561,7 +615,11 @@ void analyseSpectra(const double * sxx, const double * syy, Shape & r)
         ++cnt;
     }
     if (cnt > 0) off /= cnt;
-    for (int j = 0; j < n; ++j) { r.responseDb[(size_t)j] -= off; r.trendDb[(size_t)j] -= off; }
+    for (int j = 0; j < n; ++j) {
+        r.responseDb[(size_t)j] -= off;
+        r.trendDb[(size_t)j] -= off;
+        localTrend[(size_t)j] -= off;
+    }
 
     // The band's range on the grid. Nothing outside it is ever suggested.
     int cLo = n, cHi = -1;
@@ -571,69 +629,97 @@ void analyseSpectra(const double * sxx, const double * syy, Shape & r)
         cHi = std::max(cHi, j);
     }
 
-    // Bumps: local maxima of the excess inside the band's range.
-    std::vector<double> e((size_t)n);
-    for (int j = 0; j < n; ++j) e[(size_t)j] = r.responseDb[(size_t)j] - r.trendDb[(size_t)j];
+    // Bumps: local maxima of an excess inside the band's range, each fitted
+    // with a bell. Against the wide trend first, with the full range of Q:
+    // that finds lone resonances, narrow or broad, and sizes them right.
+    // Then against the local trend, Q 1.4 and up: that finds the narrow ones
+    // standing on a broad hump, which the wide fit swallows into one low-Q
+    // bell. A narrow bump is what the room rings at and what the Reverb cut
+    // is for, so narrow bumps rank first; the broadest bell is still offered,
+    // and leaves the answer unsure, when it is taller than every narrow one.
+    struct Cand { Peak pk; bool broad; };
+    std::vector<Cand> cands;
+    auto scan = [&](const std::vector<double> & trend, int span, int qMin) {
+        std::vector<double> e((size_t)n);
+        for (int j = 0; j < n; ++j) e[(size_t)j] = r.responseDb[(size_t)j] - trend[(size_t)j];
+        for (int j = std::max(1, cLo); j <= std::min(n - 2, cHi); ++j) {
+            const double em = e[(size_t)j - 1], e0 = e[(size_t)j], ep = e[(size_t)j + 1];
+            if (!(e0 >= em && e0 > ep) || e0 < 1.0) continue;
 
-    std::vector<Peak> cands;
-    for (int j = std::max(1, cLo); j <= std::min(n - 2, cHi); ++j) {
-        const double em = e[(size_t)j - 1], e0 = e[(size_t)j], ep = e[(size_t)j + 1];
-        if (!(e0 >= em && e0 > ep) || e0 < 1.0) continue;
+            Peak pk;
+            pk.frequency = r.frequency[(size_t)j];
+            pk.heightDb = e0;
 
-        Peak pk;
-        pk.frequency = r.frequency[(size_t)j];
-        pk.heightDb = e0;
-
-        // Width at half height, in octaves, as a fallback should the fit
-        // find no bell; one side stands in for the other if it runs off.
-        const double half = 0.5 * pk.heightDb;
-        double left = -1.0, right = -1.0;
-        for (int i = j; i > 0; --i) {
-            if (e[(size_t)i - 1] <= half) {
-                const double t = (e[(size_t)i] - half) / (e[(size_t)i] - e[(size_t)i - 1]);
-                left = ((double)(j - i) + t) / kGridPerOctave;
-                break;
+            // Width at half height, in octaves, as a fallback should the fit
+            // find no bell; one side stands in for the other if it runs off.
+            const double half = 0.5 * pk.heightDb;
+            double left = -1.0, right = -1.0;
+            for (int i = j; i > 0; --i) {
+                if (e[(size_t)i - 1] <= half) {
+                    const double t = (e[(size_t)i] - half) / (e[(size_t)i] - e[(size_t)i - 1]);
+                    left = ((double)(j - i) + t) / kGridPerOctave;
+                    break;
+                }
             }
-        }
-        for (int i = j; i + 1 < n; ++i) {
-            if (e[(size_t)i + 1] <= half) {
-                const double t = (e[(size_t)i] - half) / (e[(size_t)i] - e[(size_t)i + 1]);
-                right = ((double)(i - j) + t) / kGridPerOctave;
-                break;
+            for (int i = j; i + 1 < n; ++i) {
+                if (e[(size_t)i + 1] <= half) {
+                    const double t = (e[(size_t)i] - half) / (e[(size_t)i] - e[(size_t)i + 1]);
+                    right = ((double)(i - j) + t) / kGridPerOctave;
+                    break;
+                }
             }
-        }
-        if (left < 0.0 && right < 0.0) left = right = 1.0;
-        else if (left < 0.0) left = right;
-        else if (right < 0.0) right = left;
-        const double bw = std::max(left + right, 0.05);
-        pk.q = 1.0 / (2.0 * sinh(0.5 * log(2.0) * bw));
+            if (left < 0.0 && right < 0.0) left = right = 1.0;
+            else if (left < 0.0) left = right;
+            else if (right < 0.0) right = left;
+            const double bw = std::max(left + right, 0.05);
+            pk.q = 1.0 / (2.0 * sinh(0.5 * log(2.0) * bw));
 
-        // That is only a first guess: a bell's skirts reach well past its
-        // half-height points, and the trend follows them, so a broad bump
-        // reads low and narrow. The fit asks the question directly.
-        // A fitted bell far taller than the bump that can be seen is the fit
-        // explaining the trend's curvature rather than the bump, and the
-        // first guess stands.
-        BellFit fit;
-        if (fitBell(r.responseDb, j, cLo, cHi, fit) && fit.gainDb <= 2.0 * e0 + 1.0) {
-            pk.frequency = r.frequency[(size_t)fit.centre];
-            pk.q = fit.q;
-            pk.heightDb = fit.gainDb;
+            // That is only a first guess: a bell's skirts reach well past its
+            // half-height points, and the trend follows them, so a broad bump
+            // reads low and narrow. The fit asks the question directly.
+            // A fitted bell far taller than the bump that can be seen is the
+            // fit explaining the trend's curvature rather than the bump, and
+            // the first guess stands.
+            BellFit fit;
+            if (fitBell(r.responseDb, j, cLo, cHi, fit, span, qMin) && fit.gainDb <= 2.0 * e0 + 1.0) {
+                pk.frequency = r.frequency[(size_t)fit.centre];
+                pk.q = fit.q;
+                pk.heightDb = fit.gainDb;
+            }
+            if (qMin > 0) pk.q = std::max(kNarrowQ, pk.q);
+            pk.q = std::max(0.5, std::min(8.0, pk.q));
+            pk.q = floor(pk.q * 10.0 + 0.5) / 10.0;
+            pk.frequency = std::max(kSearchLoHz, std::min(kSearchHiHz, pk.frequency));
+            pk.gainDb = -floor(std::min(pk.heightDb, 12.0) * 2.0 + 0.5) / 2.0;
+            cands.push_back(Cand{ pk, pk.q < kNarrowQ });
         }
-        pk.q = std::max(0.5, std::min(8.0, pk.q));
-        pk.q = floor(pk.q * 10.0 + 0.5) / 10.0;
-        pk.frequency = std::max(kSearchLoHz, std::min(kSearchHiHz, pk.frequency));
-        pk.gainDb = -floor(std::min(pk.heightDb, 12.0) * 2.0 + 0.5) / 2.0;
-        cands.push_back(pk);
-    }
-    std::sort(cands.begin(), cands.end(),
-              [](const Peak & a, const Peak & b) { return a.heightDb > b.heightDb; });
+    };
+    scan(r.trendDb, kFitSpan, 0);
+    scan(localTrend, kNarrowFitSpan, kNarrowQIndex);
 
+    std::sort(cands.begin(), cands.end(), [](const Cand & a, const Cand & b) {
+        if (a.broad != b.broad) return !a.broad;
+        return a.pk.heightDb > b.pk.heightDb;
+    });
+
+    // Narrow bumps, tallest first, one per third of an octave; then the
+    // tallest broad one if it out-tops them, in the last place if need be.
     r.peaks = 0;
-    for (size_t c = 0; c < cands.size() && r.peaks < kMaxPeaks; ++c) {
+    r.broadTaller = false;
+    if (cands.empty()) return;
+    const Cand * broad = nullptr;
+    for (const Cand & c : cands) if (c.broad && (!broad || c.pk.heightDb > broad->pk.heightDb)) broad = &c;
+    const bool showBroad = broad && (cands.front().broad || broad->pk.heightDb > cands.front().pk.heightDb);
+    const int narrowSlots = showBroad ? kMaxPeaks - 1 : kMaxPeaks;
+    for (const Cand & c : cands) {
+        if (c.broad || r.peaks >= narrowSlots) continue;
         bool dup = false;
-        for (int k = 0; k < r.peaks; ++k) if (near(cands[c], r.peak[k], 1.0 / 3.0)) dup = true;
-        if (!dup) r.peak[r.peaks++] = cands[c];
+        for (int k = 0; k < r.peaks; ++k) if (near(c.pk, r.peak[k], 1.0 / 3.0)) dup = true;
+        if (!dup) r.peak[r.peaks++] = c.pk;
+    }
+    if (showBroad) {
+        r.broadTaller = r.peaks > 0;
+        r.peak[r.peaks++] = broad->pk;
     }
 }
 
@@ -663,6 +749,9 @@ void Analyzer::updateResponse()
     // the room one stands, and a static cut has to be a compromise chosen by
     // ear.
     if (r.peaks > 1 && r.peak[1].heightDb >= kAmbiguousRatio * top.heightDb) r.sure = false;
+    // A broad hump taller than the narrow bump on it: a cut for the bump or
+    // one for the hump are different things, and only the ear can choose.
+    if (full.broadTaller) r.sure = false;
 
     Peak halfTop[2];
     int halves = 0;
@@ -695,9 +784,13 @@ void Analyzer::updateResponse()
 
     r.option[r.options++] = top;
     if (r.sure) return;
+    // A broad bell is a different cut from a narrow one beside it, so it is
+    // never dropped for being near one.
+    auto broad = [](const Peak & p) { return p.q < kNarrowQ; };
     auto offer = [&](const Peak & p) {
         if (r.options >= kMaxPeaks) return;
-        for (int k = 0; k < r.options; ++k) if (near(p, r.option[k], 1.0 / 3.0)) return;
+        for (int k = 0; k < r.options; ++k)
+            if (broad(p) == broad(r.option[k]) && near(p, r.option[k], 1.0 / 3.0)) return;
         r.option[r.options++] = p;
     };
     // The halves' choices first, then the rest of the whole walk's bumps.
