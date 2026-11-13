@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -111,6 +112,8 @@ int main(int argc, char ** argv) {
     if (trackGain >= 0.0f) cfg.trackGain = trackGain;
     if (trackClamp >= 0.0f) cfg.trackClampHz = trackClamp;
 
+    // Configure to the last block, file I/O left out: what a host pays.
+    const auto tDsp = std::chrono::steady_clock::now();
     std::vector<std::unique_ptr<dehum::Channel> > chans;
     for (unsigned c = 0; c < channels; ++c) {
         std::unique_ptr<dehum::Channel> ch(new dehum::Channel());
@@ -138,6 +141,8 @@ int main(int argc, char ** argv) {
             if (c < channels) chans[c]->process(&out.samples[pos * channels + c], n, channels);
         }
     }
+    const double dspMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tDsp).count();
 
     if (!quiet) {
         printf("%s -> %s\n", inPath.c_str(), outPath.c_str());
@@ -154,6 +159,8 @@ int main(int argc, char ** argv) {
         printf("\n  dry/wet %.3f, %zu kB per channel, %s probe kernel\n",
                cfg.wet, chans.empty() ? 0 : chans[0]->heapBytes() / 1024,
                dehum::kernelName());
+        printf("  dsp %.1f ms, %.1fx real time\n", dspMs,
+               dspMs > 0.0 ? 1000.0 * (double)frames / (double)audio.sampleRate / dspMs : 0.0);
 
         for (unsigned c = 0; c < channels; ++c) {
             dehum::LineReport rep[dehum::kMaxLines];

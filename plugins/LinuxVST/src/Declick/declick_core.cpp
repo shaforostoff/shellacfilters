@@ -736,7 +736,10 @@ DECLICK_AVX2_FN inline __m128d dotAvx2(const double * x, const double * y, int n
 //! One broadcast tap times consecutive x feeds four outputs per register, so
 //! a block of outputs shares every load of h. Each accumulator is a dependent
 //! chain, one FMA latency per tap, and enough of them side by side cover that
-//! latency: eight on x64, four on x86, which has only eight vector registers.
+//! latency: ten on x64, eight on x86. x86 has only eight vector registers, so
+//! half of its sums live on the stack, and on Haswell that still beat four in
+//! registers by a fifth of the whole run (eight was as fast as twelve, and
+//! faster than five to seven or ten).
 //!
 //! The loads of x are shared as well. Accumulator j wants x at 4j + k for tap
 //! k, which for tap k + 4 is what accumulator j + 1 wanted for tap k. So taps
@@ -745,8 +748,8 @@ DECLICK_AVX2_FN inline __m128d dotAvx2(const double * x, const double * y, int n
 //! multiply-adds where one tap at a time took 36. Most of those loads straddle
 //! a cache line, which costs Haswell two, and it can only issue two a cycle,
 //! so tap at a time left its FMA units waiting on them. x86 runs two taps a
-//! group, four accumulators. The taps left over go one at a time, and the
-//! outputs left over through dotAvx2().
+//! group. The taps left over go one at a time, and the outputs left over
+//! through four accumulators and then dotAvx2().
 //!
 //! Each accumulator still adds its taps in a fixed order, but no longer in
 //! index order, so this differs from one tap at a time in the last bits.
@@ -755,6 +758,80 @@ DECLICK_AVX2_FN void filterAvx2(const double * h, const double * x, double * out
                                 int count, int taps) {
     int i = 0;
 #if defined(_M_X64) || defined(__x86_64__)
+    // The loop below with ten accumulators, which covers the FMA latency
+    // entirely. Its outputs come out to the bit as there, but those past the
+    // last multiple of 32 must still go where the loops after that one put
+    // them, so it takes 160 at a time.
+    const int n40 = ((count & ~31) / 160) * 160;
+    for (; i < n40; i += 40) {
+        const double * xi = x + i;
+        __m256d a0 = _mm256_setzero_pd(), a1 = _mm256_setzero_pd();
+        __m256d a2 = _mm256_setzero_pd(), a3 = _mm256_setzero_pd();
+        __m256d a4 = _mm256_setzero_pd(), a5 = _mm256_setzero_pd();
+        __m256d a6 = _mm256_setzero_pd(), a7 = _mm256_setzero_pd();
+        __m256d a8 = _mm256_setzero_pd(), a9 = _mm256_setzero_pd();
+        int k = 0;
+        for (; k + 16 <= taps; k += 16) {
+            for (int r = 0; r < 4; ++r) {
+                const __m256d h0 = _mm256_broadcast_sd(h + k + r);
+                const __m256d h1 = _mm256_broadcast_sd(h + k + r + 4);
+                const __m256d h2 = _mm256_broadcast_sd(h + k + r + 8);
+                const __m256d h3 = _mm256_broadcast_sd(h + k + r + 12);
+                const double * p = xi + k + r;
+                __m256d v;
+                v = _mm256_loadu_pd(p);
+                DECLICK_FMA(a0, h0, v);
+                v = _mm256_loadu_pd(p + 4);
+                DECLICK_FMA(a1, h0, v); DECLICK_FMA(a0, h1, v);
+                v = _mm256_loadu_pd(p + 8);
+                DECLICK_FMA(a2, h0, v); DECLICK_FMA(a1, h1, v); DECLICK_FMA(a0, h2, v);
+                v = _mm256_loadu_pd(p + 12);
+                DECLICK_FMA(a3, h0, v); DECLICK_FMA(a2, h1, v); DECLICK_FMA(a1, h2, v); DECLICK_FMA(a0, h3, v);
+                v = _mm256_loadu_pd(p + 16);
+                DECLICK_FMA(a4, h0, v); DECLICK_FMA(a3, h1, v); DECLICK_FMA(a2, h2, v); DECLICK_FMA(a1, h3, v);
+                v = _mm256_loadu_pd(p + 20);
+                DECLICK_FMA(a5, h0, v); DECLICK_FMA(a4, h1, v); DECLICK_FMA(a3, h2, v); DECLICK_FMA(a2, h3, v);
+                v = _mm256_loadu_pd(p + 24);
+                DECLICK_FMA(a6, h0, v); DECLICK_FMA(a5, h1, v); DECLICK_FMA(a4, h2, v); DECLICK_FMA(a3, h3, v);
+                v = _mm256_loadu_pd(p + 28);
+                DECLICK_FMA(a7, h0, v); DECLICK_FMA(a6, h1, v); DECLICK_FMA(a5, h2, v); DECLICK_FMA(a4, h3, v);
+                v = _mm256_loadu_pd(p + 32);
+                DECLICK_FMA(a8, h0, v); DECLICK_FMA(a7, h1, v); DECLICK_FMA(a6, h2, v); DECLICK_FMA(a5, h3, v);
+                v = _mm256_loadu_pd(p + 36);
+                DECLICK_FMA(a9, h0, v); DECLICK_FMA(a8, h1, v); DECLICK_FMA(a7, h2, v); DECLICK_FMA(a6, h3, v);
+                v = _mm256_loadu_pd(p + 40);
+                DECLICK_FMA(a9, h1, v); DECLICK_FMA(a8, h2, v); DECLICK_FMA(a7, h3, v);
+                v = _mm256_loadu_pd(p + 44);
+                DECLICK_FMA(a9, h2, v); DECLICK_FMA(a8, h3, v);
+                v = _mm256_loadu_pd(p + 48);
+                DECLICK_FMA(a9, h3, v);
+            }
+        }
+        for (; k < taps; ++k) {
+            const __m256d hk = _mm256_broadcast_sd(h + k);
+            const double * xk = xi + k;
+            a0 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk), a0);
+            a1 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 4), a1);
+            a2 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 8), a2);
+            a3 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 12), a3);
+            a4 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 16), a4);
+            a5 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 20), a5);
+            a6 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 24), a6);
+            a7 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 28), a7);
+            a8 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 32), a8);
+            a9 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 36), a9);
+        }
+        _mm256_storeu_pd(out + i, a0);
+        _mm256_storeu_pd(out + i + 4, a1);
+        _mm256_storeu_pd(out + i + 8, a2);
+        _mm256_storeu_pd(out + i + 12, a3);
+        _mm256_storeu_pd(out + i + 16, a4);
+        _mm256_storeu_pd(out + i + 20, a5);
+        _mm256_storeu_pd(out + i + 24, a6);
+        _mm256_storeu_pd(out + i + 28, a7);
+        _mm256_storeu_pd(out + i + 32, a8);
+        _mm256_storeu_pd(out + i + 36, a9);
+    }
     for (; i + 32 <= count; i += 32) {
         const double * xi = x + i;
         __m256d a0 = _mm256_setzero_pd(), a1 = _mm256_setzero_pd();
@@ -797,6 +874,62 @@ DECLICK_AVX2_FN void filterAvx2(const double * h, const double * x, double * out
                 DECLICK_FMA(a7, h2, v); DECLICK_FMA(a6, h3, v);
                 v = _mm256_loadu_pd(p + 40);
                 DECLICK_FMA(a7, h3, v);
+            }
+        }
+        for (; k < taps; ++k) {
+            const __m256d hk = _mm256_broadcast_sd(h + k);
+            const double * xk = xi + k;
+            a0 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk),      a0);
+            a1 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 4),  a1);
+            a2 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 8),  a2);
+            a3 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 12), a3);
+            a4 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 16), a4);
+            a5 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 20), a5);
+            a6 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 24), a6);
+            a7 = _mm256_fmadd_pd(hk, _mm256_loadu_pd(xk + 28), a7);
+        }
+        _mm256_storeu_pd(out + i,      a0);
+        _mm256_storeu_pd(out + i + 4,  a1);
+        _mm256_storeu_pd(out + i + 8,  a2);
+        _mm256_storeu_pd(out + i + 12, a3);
+        _mm256_storeu_pd(out + i + 16, a4);
+        _mm256_storeu_pd(out + i + 20, a5);
+        _mm256_storeu_pd(out + i + 24, a6);
+        _mm256_storeu_pd(out + i + 28, a7);
+    }
+#else
+    // The loop below at twice the width: the same two-tap groups, so each
+    // output comes out to the bit as it does there.
+    for (; i + 32 <= count; i += 32) {
+        const double * xi = x + i;
+        __m256d a0 = _mm256_setzero_pd(), a1 = _mm256_setzero_pd();
+        __m256d a2 = _mm256_setzero_pd(), a3 = _mm256_setzero_pd();
+        __m256d a4 = _mm256_setzero_pd(), a5 = _mm256_setzero_pd();
+        __m256d a6 = _mm256_setzero_pd(), a7 = _mm256_setzero_pd();
+        int k = 0;
+        for (; k + 8 <= taps; k += 8) {
+            for (int r = 0; r < 4; ++r) {
+                const __m256d h0 = _mm256_broadcast_sd(h + k + r);
+                const __m256d h1 = _mm256_broadcast_sd(h + k + r + 4);
+                const double * p = xi + k + r;
+                __m256d v = _mm256_loadu_pd(p);
+                DECLICK_FMA(a0, h0, v);
+                v = _mm256_loadu_pd(p + 4);
+                DECLICK_FMA(a1, h0, v); DECLICK_FMA(a0, h1, v);
+                v = _mm256_loadu_pd(p + 8);
+                DECLICK_FMA(a2, h0, v); DECLICK_FMA(a1, h1, v);
+                v = _mm256_loadu_pd(p + 12);
+                DECLICK_FMA(a3, h0, v); DECLICK_FMA(a2, h1, v);
+                v = _mm256_loadu_pd(p + 16);
+                DECLICK_FMA(a4, h0, v); DECLICK_FMA(a3, h1, v);
+                v = _mm256_loadu_pd(p + 20);
+                DECLICK_FMA(a5, h0, v); DECLICK_FMA(a4, h1, v);
+                v = _mm256_loadu_pd(p + 24);
+                DECLICK_FMA(a6, h0, v); DECLICK_FMA(a5, h1, v);
+                v = _mm256_loadu_pd(p + 28);
+                DECLICK_FMA(a7, h0, v); DECLICK_FMA(a6, h1, v);
+                v = _mm256_loadu_pd(p + 32);
+                DECLICK_FMA(a7, h1, v);
             }
         }
         for (; k < taps; ++k) {
@@ -3107,6 +3240,7 @@ void Channel::resetPath() {
     // pad and nothing is dropped off the front of the stream. They are not
     // audio, as prime()'s are not: see detect().
     m_fill = m_pad;
+    m_shAt = m_pad;
     m_silentUntil = m_pad;
 }
 
@@ -3153,22 +3287,65 @@ void Channel::fitModel(int from, int to) {
     // `order` zeros past the end: the wide autocorrelation reads them.
     m_scratch.resize((size_t)n + (size_t)order);
     for (int i = n; i < n + order; ++i) m_scratch[(size_t)i] = 0.0;
-    double acc = 0.0;
-    for (int i = 0; i < n; ++i) acc += fabs(m_win[from + i]);
-    const double lim = 6.0 * (acc / (double)n) + 1e-12;
-
+    const double * wv = &m_win[(size_t)from];
     // Hann, so the autocorrelation stays positive definite. Precomputed in
     // configure() unless the fit length is not the one it was built for.
     const bool haveHann = (m_hannLen == n);
-    const double twoPi = 6.283185307179586;
-    for (int i = 0; i < n; ++i) {
-        double v = m_win[from + i];
-        if (v > lim) v = lim;
-        else if (v < -lim) v = -lim;
-        const double w = haveHann
-            ? m_hann[(size_t)i]
-            : 0.5 - 0.5 * cos(twoPi * (double)i / (double)(n - 1));
-        m_scratch[i] = v * w;
+    bool tapered = false;
+#if DECLICK_SSE2
+    // The limit's bits matter only where a sample reaches it, which almost
+    // none do. So first four partial sums and the peak, which do not wait on
+    // each other as the sum in order does on every add: where the peak stays
+    // clear of the limit by far more than the two sums can differ, nothing is
+    // clipped either way and the window is the taper times the samples. Only
+    // otherwise the sum in order, as before.
+    if (haveHann) {
+        const __m128d sign = _mm_set1_pd(-0.0);
+        __m128d s0 = _mm_setzero_pd(), s1 = _mm_setzero_pd();
+        __m128d m0 = _mm_setzero_pd(), m1 = _mm_setzero_pd();
+        int i = 0;
+        for (; i + 4 <= n; i += 4) {
+            const __m128d a = _mm_andnot_pd(sign, _mm_loadu_pd(wv + i));
+            const __m128d b = _mm_andnot_pd(sign, _mm_loadu_pd(wv + i + 2));
+            s0 = _mm_add_pd(s0, a);
+            s1 = _mm_add_pd(s1, b);
+            m0 = _mm_max_pd(m0, a);
+            m1 = _mm_max_pd(m1, b);
+        }
+        s0 = _mm_add_pd(s0, s1);
+        m0 = _mm_max_pd(m0, m1);
+        double sum = _mm_cvtsd_f64(_mm_add_sd(s0, _mm_unpackhi_pd(s0, s0)));
+        double pk = _mm_cvtsd_f64(_mm_max_sd(m0, _mm_unpackhi_pd(m0, m0)));
+        for (; i < n; ++i) {
+            const double a = fabs(wv[i]);
+            sum += a;
+            pk = (a > pk) ? a : pk;
+        }
+        const double approx = 6.0 * (sum / (double)n) + 1e-12;
+        if (finite(sum) && pk < approx * (1.0 - 1e-9)) {
+            const double * w = &m_hann[0];
+            double * o = &m_scratch[0];
+            for (i = 0; i + 2 <= n; i += 2)
+                _mm_storeu_pd(o + i, _mm_mul_pd(_mm_loadu_pd(wv + i), _mm_loadu_pd(w + i)));
+            for (; i < n; ++i) o[i] = wv[i] * w[i];
+            tapered = true;
+        }
+    }
+#endif
+    if (!tapered) {
+        double acc = 0.0;
+        for (int i = 0; i < n; ++i) acc += fabs(wv[i]);
+        const double lim = 6.0 * (acc / (double)n) + 1e-12;
+        const double twoPi = 6.283185307179586;
+        for (int i = 0; i < n; ++i) {
+            double v = wv[i];
+            if (v > lim) v = lim;
+            else if (v < -lim) v = -lim;
+            const double w = haveHann
+                ? m_hann[(size_t)i]
+                : 0.5 - 0.5 * cos(twoPi * (double)i / (double)(n - 1));
+            m_scratch[i] = v * w;
+        }
     }
 
     m_ra.assign((size_t)order + 1, 0.0);
@@ -3219,7 +3396,23 @@ bool Channel::updateAutocorr(int n, int order) {
     const double * w0 = &m_fitWin[(size_t)m_fitLead];
     double * delta = &m_delta[0];
     int changed = 0;
-    for (int i = 0; i < n; ++i) {
+    int i = 0;
+#if DECLICK_SSE2
+    {
+        // Two at a time, the count as 64-bit lanes of the compare's all-ones.
+        const __m128d zero = _mm_setzero_pd();
+        __m128i cnt = _mm_setzero_si128();
+        for (; i + 2 <= n; i += 2) {
+            const __m128d d = _mm_sub_pd(_mm_loadu_pd(w1 + i), _mm_loadu_pd(w0 + i));
+            _mm_storeu_pd(delta + i, d);
+            cnt = _mm_sub_epi64(cnt, _mm_castpd_si128(_mm_cmpneq_pd(d, zero)));
+        }
+        int64_t c2[2];
+        _mm_storeu_si128((__m128i *)c2, cnt);
+        changed = (int)(c2[0] + c2[1]);
+    }
+#endif
+    for (; i < n; ++i) {
         delta[i] = w1[i] - w0[i];
         changed += (delta[i] != 0.0);
     }
@@ -3229,8 +3422,17 @@ bool Channel::updateAutocorr(int n, int order) {
     for (int d = 0; d <= order; ++d) r[d] = m_fitR[(size_t)d];
     double * fwd = &m_corr[0];
     double * bwd = &m_corr[(size_t)order + 1];
-    int i = 0;
+    i = 0;
     while (i < n) {
+#if DECLICK_SSE2
+        // Most of the window is unchanged: past it four at a time.
+        const __m128d zero = _mm_setzero_pd();
+        while (i + 4 <= n &&
+               _mm_movemask_pd(_mm_or_pd(_mm_cmpneq_pd(_mm_loadu_pd(delta + i), zero),
+                                         _mm_cmpneq_pd(_mm_loadu_pd(delta + i + 2), zero))) == 0)
+            i += 4;
+        if (i >= n) break;
+#endif
         if (delta[i] == 0.0) { ++i; continue; }
         // A stretch of changes, with gaps of a few unchanged samples bridged:
         // a zero tap costs less than another pair of filter calls.
@@ -3350,9 +3552,29 @@ void Channel::detect(int from, int to, int pass) {
     const double inv = 1.0 / m_scale;
     const int live0 = m_silentUntil + order;
     const int live1 = (m_tailFrom < (1 << 30)) ? m_tailFrom - order : to;
-    for (int i = from; i < to; ++i) {
-        m_det[i] = (i >= live0 && i < live1) ? dmax(fabs(m_fwd[i]), fabs(m_bwd[i])) * inv : 0.0;
+    // Zero outside live0 .. live1, the larger residual over sigma inside it.
+    int lo = (from > live0) ? from : live0;
+    if (lo > to) lo = to;
+    int hi = (to < live1) ? to : live1;
+    if (hi < lo) hi = lo;
+    for (int i = from; i < lo; ++i) m_det[i] = 0.0;
+    int i = lo;
+#if DECLICK_SSE2
+    {
+        // dmax(a, b) is a > b ? a : b, which is what maxpd does with a first.
+        const __m128d sign = _mm_set1_pd(-0.0), vinv = _mm_set1_pd(inv);
+        const double * f = &m_fwd[0];
+        const double * b = &m_bwd[0];
+        double * dt = &m_det[0];
+        for (; i + 2 <= hi; i += 2) {
+            const __m128d af = _mm_andnot_pd(sign, _mm_loadu_pd(f + i));
+            const __m128d ab = _mm_andnot_pd(sign, _mm_loadu_pd(b + i));
+            _mm_storeu_pd(dt + i, _mm_mul_pd(_mm_max_pd(af, ab), vinv));
+        }
     }
+#endif
+    for (; i < hi; ++i) m_det[i] = dmax(fabs(m_fwd[i]), fabs(m_bwd[i])) * inv;
+    for (i = hi; i < to; ++i) m_det[i] = 0.0;
 }
 
 void Channel::interpolate(int from, int to, int reach) {
@@ -3660,19 +3882,27 @@ void Channel::shapeBuild() {
     for (int i = 0; i < 8; ++i) m_shZ[i] = 0.0;
 }
 
-//! The input's 3-8 kHz power, for the gate, as each sample is pushed.
-void Channel::shapeBand(double v) {
-    double y = v;
-    for (int sct = 0; sct < 4; ++sct) {
-        const double * B = &m_shB[5 * sct];
-        double * z = &m_shZ[2 * sct];
-        const double o = B[0] * y + z[0];
-        z[0] = B[1] * y - B[3] * o + z[1];
-        z[1] = B[2] * y - B[4] * o;
-        y = o;
+//! The input's 3-8 kHz power, for the gate, from m_shAt up to window index
+//! `end`: the samples pushed since the last block, before anything in it
+//! touches m_in. Sample by sample as they were pushed, so the same bits, but
+//! in one loop with the state in registers, where one call a sample kept it
+//! in memory and the four sections' recurrences waited on it there.
+void Channel::shapeBand(int end) {
+    const double * B = m_shB;
+    double z00 = m_shZ[0], z01 = m_shZ[1], z10 = m_shZ[2], z11 = m_shZ[3];
+    double z20 = m_shZ[4], z21 = m_shZ[5], z30 = m_shZ[6], z31 = m_shZ[7];
+    for (int i = m_shAt; i < end; ++i) {
+        double y = m_in[(size_t)i], o;
+        o = B[0] * y + z00;  z00 = B[1] * y - B[3] * o + z01;  z01 = B[2] * y - B[4] * o;  y = o;
+        o = B[5] * y + z10;  z10 = B[6] * y - B[8] * o + z11;  z11 = B[7] * y - B[9] * o;  y = o;
+        o = B[10] * y + z20; z20 = B[11] * y - B[13] * o + z21; z21 = B[12] * y - B[14] * o; y = o;
+        o = B[15] * y + z30; z30 = B[16] * y - B[18] * o + z31; z31 = B[17] * y - B[19] * o; y = o;
+        if (fabs(y) < 1e-30) y = 0.0;              // no denormals in the state's wake
+        m_shBand[(size_t)i] = y * y;
     }
-    if (fabs(y) < 1e-30) y = 0.0;                  // no denormals in the state's wake
-    m_shBand[(size_t)m_fill] = y * y;
+    m_shZ[0] = z00; m_shZ[1] = z01; m_shZ[2] = z10; m_shZ[3] = z11;
+    m_shZ[4] = z20; m_shZ[5] = z21; m_shZ[6] = z30; m_shZ[7] = z31;
+    if (end > m_shAt) m_shAt = end;
 }
 
 //! The shape fit on the clicks centred in this block; see Config::shape.
@@ -3739,14 +3969,22 @@ int Channel::shapeFit(int to) {
         const int c = cmin + (p - J) * H;
         gv[p] = (S[c + h1 + 1 - a] - S[c - h1 - a]) * inv1;
     }
+    // Start t0 + i belongs to grid point (i + H / 2) / H, the last taking the
+    // rest: each point's starts in one run, its highest kept in a register.
     double * med = &m_shMed[0];
-    for (int q = 0; q < nq; ++q) med[q] = 0.0;
-    for (int i = 0; i < n; ++i) {
-        const int c = t0 + i + k;
-        int q = (c - cmin + H / 2) / H;
-        if (q >= nq) q = nq - 1;
-        const double avg = (S[c + h1 + 1 - a] - S[c - h1 - a]) * inv1;
-        if (avg > med[q]) med[q] = avg;
+    {
+        int i = 0;
+        for (int q = 0; q < nq; ++q) {
+            int iEnd = (q + 1 < nq) ? (q + 1) * H - H / 2 : n;
+            if (iEnd > n) iEnd = n;
+            double m = 0.0;
+            for (; i < iEnd; ++i) {
+                const int c = t0 + i + k;
+                const double avg = (S[c + h1 + 1 - a] - S[c - h1 - a]) * inv1;
+                if (avg > m) m = avg;
+            }
+            med[q] = m;
+        }
     }
     bool open = false;
     for (int q = 0; q < nq; ++q) {
@@ -4126,7 +4364,6 @@ void Channel::pushOne(double v) {
     m_win[(size_t)m_fill] = v;
     m_dry[(size_t)m_fill] = v;
     m_in[(size_t)m_fill] = v;
-    if (m_cfg.shape) shapeBand(v);
     m_full[(size_t)m_fill] = v;
     m_flag[(size_t)m_fill] = 0;
     m_strong[(size_t)m_fill] = 0;
@@ -4138,6 +4375,7 @@ void Channel::pushOne(double v) {
 
     m_bStrong = 0;
     m_cBlk = 0;
+    if (m_cfg.shape) shapeBand(m_fill);
     processBlock();
     // After a warm start, the carpet key stands still over the blocks the
     // warm pass counted; see beginWarm().
@@ -4213,6 +4451,7 @@ void Channel::pushOne(double v) {
         m_flEnd = (m_flEnd > -(1 << 30) + blk) ? m_flEnd - blk : -(1 << 30);
     }
     m_fill -= blk;
+    m_shAt = m_fill;
     m_fitLen = 0;                 // the next fit is of a different window
     m_silentUntil = (m_silentUntil > blk) ? (m_silentUntil - blk) : 0;
     if (m_tailFrom < (1 << 30)) m_tailFrom -= blk;
@@ -4286,7 +4525,9 @@ void Channel::keepRun(uint64_t a, int len, double pk) {
     const double * y = &m_kY[0];
     const size_t first = (size_t)lo & mask;
     const int n1 = (size - first < (size_t)n) ? (int)(size - first) : n;
-    const double e = dot(y + first, y + first, n1) + dot(y, y, n - n1);
+    double e0, e1;
+    g_kernels->dot2(y + first, y + first, n1, y, y, n - n1, &e0, &e1);
+    const double e = e0 + e1;
     const double ratio = pk / sqrt(e / (double)n + 1e-12);
     double g = 1.0;
     if (ratio >= m_cfg.lowKeepR1) return;
@@ -4413,7 +4654,9 @@ void Channel::popPush(double y, double d) {
         const size_t first = (size_t)(t - 2 * half) & mask;   // may wrap below zero: masked
         const size_t room = mask + 1 - first;
         const int n1 = (room < (size_t)taps) ? (int)room : taps;
-        const double a = dot(f, ry + first, n1) + dot(f + n1, ry, taps - n1);
+        double a0, a1;
+        g_kernels->dot2(f, ry + first, n1, f + n1, ry, taps - n1, &a0, &a1);
+        const double a = a0 + a1;
         m_pLow[(size_t)m_pFill++] = a;
         if (m_pFill == (int)kPopN) {
             popFrame(m_pJ0);
@@ -4456,10 +4699,21 @@ void Channel::popFrame(int64_t j0) {
     double * tmp = &m_pTmp[0];
     double * crev = &m_pB[0] + P;                   // the model reversed, behind b
     uint8_t * bad = &m_pBad[0];
-    for (int j = 0; j <= P; ++j) {
-        const double a = dot(s + P, s + P - j, N - P);
-        F[j] = a;
-        F[j * P1] = a;
+    {
+        int j = 0;
+        for (; j + 1 <= P; j += 2) {
+            double a0, a1;
+            g_kernels->dot2(s + P, s + P - j, N - P, s + P, s + P - j - 1, N - P, &a0, &a1);
+            F[j] = a0;
+            F[j * P1] = a0;
+            F[j + 1] = a1;
+            F[(j + 1) * P1] = a1;
+        }
+        for (; j <= P; ++j) {
+            const double a = dot(s + P, s + P - j, N - P);
+            F[j] = a;
+            F[j * P1] = a;
+        }
     }
     for (int i = 0; i < P; ++i) {
         for (int j = i; j < P; ++j) {
@@ -4552,10 +4806,14 @@ void Channel::popFrame(int64_t j0) {
             double * r3 = r2 + P;
             for (int j = 0; j < i0; ++j) {
                 const double * rj = A + j * P;
-                const double a0 = r0[j] - dot(r0, rj, j);
-                const double a1 = r1[j] - dot(r1, rj, j);
-                const double a2 = r2[j] - dot(r2, rj, j);
-                const double a3 = r3[j] - dot(r3, rj, j);
+                // dot2(), as dot() twice to the bit, at twice its pace.
+                double d0, d1, d2, d3;
+                g_kernels->dot2(r0, rj, j, r1, rj, j, &d0, &d1);
+                g_kernels->dot2(r2, rj, j, r3, rj, j, &d2, &d3);
+                const double a0 = r0[j] - d0;
+                const double a1 = r1[j] - d1;
+                const double a2 = r2[j] - d2;
+                const double a3 = r3[j] - d3;
                 const double dj = rj[j];
                 r0[j] = a0 / dj;
                 r1[j] = a1 / dj;
@@ -4582,10 +4840,8 @@ void Channel::popFrame(int64_t j0) {
         }
         c[0] = 1.0;
         for (int k = 0; k <= P; ++k) crev[k] = c[P - k];
-        for (int m = P; m < N; ++m) {
-            e[m] = dot(crev, s + m - P, P1);
-            eb[m] = dot(c, s + m - P, P1);
-        }
+        for (int m = P; m < N; ++m)
+            g_kernels->dot2(crev, s + m - P, P1, c, s + m - P, P1, &e[m], &eb[m]);
         if (it == 1) break;
         int nt = 0;
         for (int m = P; m < N; ++m) { tmp[nt++] = fabs(e[m]); tmp[nt++] = fabs(eb[m]); }
@@ -4615,8 +4871,12 @@ void Channel::popFrame(int64_t j0) {
     const int hi = N - Lmax - P, lo = hi - H;
     double * w = &m_pW[0];
     double * rc = &m_pRc[0];
-    for (int m = lo; m < hi + Lmax; ++m) w[m] = dot(c, e + m, P1);
-    for (int l = 0; l <= P; ++l) rc[l] = dot(c, c + l, P1 - l);
+    int m = lo;
+    for (; m + 1 < hi + Lmax; m += 2) g_kernels->dot2(c, e + m, P1, c, e + m + 1, P1, &w[m], &w[m + 1]);
+    for (; m < hi + Lmax; ++m) w[m] = dot(c, e + m, P1);
+    int l = 0;
+    for (; l + 1 <= P; l += 2) g_kernels->dot2(c, c + l, P1 - l, c, c + l + 1, P1 - l - 1, &rc[l], &rc[l + 1]);
+    for (; l <= P; ++l) rc[l] = dot(c, c + l, P1 - l);
     // e2[k]: the squared residual summed over lo .. k-1, for a gap's stretch.
     double * e2 = eb;                               // the backward residual is done with
     e2[lo] = 0.0;
