@@ -421,9 +421,11 @@ void Editor::paintTone(HDC dc)
     const RECT & rc = m_layout.curve;
     if (IsRectEmpty(&rc) || !m_engaged || m_params.bypass) return;
 
-    // Grey dots where the library's median would put each band, joined to the
-    // handle by a dotted line so it is plain which knob a dot belongs to. They
-    // are not hit-tested and cannot be dragged: a suggestion, not a control.
+    // Grey dots where the library's median would put each band - its suggested
+    // frequency and gain - joined to the handle by a dotted line so it is
+    // plain which knob a dot belongs to, and labelled with the frequency, since
+    // reading it off the axis is guesswork. They are not hit-tested and cannot
+    // be dragged: a suggestion, not a control.
     const COLORREF col = blend(m_colBack, m_colText, 0.38);
     const HPEN line = CreatePen(PS_DOT, 1, col);
     const HPEN none = (HPEN)GetStockObject(NULL_PEN);
@@ -437,17 +439,32 @@ void Editor::paintTone(HDC dc)
     IntersectClipRect(dc, rc.left, rc.top, rc.right, rc.bottom);
     SetBkMode(dc, TRANSPARENT);
     const int rad = MulDiv(4, m_dpi, 96);
+    if (m_font != NULL) SelectObject(dc, m_font);
     for (int m = 0; m < ToneHints::kCount; m++) {
         if (!m_tone.show[m]) continue;
         const int b = kToneBand[m];
-        const int x = handleX(b);
+        const double hz = m_tone.freqHz[m] > 0.0f ? m_tone.freqHz[m] : bandFreq(m_params, b);
+        const int x = clampi(xOfHz(hz), rc.left + rad, rc.right - rad - 1);
         const int y = clampi(yOfDb(m_tone.gainDb[m]), rc.top + rad, rc.bottom - rad - 1);
         SelectObject(dc, line);
-        MoveToEx(dc, x, handleY(b), NULL);
+        MoveToEx(dc, handleX(b), handleY(b), NULL);
         LineTo(dc, x, y);
         SelectObject(dc, none);
         SelectObject(dc, fill);
         Ellipse(dc, x - rad, y - rad, x + rad + 1, y + rad + 1);
+
+        // The label beside the dot, on whichever side has room.
+        wchar_t text[16];
+        formatHz(text, _countof(text), hz);
+        SIZE ext = { 0, 0 };
+        GetTextExtentPoint32W(dc, text, (int)wcslen(text), &ext);
+        const int gap = rad + MulDiv(3, m_dpi, 96);
+        RECT lr;
+        lr.left   = (x + gap + ext.cx <= rc.right) ? x + gap : x - gap - ext.cx;
+        lr.right  = lr.left + ext.cx;
+        lr.top    = clampi(y - ext.cy / 2, rc.top, rc.bottom - ext.cy);
+        lr.bottom = lr.top + ext.cy;
+        drawText(dc, lr, text, DT_LEFT | DT_TOP, col);
     }
     RestoreDC(dc, saved);
     DeleteObject(line);

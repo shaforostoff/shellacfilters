@@ -214,6 +214,7 @@ void hints(const paraeq::Params & p, double sampleRate, paraeq_editor::ToneHints
         for (int m = 0; m < paraeq_tone::kMeasures; m++) {
             out.show[m]   = s.valid && s.show[m];
             out.gainDb[m] = s.gainDb[m];
+            out.freqHz[m] = s.freqHz[m];
         }
         break;
     }

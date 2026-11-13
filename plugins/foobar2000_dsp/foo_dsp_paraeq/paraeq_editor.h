@@ -85,6 +85,8 @@ struct ToneHints {
     enum { kCount = 3 };
     bool    show[kCount]   = { false, false, false };
     float   gainDb[kCount] = { 0, 0, 0 };
+    //! Where to put the band, Hz; 0 leaves it where it is.
+    float   freqHz[kCount] = { 0, 0, 0 };
     //! What the footer says beside the checkbox: the measurement, or why there
     //! is none.
     wchar_t status[128]    = { 0 };

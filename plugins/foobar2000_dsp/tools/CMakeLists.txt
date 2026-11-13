@@ -80,6 +80,7 @@ endif()
 add_executable(paraeq_tone_cli
     paraeq_tone_cli.cpp
     "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_tone.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_calibrate.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../foo_dsp_paraeq/paraeq_core.cpp"
 )
 
