@@ -2686,10 +2686,16 @@ void Channel::configure(const Config & cfg) {
             size_t slots = 1;
             while (slots < (size_t)(2 * (m_fD + N / m_fH + 4))) slots <<= 1;
             m_dRun.assign(slots, 0);
+            m_dAmp.assign(slots, 0.0f);
             m_dRunMask = slots - 1;
         }
 
         m_fNorm = hannTable(N, true, m_fH, &m_fWin[0]);
+        {
+            double w2 = 0.0;
+            for (int i = 0; i < N; ++i) w2 += m_fWin[(size_t)i] * m_fWin[(size_t)i];
+            m_dRms = 2.0 / ((double)N * w2);
+        }
         fftTables(N / 2, N, N / 2 + 1, &m_fStRe[0], &m_fStIm[0], &m_fRev[0], &m_fTwRe[0], &m_fTwIm[0]);
         m_fR.assign(m_bY.size(), 0.0);
     }
@@ -2973,6 +2979,7 @@ void Channel::configure(const Config & cfg) {
         }
         const size_t P = (size_t)kPopP, N = (size_t)kPopN, L = (size_t)kPopLmax;
         m_pLow.assign(N, 0.0);
+        m_pClk.assign(N, 0.0f);
         m_pF.assign((P + 1) * (P + 1), 0.0);
         m_pA.assign(P * P, 0.0);
         m_pB.assign(2 * P + 1, 0.0);
@@ -2990,7 +2997,7 @@ void Channel::configure(const Config & cfg) {
     } else {
         m_pD = 0;
         m_pHalf = 0;
-        m_pY.clear(); m_pDry.clear(); m_pR.clear(); m_pFir.clear(); m_pLow.clear();
+        m_pY.clear(); m_pDry.clear(); m_pR.clear(); m_pFir.clear(); m_pLow.clear(); m_pClk.clear();
         m_pF.clear(); m_pA.clear(); m_pB.clear(); m_pC.clear(); m_pE.clear(); m_pEb.clear();
         m_pW.clear(); m_pRc.clear(); m_pG.clear(); m_pCh.clear(); m_pTmp.clear();
         m_pBad.clear(); m_pCand.clear(); m_pOrd.clear();
@@ -3203,6 +3210,7 @@ void Channel::resetPath() {
     std::fill(m_pDry.begin(), m_pDry.end(), 0.0);
     std::fill(m_pR.begin(), m_pR.end(), 0.0);
     std::fill(m_pLow.begin(), m_pLow.end(), 0.0);
+    std::fill(m_pClk.begin(), m_pClk.end(), 0.0f);
     m_pT = 0;
     m_pNext = (uint64_t)m_pHalf;
     // The first frame decides the stream's first gaps: it starts with as many
@@ -3211,6 +3219,7 @@ void Channel::resetPath() {
     m_pJ0 = -(int64_t)m_pFill;
     m_pFires = 0;
     std::fill(m_dRun.begin(), m_dRun.end(), (uint8_t)0);
+    std::fill(m_dAmp.begin(), m_dAmp.end(), 0.0f);
     m_dCuts = 0;
     m_fNextHop = (uint64_t)m_fN;
     m_fHist = 0;
@@ -4577,6 +4586,12 @@ void Channel::bodyPush(double y, double d, uint8_t strong) {
     {                           // the mid stage's run flag for this hop
         uint8_t & r = m_dRun[(size_t)(t >> m_fHShift) & m_dRunMask];
         r = ((t & (uint64_t)(m_fH - 1)) == 0) ? strong : (uint8_t)(r | strong);
+        float & am = m_dAmp[(size_t)(t >> m_fHShift) & m_dRunMask];
+        if ((t & (uint64_t)(m_fH - 1)) == 0) am = 0.0f;
+        if (strong) {
+            const float v = (float)fabs(d - y);
+            if (v > am) am = v;
+        }
     }
     const uint64_t N = (uint64_t)m_bN;
     if (t + 1 == m_bNextHop) {
@@ -4657,10 +4672,22 @@ void Channel::popPush(double y, double d) {
         double a0, a1;
         g_kernels->dot2(f, ry + first, n1, f + n1, ry, taps - n1, &a0, &a1);
         const double a = a0 + a1;
+        if (m_cfg.popClickT > 0.0) {
+            // The largest thing the stages before took from the popD inputs
+            // this low-rate sample stands for. See Config::popClickT.
+            const double * rd = &m_pDry[0];
+            double c = 0.0;
+            for (int k = 0; k < m_pD; ++k) {
+                const size_t u = (size_t)(t - half - (uint64_t)k) & mask;
+                c = dmax(c, fabs(rd[u] - ry[u]));
+            }
+            m_pClk[(size_t)m_pFill] = (float)c;
+        }
         m_pLow[(size_t)m_pFill++] = a;
         if (m_pFill == (int)kPopN) {
             popFrame(m_pJ0);
             memmove(&m_pLow[0], &m_pLow[(size_t)kPopH], sizeof(double) * (size_t)(kPopN - kPopH));
+            if (m_cfg.popClickT > 0.0) memmove(&m_pClk[0], &m_pClk[(size_t)kPopH], sizeof(float) * (size_t)(kPopN - kPopH));
             m_pFill = (int)kPopN - (int)kPopH;
             m_pJ0 += (int64_t)kPopH;
         }
@@ -4897,7 +4924,14 @@ void Channel::popFrame(int64_t j0) {
     }
 
     static const int kLs[5] = { 4, 6, 10, 16, 24 };
-    const double Tmin = m_cfg.popT, Qmax = m_cfg.popQ, ampMin = m_cfg.popAmp;
+    const double Qmax = m_cfg.popQ, ampMin = m_cfg.popAmp;
+    // With the click rule on, a pulse from popClickT is weighed; under popT it
+    // then has to have a repaired click on it.
+    const double Tfull = m_cfg.popT;
+    const bool clickOn = m_cfg.popClickT > 0.0 && m_cfg.popClickT < Tfull;
+    const double Tmin = clickOn ? m_cfg.popClickT : Tfull;
+    const double clickK = m_cfg.popClickK;
+    const float * clk = &m_pClk[0];
     const double Tbig = m_cfg.popBigT, kappa = m_cfg.popKappa;
     const int lobesMax = m_cfg.popLobes;
     const int nL = (m_cfg.popLong > 0) ? 5 : 4;
@@ -4967,6 +5001,16 @@ void Channel::popFrame(int64_t j0) {
             const double T = (gain - (double)L) / rootL;
             if (!(T >= Tmin)) continue;
             if (!(sqrt(pe / (double)L) >= ampMin * xr)) continue;
+            if (T < Tfull) {
+                double pk = 0.0;
+                int at = 0;
+                for (int i = 0; i < L; ++i) if (fabs(v[i]) > pk) { pk = fabs(v[i]); at = i; }
+                const int a = (p0 + at - 7 > 0) ? p0 + at - 7 : 0;
+                const int b2 = (p0 + at + 7 < N - 1) ? p0 + at + 7 : N - 1;
+                float ck = 0.0f;
+                for (int q = a; q <= b2; ++q) if (clk[q] > ck) ck = clk[q];
+                if (!((double)ck >= clickK * pk)) continue;
+            }
             const double E0 = (e2[p0 + L + P] - e2[p0]) * is2;
             const double q1 = (E0 - gain) / (double)P;
             if (!(q1 <= Qmax || (T >= Tbig && (q1 - 1.0) * (double)P <= kappa * gain))) continue;
@@ -5736,11 +5780,41 @@ void Channel::fineHop(uint64_t start) {
     // repeats, as the fine stage does below fineMid. See Config::mid.
     bool gate = false;
     double keepD = 1.0;
+    double ringD[2] = { 0.0, 0.0 };     // by half of the band; see Config::midRing0
+    const int ndHalf = nd / 2;
     if (nd > 0) {
         const uint64_t from = start - (uint64_t)D * (uint64_t)H;
         const uint64_t h0 = from >> m_fHShift, h1 = h0 + (uint64_t)(N >> m_fHShift);
-        for (uint64_t h = (h0 > 0) ? h0 - 1 : 0; h <= h1 && !gate; ++h)
-            gate = m_dRun[(size_t)h & m_dRunMask] != 0;
+        double amp = 0.0;
+        for (uint64_t h = (h0 > 0) ? h0 - 1 : 0; h <= h1; ++h) {
+            if (m_dRun[(size_t)h & m_dRunMask] != 0) gate = true;
+            const double v = (double)m_dAmp[(size_t)h & m_dRunMask];
+            if (v > amp) amp = v;
+        }
+        if (gate && m_cfg.midRing1 > m_cfg.midRing0) {
+            // The ring is never louder than its click; see Config::midRing0.
+            // Each half of the band by itself: the lower is the louder, and
+            // would speak for both.
+            for (int half = 0; half < 2; ++half) {
+                const int b0 = half ? ndHalf : 0, b1 = half ? nd : ndHalf;
+                double e = 0.0, bg = 0.0;
+                for (int b = b0; b < b1; ++b) {
+                    const double h = dmax(qBefore[b], qAfter[b]);
+                    e += cmag[b] * cmag[b];
+                    bg += h * h;
+                }
+                const double rms = sqrt(e * m_dRms) + 1e-30;
+                double u = (amp / rms - m_cfg.midRing0) / (m_cfg.midRing1 - m_cfg.midRing0);
+                u = dmin(dmax(u, 0.0), 1.0);
+                double r = 1.0 - u;
+                if (m_cfg.midBurst1 > m_cfg.midBurst0) {
+                    const double v = (e / (bg + 1e-30) - m_cfg.midBurst0) / (m_cfg.midBurst1 - m_cfg.midBurst0);
+                    r *= dmin(dmax(v, 0.0), 1.0);
+                }
+                ringD[half] = r;
+            }
+            if (ringD[0] >= 1.0 && ringD[1] >= 1.0) gate = false;
+        }
         if (gate) {
             const double best = envPeriodicity(&m_dE[0], (size_t)m_fESlots, c, W, m_fLmin, m_fLmax, &m_fSeg[0]);
             const double span = m_cfg.midPeriodic1 - m_cfg.midPeriodic0;
@@ -5772,7 +5846,8 @@ void Channel::fineHop(uint64_t start) {
         if (g < floorG) g = floorG;
         double cut;
         if (b < nd) {
-            g = 1.0 - (1.0 - keepD) * (1.0 - g);
+            const double kd = 1.0 - (1.0 - keepD) * (1.0 - ringD[b >= ndHalf]);
+            g = 1.0 - (1.0 - kd) * (1.0 - g);
             cut = (1.0 - g) * beta * ((b < m_dYieldNb) ? yieldD : 1.0);
         } else {
             if (b - nd < m_fNbLow) g = 1.0 - (1.0 - keep) * (1.0 - g);

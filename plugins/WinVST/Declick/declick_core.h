@@ -364,6 +364,23 @@ struct Config {
     double midPeriodic0 = 0.3;
     double midPeriodic1 = 0.5;
     int    midYield     = 1;
+    //! The ring is never louder than its click. Against other transfers of
+    //! the same recordings, most of what this stage took from bursts of its
+    //! band sat on bursts the other copy has too - the music's own attacks -
+    //! and those lie by repairs smaller than themselves, where a click's
+    //! ring lies by one larger. So the cut backs off by the largest sample
+    //! the repair took in the gating runs, over the rms of this band in the
+    //! frame: none of the cut at midRing0 or under, all of it from midRing1.
+    //! midRing1 <= midRing0: no such guard. See docs/stages-vinyl.md.
+    double midRing0     = 4.0;
+    double midRing1     = 8.0;
+    //! And only where the band bursts: by the frame's energy in the band
+    //! over its background's (the quantiles the clip is taken against), the
+    //! guard is off at midBurst0 or under and whole from midBurst1. A steady
+    //! band reads about 4.5 (the mean square over the 0.2 quantile squared).
+    //! midBurst1 <= midBurst0: the guard wherever the stage cuts.
+    double midBurst0    = 3.0;
+    double midBurst1    = 5.0;
 
     //! The flank repair. Not user-facing; declick_cli sweeps it as --flank,
     //! --flank-pad-ms, --flank-hz, --flank-edge0 and --flank-edge1.
@@ -598,6 +615,18 @@ struct Config {
     //! makes the frame busy by itself.
     int    popBusy      = 3;
     double popBusyT     = 100.0;
+    //! The click on the pop. A pop is what a click leaves below the click
+    //! repair's reach, so the repair has usually taken something at the same
+    //! moment. Under popT the pulses are music (docs/stages-vinyl.md: against
+    //! other transfers of 48 songs what popT 7 takes more is in the other
+    //! transfer too), except the few with a repaired click on them. So a pulse
+    //! of popClickT sigma or more that is short of popT is taken as well if
+    //! the stages before took, within 7 low-rate samples (2.5 ms) of its peak,
+    //! a sample at least popClickK times that peak. 0: off. At 8 it takes 17
+    //! more pulses in the 48 songs, as often absent from the other transfer as
+    //! what the stage takes anyway; from 7 down it takes music.
+    double popClickT    = 8.0;
+    double popClickK    = 1.0;
     int    popD         = 16;        //!< from the sample rate alone
     int    popLatency   = 0;         //!< whole blocks, if on
 
@@ -1339,6 +1368,8 @@ private:
     int    m_dNb = 0, m_dYieldNb = 0;
     std::vector<double> m_dE;
     std::vector<uint8_t> m_dRun;
+    std::vector<float> m_dAmp;    //!< per hop, the largest repair in such a run
+    double m_dRms = 0.0;          //!< sum of a frame's |X|^2 over the band to its mean square
     size_t m_dRunMask = 0;
     int    m_fHShift = 0;         //!< m_fH = 1 << this
     uint64_t m_dCuts = 0;
@@ -1459,6 +1490,7 @@ private:
     int64_t m_pJ0 = 0;
     uint64_t m_pFires = 0;
     std::vector<double> m_pY, m_pDry, m_pR, m_pFir, m_pLow;
+    std::vector<float> m_pClk;    //!< beside m_pLow: the largest earlier removal per low-rate sample
     std::vector<double> m_pF, m_pA, m_pB, m_pC, m_pE, m_pEb, m_pW, m_pRc, m_pG, m_pCh, m_pTmp;
     std::vector<uint8_t> m_pBad;
     std::vector<PopCand> m_pCand;

@@ -126,6 +126,8 @@ void usage() {
         "  --pop-busy <n>     Residual samples over 3.5 sigma elsewhere in the frame\n"
         "                     a pulse may have (default 3)\n"
         "  --pop-busy-t <x>   ... unless it explains this many sigma (default 100; 0: no test)\n"
+        "  --pop-click-t <x>  also take a pulse from this many sigma with a repaired click on it (default 8; 0: off)\n"
+        "  --pop-click-k <x>  ... the click at least this many times the pulse's peak (default 1)\n"
         "  --low-keep <0|1>   The low keep: what a repair takes below low-keep-hz goes\n"
         "                     back, unless the run is a big click (default 1)\n"
         "  --low-keep-hz <Hz> Below this it goes back (default 1200)\n"
@@ -216,6 +218,10 @@ const ConfigFlag kConfigFlags[] = {
     DBL("--mid-p0",                midPeriodic0),
     DBL("--mid-p1",                midPeriodic1),
     INT("--mid-yield",             midYield),
+    DBL("--mid-ring0",             midRing0),
+    DBL("--mid-ring1",             midRing1),
+    DBL("--mid-burst0",            midBurst0),
+    DBL("--mid-burst1",            midBurst1),
     DBL("--carpet-first",          carpetFirst),
     INT("--carpet-fano",           carpetFano),
     DBL("--fano-rate0",            fanoRate0),
@@ -245,6 +251,8 @@ const ConfigFlag kConfigFlags[] = {
     INT("--pop-long",              popLong),
     INT("--pop-busy",              popBusy),
     DBL("--pop-busy-t",            popBusyT),
+    DBL("--pop-click-t",           popClickT),
+    DBL("--pop-click-k",           popClickK),
     INT("--low-keep",              lowKeep),
     DBL("--low-keep-hz",           lowKeepHz),
     DBL("--low-keep-p0",           lowKeepP0),
